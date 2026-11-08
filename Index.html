@@ -1,13 +1,16 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>A* - the homework destroyer</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-  
+  <link
+    href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700&display=swap"
+    rel="stylesheet">
+
   <!-- Libraries for DOCX, JSZip, PDF.js (Local with CDN fallbacks) -->
   <script src="libs/jszip.min.js"></script>
   <script>
@@ -109,202 +112,6 @@
     }
 
     /* ========================================================
-       1. WELCOME SCREEN
-       ======================================================== */
-    .welcome-screen {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: space-between;
-      height: 100%;
-      min-height: 710px;
-      padding: 60px 30px 24px 30px;
-      text-align: center;
-    }
-
-    .welcome-header h1 {
-      font-size: 38px;
-      letter-spacing: 9px;
-      font-weight: 800;
-      color: #ffffff;
-      text-transform: uppercase;
-      margin-bottom: 4px;
-      text-shadow: 0 4px 18px rgba(35, 102, 255, 0.6);
-    }
-
-    .welcome-header .to-text {
-      font-size: 16px;
-      font-weight: 400;
-      color: #9cb5ff;
-      margin: 8px 0;
-      display: inline-block;
-      position: relative;
-    }
-    .welcome-header .to-text::before,
-    .welcome-header .to-text::after {
-      content: '';
-      position: absolute;
-      top: 50%;
-      width: 120px;
-      height: 2px;
-      background: linear-gradient(90deg, transparent, #3964ff);
-    }
-    .welcome-header .to-text::before {
-      right: calc(100% + 12px);
-    }
-    .welcome-header .to-text::after {
-      left: calc(100% + 12px);
-      background: linear-gradient(90deg, #3964ff, transparent);
-    }
-
-    .welcome-header h2 {
-      font-size: 20px;
-      font-weight: 600;
-      color: #e2ebff;
-      letter-spacing: 1px;
-    }
-
-    .welcome-logo-center {
-      margin: 20px 0;
-      width: 200px;
-      height: 200px;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      filter: drop-shadow(0 15px 30px rgba(0, 48, 191, 0.6));
-      animation: floatLogo 4s ease-in-out infinite;
-    }
-    .welcome-logo-center img, .welcome-logo-center svg {
-      width: 100%;
-      height: 100%;
-      object-fit: contain;
-    }
-
-    @keyframes floatLogo {
-      0%, 100% { transform: translateY(0px); }
-      50% { transform: translateY(-8px); }
-    }
-
-    .welcome-actions {
-      width: 100%;
-      max-width: 380px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 12px;
-      position: relative;
-    }
-
-    .btn-google {
-      width: 100%;
-      background: linear-gradient(90deg, #577dff 0%, #4667e6 100%);
-      color: white;
-      font-size: 19px;
-      font-weight: 600;
-      padding: 15px 24px;
-      border-radius: 28px;
-      border: 2px solid #829fff;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 12px;
-      box-shadow: 0 8px 24px rgba(45, 96, 255, 0.45);
-      transition: all 0.25s ease;
-      position: relative;
-      overflow: hidden;
-    }
-    .btn-google:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 12px 30px rgba(70, 120, 255, 0.7);
-      background: linear-gradient(90deg, #688cff 0%, #5275f2 100%);
-    }
-    .btn-google svg {
-      transition: transform 0.2s;
-    }
-    .btn-google:hover svg {
-      transform: translateX(4px);
-    }
-
-    .welcome-or {
-      width: 100%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 16px;
-      color: #7995d9;
-      font-size: 14px;
-      font-weight: 500;
-    }
-    .welcome-or::before, .welcome-or::after {
-      content: '';
-      flex: 1;
-      height: 1px;
-      background: rgba(85, 125, 237, 0.35);
-    }
-
-    /* Continue without account wrapper & sliding warning */
-    .btn-anon-wrapper {
-      width: 100%;
-      position: relative;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-    }
-
-    .btn-anon {
-      width: 100%;
-      background: rgba(80, 95, 125, 0.4);
-      color: #f1f4ff;
-      font-size: 18px;
-      font-weight: 500;
-      padding: 15px 20px;
-      border-radius: 28px;
-      border: 1.5px solid rgba(135, 155, 195, 0.4);
-      cursor: pointer;
-      transition: all 0.25s ease;
-      backdrop-filter: blur(8px);
-      z-index: 2;
-    }
-    .btn-anon:hover {
-      background: rgba(100, 120, 160, 0.55);
-      border-color: rgba(170, 195, 255, 0.7);
-    }
-
-    /* Sliding warning banner below anonymous button */
-    .anon-warning-slide {
-      width: 90%;
-      background: linear-gradient(90deg, #ff1757 0%, #ff0844 100%);
-      color: #ffffff;
-      padding: 7px 16px;
-      border-radius: 0 0 18px 18px;
-      font-size: 12px;
-      font-weight: 500;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      box-shadow: 0 8px 20px rgba(255, 10, 60, 0.4);
-      transform: translateY(-100%);
-      opacity: 0;
-      transition: transform 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28), opacity 0.25s ease;
-      z-index: 1;
-      margin-top: -8px;
-      pointer-events: none;
-    }
-    .btn-anon-wrapper:hover .anon-warning-slide {
-      transform: translateY(0);
-      opacity: 1;
-    }
-
-    .welcome-footer {
-      font-size: 12px;
-      color: rgba(140, 165, 220, 0.45);
-      letter-spacing: 0.5px;
-      margin-top: 16px;
-    }
-
-    /* ========================================================
        2. APP HEADER & NAVIGATION TABS
        ======================================================== */
     .app-header {
@@ -337,12 +144,15 @@
       position: relative;
       transition: all 0.2s;
     }
+
     .header-logo-badge:hover {
       border-color: #5585ff;
       background: rgba(25, 55, 150, 0.6);
       transform: scale(1.05);
     }
-    .header-logo-badge img, .header-logo-badge svg {
+
+    .header-logo-badge img,
+    .header-logo-badge svg {
       width: 28px;
       height: 28px;
       object-fit: contain;
@@ -357,6 +167,7 @@
       padding: 3px;
       gap: 4px;
     }
+
     .nav-tab {
       padding: 6px 14px;
       border-radius: 12px;
@@ -366,9 +177,11 @@
       cursor: pointer;
       transition: all 0.2s;
     }
+
     .nav-tab:hover {
       color: #ffffff;
     }
+
     .nav-tab.active {
       background: linear-gradient(180deg, #184bff 0%, #0d32bb 100%);
       color: #ffffff;
@@ -395,6 +208,7 @@
       box-shadow: 0 4px 12px rgba(52, 92, 245, 0.35);
       transition: all 0.2s;
     }
+
     .btn-logout:hover {
       background: #5d84ff;
       transform: translateY(-1px);
@@ -416,6 +230,7 @@
       transition: all 0.25s ease;
       box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
     }
+
     .btn-icon-gear:hover {
       border-color: #558aff;
       color: white;
@@ -438,6 +253,7 @@
       color: #a4c0ff;
       transition: all 0.2s;
     }
+
     .btn-icon-back:hover {
       border-color: #558aff;
       color: white;
@@ -476,7 +292,9 @@
       transition: all 0.25s ease;
       position: relative;
     }
-    .input-box:hover, .input-box.drag-over {
+
+    .input-box:hover,
+    .input-box.drag-over {
       border-color: #00e5ff;
       box-shadow: 0 0 25px rgba(0, 229, 255, 0.45), inset 0 0 15px rgba(0, 229, 255, 0.2);
     }
@@ -487,6 +305,7 @@
       color: #9cb8ff;
       transition: transform 0.2s;
     }
+
     .input-box:hover .box-center-icon {
       transform: translateY(3px);
       color: #00e5ff;
@@ -498,6 +317,7 @@
       letter-spacing: 2px;
       color: #ffffff;
     }
+
     .box-label-sub {
       font-size: 12px;
       font-weight: 500;
@@ -529,6 +349,7 @@
       gap: 10px;
       transition: all 0.2s;
     }
+
     .file-chip:hover {
       background: rgba(22, 50, 140, 0.95);
       border-color: #558aff;
@@ -548,11 +369,13 @@
       border-radius: 6px;
       letter-spacing: 0.5px;
     }
+
     .file-type-badge.docx {
       background: #1c52f0;
       color: #ffffff;
       box-shadow: 0 2px 6px rgba(28, 82, 240, 0.4);
     }
+
     .file-type-badge.pdf {
       background: #ff1e56;
       color: #ffffff;
@@ -576,6 +399,7 @@
       border-radius: 6px;
       transition: all 0.2s;
     }
+
     .file-chip-delete:hover {
       background: rgba(255, 59, 104, 0.2);
       transform: scale(1.15);
@@ -590,6 +414,7 @@
       gap: 4px;
       margin-top: 2px;
     }
+
     .token-track {
       width: 100%;
       height: 7px;
@@ -598,6 +423,7 @@
       overflow: hidden;
       border: 1px solid rgba(40, 80, 200, 0.25);
     }
+
     .token-fill {
       height: 100%;
       width: 100%;
@@ -605,10 +431,12 @@
       box-shadow: 0 0 10px rgba(255, 234, 0, 0.6);
       transition: width 0.3s ease, background 0.3s ease;
     }
+
     .token-fill.no-key {
       background: linear-gradient(90deg, #ff1756 0%, #ff0044 100%);
       box-shadow: 0 0 10px rgba(255, 23, 86, 0.6);
     }
+
     .token-label {
       font-size: 11px;
       font-weight: 700;
@@ -641,10 +469,12 @@
       transition: all 0.2s ease;
       text-align: center;
     }
+
     .btn-do-work:hover {
       box-shadow: 0 8px 25px rgba(0, 255, 90, 0.6);
       transform: translateY(-1px);
     }
+
     .btn-do-work.confirmed {
       background: linear-gradient(90deg, #00eb55 0%, #00c840 100%);
       border-color: #79ffaa;
@@ -653,8 +483,13 @@
     }
 
     @keyframes pulseGreen {
-      0% { box-shadow: 0 0 15px rgba(0, 235, 85, 0.5); }
-      100% { box-shadow: 0 0 28px rgba(0, 235, 85, 0.9); }
+      0% {
+        box-shadow: 0 0 15px rgba(0, 235, 85, 0.5);
+      }
+
+      100% {
+        box-shadow: 0 0 28px rgba(0, 235, 85, 0.9);
+      }
     }
 
     /* Cancel Button variant */
@@ -663,6 +498,7 @@
       border-color: #ff608c;
       box-shadow: 0 6px 20px rgba(255, 23, 94, 0.45);
     }
+
     .btn-do-work.cancelling:hover {
       box-shadow: 0 8px 25px rgba(255, 23, 94, 0.7);
     }
@@ -688,22 +524,33 @@
       color: var(--gold);
       transition: all 0.25s;
     }
+
     .btn-api-key-ring:hover {
       box-shadow: 0 0 24px rgba(255, 210, 20, 0.8);
       transform: scale(1.05);
     }
-    .btn-api-key-ring.broken, .btn-api-key-ring.missing {
+
+    .btn-api-key-ring.broken,
+    .btn-api-key-ring.missing {
       border-color: #ff1756;
       color: #ff1756;
       box-shadow: 0 0 16px rgba(255, 23, 86, 0.5);
     }
+
     .btn-api-key-ring.flashing {
       animation: flashRed 0.6s infinite alternate;
     }
 
     @keyframes flashRed {
-      0% { border-color: #ff1756; box-shadow: 0 0 10px rgba(255, 23, 86, 0.4); }
-      100% { border-color: #ff608c; box-shadow: 0 0 25px rgba(255, 96, 140, 0.9); }
+      0% {
+        border-color: #ff1756;
+        box-shadow: 0 0 10px rgba(255, 23, 86, 0.4);
+      }
+
+      100% {
+        border-color: #ff608c;
+        box-shadow: 0 0 25px rgba(255, 96, 140, 0.9);
+      }
     }
 
     /* Flyout Box */
@@ -742,6 +589,7 @@
       align-items: center;
       gap: 6px;
     }
+
     .api-key-input {
       flex: 1;
       background: rgba(3, 10, 36, 0.8);
@@ -752,6 +600,7 @@
       font-size: 13px;
       outline: none;
     }
+
     .api-key-input:focus {
       border-color: #00e5ff;
       box-shadow: 0 0 8px rgba(0, 229, 255, 0.4);
@@ -763,16 +612,19 @@
       justify-content: space-between;
       font-size: 11px;
     }
+
     .link-get-key {
       color: #9cbaff;
       text-decoration: none;
       font-weight: 500;
       transition: color 0.2s;
     }
+
     .link-get-key:hover {
       color: #5ce1e6;
       text-decoration: underline;
     }
+
     .btn-load-key {
       background: #1c52f0;
       color: white;
@@ -784,6 +636,7 @@
       cursor: pointer;
       transition: all 0.2s;
     }
+
     .btn-load-key:hover {
       background: #396dff;
     }
@@ -812,11 +665,13 @@
       gap: 8px;
       transition: all 0.2s;
     }
+
     .btn-add-prompt:hover {
       border-color: #558aff;
       color: white;
       background: rgba(20, 50, 140, 0.85);
     }
+
     .btn-add-prompt.file-loaded {
       border-color: #00e5ff;
       color: #00e5ff;
@@ -826,6 +681,7 @@
     .model-selector-wrapper {
       position: relative;
     }
+
     .model-pill-btn {
       background: rgba(10, 26, 80, 0.8);
       border: 2px solid var(--gold);
@@ -842,6 +698,7 @@
       transition: all 0.2s;
       white-space: nowrap;
     }
+
     .model-pill-btn:hover {
       box-shadow: 0 0 16px rgba(255, 210, 20, 0.6);
       border-color: #ffe04d;
@@ -862,9 +719,11 @@
       gap: 8px;
       z-index: 60;
     }
+
     .model-dropdown.show {
       display: flex;
     }
+
     .model-option-card {
       padding: 10px 12px;
       border-radius: 12px;
@@ -873,20 +732,25 @@
       cursor: pointer;
       transition: all 0.2s;
     }
-    .model-option-card:hover, .model-option-card.active {
+
+    .model-option-card:hover,
+    .model-option-card.active {
       background: rgba(30, 70, 180, 0.7);
       border-color: #558aff;
     }
+
     .model-opt-title {
       font-size: 13px;
       font-weight: 700;
       color: #ffffff;
       margin-bottom: 2px;
     }
+
     .model-opt-desc {
       font-size: 11px;
       color: #9cb8ff;
     }
+
     .model-opt-stats {
       font-size: 10px;
       color: #5ce1e6;
@@ -894,6 +758,7 @@
       display: flex;
       gap: 8px;
     }
+
     .model-dropdown-footer {
       font-size: 10px;
       color: #8da4db;
@@ -902,6 +767,7 @@
       display: flex;
       justify-content: space-between;
     }
+
     .model-dropdown-footer a {
       color: #5ce1e6;
       text-decoration: none;
@@ -920,15 +786,18 @@
       transition: all 0.2s;
       box-shadow: 0 2px 8px rgba(13, 44, 161, 0.4);
     }
+
     .drawer-bar:hover {
       background: linear-gradient(90deg, #2453e8 0%, #153bc7 100%);
     }
+
     .drawer-chevron {
       color: #9cb8ff;
       font-size: 14px;
       font-weight: 800;
       transition: transform 0.3s;
     }
+
     .drawer-bar.open .drawer-chevron {
       transform: rotate(180deg);
     }
@@ -947,9 +816,11 @@
       max-height: 220px;
       transition: all 0.3s ease;
     }
+
     .preview-drawer-content.show {
       display: flex;
     }
+
     .preview-tabs {
       background: #d5e0f5;
       display: flex;
@@ -958,6 +829,7 @@
       overflow-x: auto;
       border-bottom: 1px solid #b8cbef;
     }
+
     .preview-tab-btn {
       background: #ffffff;
       border: 1px solid #a9c2f5;
@@ -971,11 +843,13 @@
       align-items: center;
       gap: 6px;
     }
+
     .preview-tab-btn.active {
       background: #1c52f0;
       color: #ffffff;
       border-color: #1c52f0;
     }
+
     .preview-body-text {
       padding: 14px 18px;
       font-size: 14px;
@@ -986,6 +860,7 @@
       user-select: text;
       -webkit-user-select: text;
     }
+
     .preview-body-text.empty {
       color: #6d80a6;
       font-style: italic;
@@ -1008,10 +883,12 @@
       padding: 16px;
       transition: all 0.3s ease;
     }
+
     .output-box:hover {
       border-color: #558aff;
       box-shadow: 0 0 20px rgba(85, 138, 255, 0.3);
     }
+
     .output-box.scaled-down {
       min-height: 60px;
       padding: 8px;
@@ -1025,6 +902,7 @@
       flex-direction: column;
       gap: 8px;
     }
+
     .output-chip {
       width: 100%;
       background: rgba(14, 38, 110, 0.9);
@@ -1036,10 +914,12 @@
       justify-content: space-between;
       transition: all 0.2s;
     }
+
     .output-chip:hover {
       border-color: #00e5ff;
       background: rgba(22, 55, 150, 0.95);
     }
+
     .btn-download-chip {
       background: #1c52f0;
       color: white;
@@ -1053,6 +933,7 @@
       gap: 6px;
       transition: all 0.2s;
     }
+
     .btn-download-chip:hover {
       background: #00e5ff;
       color: #020b29;
@@ -1068,6 +949,7 @@
       gap: 4px;
       margin-top: 4px;
     }
+
     .progress-track {
       width: 100%;
       height: 6px;
@@ -1075,6 +957,7 @@
       border-radius: 3px;
       overflow: hidden;
     }
+
     .progress-fill {
       height: 100%;
       width: 0%;
@@ -1082,6 +965,7 @@
       box-shadow: 0 0 10px rgba(255, 234, 0, 0.7);
       transition: width 0.3s ease;
     }
+
     .progress-status-text {
       font-size: 11px;
       font-weight: 700;
@@ -1107,13 +991,21 @@
       flex-direction: column;
       animation: popIn 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
     }
+
     .popup-toast.show {
       display: flex;
     }
 
     @keyframes popIn {
-      0% { transform: translate(-50%, -50%) scale(0.85); opacity: 0; }
-      100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+      0% {
+        transform: translate(-50%, -50%) scale(0.85);
+        opacity: 0;
+      }
+
+      100% {
+        transform: translate(-50%, -50%) scale(1);
+        opacity: 1;
+      }
     }
 
     .popup-toast.error-toast {
@@ -1136,11 +1028,13 @@
       justify-content: space-between;
       margin-bottom: 8px;
     }
+
     .popup-title {
       font-size: 14px;
       font-weight: 800;
       letter-spacing: 1px;
     }
+
     .popup-close {
       cursor: pointer;
       font-size: 20px;
@@ -1150,9 +1044,11 @@
       border-radius: 6px;
       transition: transform 0.2s;
     }
+
     .popup-close:hover {
       transform: scale(1.2);
     }
+
     .popup-message-row {
       display: flex;
       align-items: center;
@@ -1161,6 +1057,7 @@
       font-weight: 600;
       line-height: 1.3;
     }
+
     .popup-icon {
       font-size: 24px;
     }
@@ -1186,6 +1083,7 @@
       border-bottom: 1px solid rgba(70, 120, 240, 0.25);
       padding-bottom: 8px;
     }
+
     .history-card-title {
       display: flex;
       align-items: center;
@@ -1206,16 +1104,20 @@
       transition: all 0.2s;
       letter-spacing: 0.5px;
     }
-    .btn-delete-all.disabled, .btn-delete-all:disabled {
+
+    .btn-delete-all.disabled,
+    .btn-delete-all:disabled {
       background: rgba(90, 110, 150, 0.35);
       color: #8b9fc8;
       cursor: not-allowed;
     }
+
     .btn-delete-all.active-danger {
       background: linear-gradient(90deg, #ff1756 0%, #e60039 100%);
       color: #ffffff;
       box-shadow: 0 4px 12px rgba(255, 23, 86, 0.4);
     }
+
     .btn-delete-all.active-danger:hover {
       background: #ff2b68;
       transform: translateY(-1px);
@@ -1229,6 +1131,7 @@
       overflow-y: auto;
       padding-right: 4px;
     }
+
     .history-empty-text {
       text-align: center;
       color: #7995d0;
@@ -1247,11 +1150,13 @@
       padding: 6px 10px;
       gap: 8px;
     }
+
     .history-item-actions {
       display: flex;
       align-items: center;
       gap: 6px;
     }
+
     .btn-hist-action {
       background: transparent;
       border: none;
@@ -1262,16 +1167,20 @@
       border-radius: 6px;
       transition: all 0.2s;
     }
+
     .btn-hist-action:hover {
       color: white;
       background: rgba(70, 120, 255, 0.3);
     }
+
     .btn-hist-action.delete {
       color: #ff3b68;
     }
+
     .btn-hist-action.delete:hover {
       background: rgba(255, 59, 104, 0.25);
     }
+
     .btn-hist-action.is-default {
       color: #00e575 !important;
     }
@@ -1291,6 +1200,7 @@
       justify-content: center;
       padding: 20px;
     }
+
     .modal-overlay.show {
       display: flex;
     }
@@ -1317,12 +1227,14 @@
       align-items: center;
       justify-content: space-between;
     }
+
     .notice-modal-title {
       font-size: 17px;
       font-weight: 800;
       letter-spacing: 2px;
       color: #ffffff;
     }
+
     .notice-modal-msg {
       font-size: 15px;
       font-weight: 600;
@@ -1339,6 +1251,7 @@
       width: 100%;
       margin-top: 6px;
     }
+
     .btn-anti-back {
       flex: 1;
       background: linear-gradient(90deg, #00d254 0%, #00b038 100%);
@@ -1351,9 +1264,11 @@
       cursor: pointer;
       transition: all 0.2s;
     }
+
     .btn-anti-back:hover {
       box-shadow: 0 0 16px rgba(0, 210, 84, 0.6);
     }
+
     .btn-anti-confirm {
       flex: 1;
       background: linear-gradient(90deg, #ff1756 0%, #cc0033 100%);
@@ -1366,6 +1281,7 @@
       cursor: pointer;
       transition: all 0.2s;
     }
+
     .btn-anti-confirm:hover {
       box-shadow: 0 0 16px rgba(255, 23, 86, 0.7);
     }
@@ -1402,6 +1318,7 @@
       flex-direction: column;
       gap: 10px;
     }
+
     .setting-category-tag {
       font-size: 12px;
       font-weight: 700;
@@ -1420,6 +1337,7 @@
       padding: 12px 16px;
       gap: 12px;
     }
+
     .setting-label {
       font-size: 14px;
       font-weight: 600;
@@ -1440,6 +1358,7 @@
       border: 2px solid #ffffff;
       cursor: pointer;
     }
+
     .color-hex-input {
       width: 90px;
       background: rgba(3, 10, 36, 0.8);
@@ -1464,10 +1383,12 @@
       border: none;
       transition: all 0.2s;
     }
+
     .btn-toggle-switch.on {
       background: linear-gradient(90deg, #00d254 0%, #00b038 100%);
       box-shadow: 0 0 10px rgba(0, 210, 84, 0.4);
     }
+
     .btn-toggle-switch.off {
       background: linear-gradient(90deg, #ff1756 0%, #e60039 100%);
       box-shadow: 0 0 10px rgba(255, 23, 86, 0.4);
@@ -1488,12 +1409,14 @@
       transition: all 0.2s;
       font-size: 14px;
     }
+
     .btn-setting-reset.is-modified {
       background: rgba(30, 80, 240, 0.35);
       border-color: #558aff;
       color: #558aff;
       box-shadow: 0 0 10px rgba(85, 138, 255, 0.4);
     }
+
     .btn-setting-reset:hover {
       transform: rotate(-45deg);
     }
@@ -1507,6 +1430,7 @@
       height: 100%;
       gap: 16px;
     }
+
     .about-screen-title {
       font-size: 20px;
       font-weight: 700;
@@ -1527,13 +1451,21 @@
       position: relative;
       animation: fadeIn 0.3s ease;
     }
+
     .about-slide-card.active {
       display: flex;
     }
 
     @keyframes fadeIn {
-      0% { opacity: 0; transform: translateY(6px); }
-      100% { opacity: 1; transform: translateY(0); }
+      0% {
+        opacity: 0;
+        transform: translateY(6px);
+      }
+
+      100% {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
 
     .about-sub-header {
@@ -1572,6 +1504,7 @@
       margin-bottom: 10px;
       box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
     }
+
     .dolan-credit-banner h3 {
       font-size: 17px;
       color: #194bfb;
@@ -1592,6 +1525,7 @@
       box-shadow: 0 4px 15px rgba(255, 230, 0, 0.4);
       transition: all 0.2s;
     }
+
     .btn-anything-else:hover {
       background: #ffec33;
       transform: translateY(-2px);
@@ -1609,6 +1543,7 @@
       box-shadow: 0 8px 24px rgba(255, 230, 0, 0.35);
       margin-top: 10px;
     }
+
     .btn-slide-back {
       background: #092068;
       color: #ffffff;
@@ -1633,6 +1568,7 @@
       gap: 14px;
       margin-top: 8px;
     }
+
     .carousel-dot {
       width: 12px;
       height: 12px;
@@ -1641,6 +1577,7 @@
       cursor: pointer;
       transition: all 0.25s;
     }
+
     .carousel-dot.active {
       width: 28px;
       background: #558aff;
@@ -1662,9 +1599,11 @@
       justify-content: center;
       padding: 20px;
     }
+
     .prompt-modal-overlay.show {
       display: flex;
     }
+
     .prompt-modal-card {
       width: 100%;
       max-width: 440px;
@@ -1676,6 +1615,7 @@
       flex-direction: column;
       gap: 12px;
     }
+
     .prompt-textarea {
       width: 100%;
       height: 110px;
@@ -1689,6 +1629,7 @@
       resize: none;
       font-family: inherit;
     }
+
     .prompt-textarea:focus {
       border-color: #00e5ff;
     }
@@ -1698,26 +1639,31 @@
       width: 6px;
       height: 6px;
     }
+
     ::-webkit-scrollbar-track {
       background: rgba(5, 15, 45, 0.5);
       border-radius: 3px;
     }
+
     ::-webkit-scrollbar-thumb {
       background: rgba(60, 110, 240, 0.5);
       border-radius: 3px;
     }
+
     ::-webkit-scrollbar-thumb:hover {
       background: #558aff;
     }
   </style>
 </head>
+
 <body>
 
   <div class="app-viewport">
-    
+
     <!-- Watermark Background 3D A Logo -->
     <div class="bg-watermark-logo" id="bgWatermarkLogo">
-      <img src="ASTAR logo/logo.png" alt="A* Logo Watermark" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 100 100\'><text y=\'.9em\' font-size=\'90\'>⭐</text></svg>'">
+      <img src="ASTAR logo/logo.png" alt="A* Logo Watermark"
+        onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 100 100\'><text y=\'.9em\' font-size=\'90\'>⭐</text></svg>'">
     </div>
 
     <!-- Hidden native file inputs -->
@@ -1725,51 +1671,10 @@
     <input type="file" id="promptFileInput" accept=".docx,.pdf,.txt,.md" style="display:none;">
 
     <!-- ========================================================
-         VIEW 1: WELCOME SCREEN (Pages 1, 2, 60)
-         ======================================================== -->
-    <div class="view-layer welcome-screen" id="welcomeView">
-      <div class="welcome-header">
-        <h1>W E L C O M E</h1>
-        <div class="to-text">To</div>
-        <h2>A* - the homework destroyer</h2>
-      </div>
-
-      <div class="welcome-logo-center">
-        <img src="ASTAR logo/logo.png" alt="A* Homework Destroyer Logo">
-      </div>
-
-      <div class="welcome-actions">
-        <!-- Continue with Google Button -->
-        <button class="btn-google" id="btnContinueGoogle">
-          <span>continue with google</span>
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="5" y1="12" x2="19" y2="12"></line>
-            <polyline points="12 5 19 12 12 19"></polyline>
-          </svg>
-        </button>
-
-        <div class="welcome-or">or</div>
-
-        <!-- Continue without an Account + Sliding Warning Banner -->
-        <div class="btn-anon-wrapper">
-          <button class="btn-anon" id="btnContinueAnon">continue without an account</button>
-          <div class="anon-warning-slide">
-            <span>🔑</span>
-            <span>⚠️ (i) your API key will not be save...</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="welcome-footer">
-        this is a vibe coded program by phumtas [v1.0]
-      </div>
-    </div>
-
-    <!-- ========================================================
          MAIN APP SHELL (Header + Views)
          ======================================================== -->
-    <div class="view-layer hidden" id="mainAppView">
-      
+    <div class="view-layer" id="mainAppView">
+
       <!-- Top Navigation Header -->
       <header class="app-header">
         <div class="header-left">
@@ -1800,7 +1705,7 @@
            TAB 1: HOME VIEW
            ==================================================== -->
       <div class="app-body" id="homeView">
-        
+
         <!-- Dropzone / Input Box (Page 55) -->
         <div class="input-box" id="dropzoneInput">
           <div id="dropzoneEmptyContent" style="display: flex; flex-direction: column; align-items: center;">
@@ -1833,10 +1738,12 @@
             <!-- Flyout box -->
             <div class="api-key-flyout" id="apiKeyFlyout">
               <div class="api-key-input-row">
-                <input type="password" class="api-key-input" id="apiKeyInputField" placeholder="Your API key (AI Studio)...">
+                <input type="password" class="api-key-input" id="apiKeyInputField"
+                  placeholder="Your API key (AI Studio)...">
               </div>
               <div class="api-key-links">
-                <a href="https://aistudio.google.com/app/apikey" target="_blank" class="link-get-key">don't have one?</a>
+                <a href="https://aistudio.google.com/app/apikey" target="_blank" class="link-get-key">don't have
+                  one?</a>
                 <button class="btn-load-key" id="btnLoadApiKey">load API key</button>
               </div>
             </div>
@@ -1917,7 +1824,7 @@
            TAB 2: HISTORY VIEW (Pages 4, 12, 62, 64, 65)
            ==================================================== -->
       <div class="app-body hidden" id="historyView">
-        
+
         <!-- Uploaded Files Section -->
         <div class="history-card">
           <div class="history-card-header">
@@ -2003,7 +1910,8 @@
 
             <!-- Dolan Miu Credit Banner -->
             <div class="dolan-credit-banner">
-              <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #555;">Note: this project will not be possible without</div>
+              <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #555;">Note: this
+                project will not be possible without</div>
               <h3>DOCX by Dolan Miu</h3>
               <div style="font-size: 11px; color: #ff1e56;">thank you &lt;3</div>
             </div>
@@ -2024,13 +1932,17 @@
             </button>
 
             <div class="story-card">
-              "if you have a dream don't wait or waste another school break, Do it when you can use your free time never give up one day you will be successful and keep trying"
+              "if you have a dream don't wait or waste another school break, Do it when you can use your free time never
+              give up one day you will be successful and keep trying"
               <div style="margin-top: 10px; text-align: right; font-weight: 800;">- phumtas</div>
-              <div style="font-size: 11px; font-weight: 500; color: #555; margin-top: 4px; text-align: right;">i wrote this by hand [no ai]</div>
+              <div style="font-size: 11px; font-weight: 500; color: #555; margin-top: 4px; text-align: right;">i wrote
+                this by hand [no ai]</div>
             </div>
 
-            <div style="margin-top: 14px; font-size: 13px; color: #e5edff; line-height: 1.5; background: rgba(14, 38, 110, 0.6); padding: 12px; border-radius: 12px;">
-              and... yes this website was made by a 14 year old in thailand inside his bedroom with a 12 year old computer
+            <div
+              style="margin-top: 14px; font-size: 13px; color: #e5edff; line-height: 1.5; background: rgba(14, 38, 110, 0.6); padding: 12px; border-radius: 12px;">
+              and... yes this website was made by a 14 year old in thailand inside his bedroom with a 12 year old
+              computer
             </div>
 
             <div style="margin-top: auto; text-align: right; font-weight: 800; color: #9cb5ff;">V 1.0</div>
@@ -2091,7 +2003,8 @@
           <h3 style="font-size:16px; font-weight:700;">Add Prompt Instructions</h3>
           <span class="popup-close" id="btnClosePromptModal">&times;</span>
         </div>
-        <textarea class="prompt-textarea" id="customPromptInput" placeholder="Add custom guidance for answering the homework (e.g. 'Show full step-by-step working for math problems')..."></textarea>
+        <textarea class="prompt-textarea" id="customPromptInput"
+          placeholder="Add custom guidance for answering the homework (e.g. 'Show full step-by-step working for math problems')..."></textarea>
         <div style="display:flex; justify-content:space-between; align-items:center;">
           <button class="btn-load-key" id="btnAttachPromptFile">Attach Source/Ref File</button>
           <button class="btn-load-key" id="btnSavePromptModal" style="background:#00c853;">Save Prompt</button>
@@ -2152,7 +2065,7 @@
        JAVASCRIPT APPLICATION LOGIC
        ======================================================== -->
   <script>
-    (function() {
+    (function () {
       'use strict';
 
       // ----------------------------------------------------
@@ -2167,12 +2080,12 @@
         currentModel: 'Gemini 3.5 Flash Lite', // default per Page 55
         customPromptText: '',
         promptAttachedFile: null,
-        
+
         uploadedFiles: [], // [{ id, name, type: 'docx'|'pdf', rawBytes, text }]
         outputFiles: [],   // [{ id, name, blob, originalName }]
         savedApiKeys: JSON.parse(localStorage.getItem('ASTAR_SAVED_KEYS') || '[]'),
         defaultApiKey: localStorage.getItem('ASTAR_DEFAULT_API_KEY') || '',
-        
+
         doWorkState: 'idle', // 'idle' ('DO WORK ?') | 'confirm' ('DO WORK') | 'working' | 'cancel_confirm'
         isCancelling: false,
         doWorkTimer: null,
@@ -2192,10 +2105,7 @@
       // DOM REFERENCES
       // ----------------------------------------------------
       const dom = {
-        welcomeView: document.getElementById('welcomeView'),
         mainAppView: document.getElementById('mainAppView'),
-        btnContinueGoogle: document.getElementById('btnContinueGoogle'),
-        btnContinueAnon: document.getElementById('btnContinueAnon'),
 
         headerLogoBadge: document.getElementById('headerLogoBadge'),
         navTabs: document.querySelectorAll('.nav-tab'),
@@ -2292,6 +2202,8 @@
       // ----------------------------------------------------
       function init() {
         setupEventListeners();
+        setAuthMode('anonymous');
+        switchTab('home');
         checkInitialAuth();
         applyStoredSettings();
         updateApiKeyVisuals();
@@ -2302,7 +2214,7 @@
         // If loaded inside Google Apps Script, check server session & saved API key
         if (typeof google !== 'undefined' && google.script && google.script.run) {
           google.script.run
-            .withSuccessHandler(function(info) {
+            .withSuccessHandler(function (info) {
               if (info && info.isLoggedIn) {
                 state.userEmail = info.email;
                 setAuthMode('google');
@@ -2311,7 +2223,7 @@
             .getUserInfo();
 
           google.script.run
-            .withSuccessHandler(function(res) {
+            .withSuccessHandler(function (res) {
               if (res && res.success && res.apiKey) {
                 if (!state.apiKey) {
                   state.apiKey = res.apiKey;
@@ -2358,11 +2270,10 @@
       //  the logout button will not appear in the ui"
       // ----------------------------------------------------
       function setAuthMode(mode) {
-        state.authMode = mode;
-        dom.welcomeView.classList.add('hidden');
-        dom.mainAppView.classList.remove('hidden');
+        state.authMode = mode || 'anonymous';
+        if (dom.mainAppView) dom.mainAppView.classList.remove('hidden');
 
-        if (mode === 'anonymous') {
+        if (state.authMode === 'anonymous') {
           // RULE: Logout button MUST NOT appear
           dom.headerBtnLogout.classList.add('hidden');
         } else {
@@ -2374,10 +2285,10 @@
       }
 
       function logout() {
-        state.authMode = null;
+        state.authMode = 'anonymous';
         state.userEmail = '';
-        dom.mainAppView.classList.add('hidden');
-        dom.welcomeView.classList.remove('hidden');
+        dom.headerBtnLogout.classList.add('hidden');
+        showSuccessToast('Logged out');
       }
 
       // ----------------------------------------------------
@@ -2528,11 +2439,103 @@
         }
       }
 
+      // ----------------------------------------------------
+      // LOCAL DEVICE STORAGE HELPERS
+      // Saves directly to local folders: 'saved API key', 'outputted files', 'uploaded files'
+      // ----------------------------------------------------
+      function arrayBufferToBase64(buffer) {
+        let binary = '';
+        const bytes = new Uint8Array(buffer);
+        const len = bytes.byteLength;
+        for (let i = 0; i < len; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        return window.btoa(binary);
+      }
+
+      async function saveLocalFile(category, fileName, base64Content, textContent) {
+        try {
+          await fetch('/api/save-local', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              category: category,
+              fileName: fileName,
+              contentBase64: base64Content,
+              text: textContent
+            })
+          });
+        } catch (e) {
+          // Silent fallback if server not running (direct file mode)
+        }
+      }
+
+      async function deleteLocalFile(category, fileName) {
+        try {
+          await fetch('/api/delete-local', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              category: category,
+              fileName: fileName || 'all'
+            })
+          });
+        } catch (e) {
+          // Silent fallback
+        }
+      }
+
+      // ----------------------------------------------------
+      // AUTO-DELETE "SAVED API KEY" FOLDER WHEN INDEX.HTML IS CLOSED
+      // ----------------------------------------------------
+      function clearSavedApiKeysFolder() {
+        const payload = JSON.stringify({ category: 'api_key', fileName: 'all' });
+        const endpoint = (window.location.protocol === 'http:' || window.location.protocol === 'https:')
+          ? '/api/delete-local?category=api_key&fileName=all'
+          : 'http://localhost:3000/api/delete-local?category=api_key&fileName=all';
+
+        // 1. Primary: navigator.sendBeacon guarantees transmission on page unload / tab close
+        if (navigator.sendBeacon) {
+          try {
+            const blob = new Blob([payload], { type: 'application/json' });
+            navigator.sendBeacon(endpoint, blob);
+          } catch (e) {
+            try {
+              navigator.sendBeacon(endpoint, payload);
+            } catch (e2) {}
+          }
+        }
+
+        // 2. Secondary fallback: keepalive fetch (guaranteed to complete after page unloads)
+        try {
+          fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: payload,
+            keepalive: true
+          }).catch(() => {});
+        } catch (e) {}
+
+        // 3. GAS UserProperties cleanup if running inside Google Apps Script
+        if (typeof google !== 'undefined' && google.script && google.script.run) {
+          try {
+            google.script.run.deleteSavedApiKey();
+          } catch (e) {}
+        }
+      }
+
+      // Attach event listeners for window/tab close and page unload
+      window.addEventListener('pagehide', clearSavedApiKeysFolder);
+      window.addEventListener('beforeunload', clearSavedApiKeysFolder);
+
       function saveApiKeyToStore(key) {
         if (!key) return;
         key = key.trim().replace(/^['"\s]+|['"\s]+$/g, '');
         state.apiKey = key;
         localStorage.setItem('ASTAR_ACTIVE_API_KEY', key);
+
+        // Save locally to "saved API key" folder on user device
+        saveLocalFile('api_key', 'api_key.txt', null, key);
 
         // Also persist to Apps Script UserProperties if running in GAS
         if (typeof google !== 'undefined' && google.script && google.script.run) {
@@ -2568,7 +2571,7 @@
       // ----------------------------------------------------
       function showErrorToast(code, message, icon) {
         if (state.toastTimer) clearTimeout(state.toastTimer);
-        
+
         dom.errorToastCode.textContent = 'ERROR [' + (code || 'ERR') + ']';
         dom.errorToastText.textContent = message;
         dom.errorToastIcon.textContent = icon || '⚠️';
@@ -2586,7 +2589,7 @@
 
       function showSuccessToast(message) {
         if (state.toastTimer) clearTimeout(state.toastTimer);
-        
+
         dom.successToastText.textContent = message || 'Now you can download it!';
         dom.successToast.classList.add('show');
         dom.errorToast.classList.remove('show');
@@ -2634,6 +2637,9 @@
 
           state.uploadedFiles.push(fileItem);
           addedCount++;
+
+          // Save locally to "uploaded files" folder on user device
+          saveLocalFile('uploaded', file.name, arrayBufferToBase64(arrayBuffer));
         }
 
         if (addedCount > 0) {
@@ -2643,18 +2649,42 @@
         }
       }
 
+      // ----------------------------------------------------
+      // ALGORITHM: EMPTY TEXT & PLACEHOLDER CLEANING (Algorithm[V.2].png)
+      // "delete all empty text like '_', '.', ' ' and replace with 'space'"
+      // ----------------------------------------------------
+      const EMPTY_TEXT_CHAR_CLASS = '[.\\u2026\\uFF0E\\u00B7\\u2022_\\uFF3F\\u2013\\u2014\\u2012\\u2015\\u2500\\u002D\\uFE4F\\uFE4D\\uFE4C\\s\\u00A0]';
+      const IS_EMPTY_TEXT_REGEX = new RegExp(`^${EMPTY_TEXT_CHAR_CLASS}*$`);
+
+      function isPlaceholderText(str) {
+        if (!str) return true;
+        const trimmed = str.trim();
+        if (trimmed.length === 0) return true;
+        return IS_EMPTY_TEXT_REGEX.test(trimmed);
+      }
+
+      function cleanEmptyTextMarkers(text) {
+        if (!text) return '';
+        return text
+          // Replace sequences of 2+ dots, ellipses, middle dots with 1 space
+          .replace(/[.\u2026\uFF0E\u00B7\u2022]{2,}/g, ' ')
+          // Replace sequences of 2+ underscores, dashes with 2 spaces
+          .replace(/[_\uFF3F\u2013\u2014\u2012\u2015\u2500\u002D\uFE4F\uFE4D\uFE4C]{2,}/g, '  ')
+          // Remove lines that are purely empty text / placeholders
+          .replace(new RegExp(`^[ \\t${EMPTY_TEXT_CHAR_CLASS}]+$`, 'gm'), '')
+          // Collapse excess empty lines (max 2)
+          .replace(/\n{3,}/g, '\n\n')
+          .trim();
+      }
+
       function applyAlgorithmTextClean(rawText) {
         if (!rawText) return '';
-        // Rule from Algorithm[V.2].png:
+        // Rule from Algorithm[V.2].png & User Request:
         // "delete all empty text like '_', '.', ' ' and replace with 'space':
-        //  if it a '.' replace with 1 space
+        //  if it a '.' (or '…') replace with 1 space
         //  if it a '_' replace with 2 space
         //  if the empty text eat a line in a page replace with 1 enter"
-        let cleaned = rawText
-          .replace(/[.]{2,}/g, ' ')   // dots replaced with space
-          .replace(/_{2,}/g, '  ')    // underscores replaced with 2 spaces
-          .replace(/^[ \t._]+$/gm, '\n'); // empty text eating a line -> 1 enter
-        return cleaned;
+        return cleanEmptyTextMarkers(rawText);
       }
 
       async function extractDocxText(arrayBuffer) {
@@ -2672,8 +2702,15 @@
               for (const child of Array.from(body.childNodes)) {
                 const nodeName = child.nodeName || child.localName || '';
                 if (nodeName.endsWith('p')) {
-                  const text = (child.textContent || '').trim();
-                  if (text) lines.push(text);
+                  const rawText = (child.textContent || '').trim();
+                  if (rawText) {
+                    if (isPlaceholderText(rawText)) {
+                      // Pure placeholder line (dots/underscores only) — skip so it doesn't pollute the prompt
+                      continue;
+                    }
+                    const cleanedP = cleanEmptyTextMarkers(rawText);
+                    if (cleanedP) lines.push(cleanedP);
+                  }
                 } else if (nodeName.endsWith('tbl')) {
                   // Format table so LLM sees columns and empty cells to fill
                   lines.push('\n[TABLE TO FILL IN]');
@@ -2682,7 +2719,10 @@
                     const cells = Array.from(rows[r].getElementsByTagName('w:tc'));
                     const cellTexts = cells.map((c, cIdx) => {
                       const t = (c.textContent || '').trim();
-                      return t ? t : `[BLANK COLUMN ${cIdx + 1} TO FILL]`;
+                      if (!t || isPlaceholderText(t)) {
+                        return `[BLANK COLUMN ${cIdx + 1} TO FILL]`;
+                      }
+                      return cleanEmptyTextMarkers(t);
                     });
                     if (r === 0) {
                       lines.push(`Header Columns: ${cellTexts.join(' | ')}`);
@@ -2769,6 +2809,10 @@
       }
 
       function removeUploadedFile(id) {
+        const fileToRemove = state.uploadedFiles.find(f => f.id === id);
+        if (fileToRemove) {
+          deleteLocalFile('uploaded', fileToRemove.name);
+        }
         state.uploadedFiles = state.uploadedFiles.filter(f => f.id !== id);
         renderUploadedChips();
         updatePreviewDrawer();
@@ -2942,9 +2986,9 @@
                 if (verifyAttempts < 2) {
                   updateProgress(pctBase + 55, `Refining answers based on verification feedback...`);
                   answers = await callGeminiSolver(
-                    cleanProblemText, 
-                    sourceRefText, 
-                    (state.customPromptText ? state.customPromptText + '\n' : '') + 
+                    cleanProblemText,
+                    sourceRefText,
+                    (state.customPromptText ? state.customPromptText + '\n' : '') +
                     `Previous answer verification feedback: ${verifyResult.feedback}. Please correct these mistakes.`
                   );
                 }
@@ -2968,6 +3012,15 @@
             };
 
             state.outputFiles.push(outputItem);
+
+            // Automatically save to local device "outputted files" folder!
+            try {
+              const outBuffer = await outputDocxBlob.arrayBuffer();
+              saveLocalFile('outputted', outFileName, arrayBufferToBase64(outBuffer));
+            } catch (saveErr) { }
+
+            // Also trigger local browser download to user's device
+            downloadBlob(outputDocxBlob, outFileName);
           }
 
           if (state.isCancelling) {
@@ -3100,7 +3153,7 @@ Is this 100% accurate?`;
         if (typeof google !== 'undefined' && google.script && google.script.run) {
           return new Promise((resolve, reject) => {
             google.script.run
-              .withSuccessHandler(function(res) {
+              .withSuccessHandler(function (res) {
                 if (res && res.data && res.data.candidates && res.data.candidates[0] && res.data.candidates[0].content && res.data.candidates[0].content.parts && res.data.candidates[0].content.parts[0] && res.data.candidates[0].content.parts[0].text) {
                   resolve(res.data.candidates[0].content.parts[0].text);
                 } else if (res && (res.error || (res.data && res.data.error))) {
@@ -3118,7 +3171,7 @@ Is this 100% accurate?`;
                   reject(err);
                 }
               })
-              .withFailureHandler(function(serverErr) {
+              .withFailureHandler(function (serverErr) {
                 const err = new Error(serverErr && serverErr.message ? serverErr.message : (serverErr ? serverErr.toString() : 'Server call failed'));
                 err.status = 500;
                 reject(err);
@@ -3158,9 +3211,9 @@ Is this 100% accurate?`;
               lastError = new Error(msg);
               lastError.status = proxyRes.status;
               const isInvalidKey = (proxyRes.status === 400 || proxyRes.status === 401 || proxyRes.status === 403) && (
-                msg.includes('API_KEY_INVALID') || 
-                msg.includes('API key not valid') || 
-                msg.includes('key not valid') || 
+                msg.includes('API_KEY_INVALID') ||
+                msg.includes('API key not valid') ||
+                msg.includes('key not valid') ||
                 JSON.stringify(errData).includes('API_KEY_INVALID')
               );
               if (isInvalidKey) throw lastError;
@@ -3193,9 +3246,9 @@ Is this 100% accurate?`;
                 lastError = new Error(msg);
                 lastError.status = directRes.status;
                 const isInvalidKey = (directRes.status === 400 || directRes.status === 401 || directRes.status === 403) && (
-                  msg.includes('API_KEY_INVALID') || 
-                  msg.includes('API key not valid') || 
-                  msg.includes('key not valid') || 
+                  msg.includes('API_KEY_INVALID') ||
+                  msg.includes('API key not valid') ||
+                  msg.includes('key not valid') ||
                   JSON.stringify(errData).includes('API_KEY_INVALID')
                 );
                 if (isInvalidKey) throw lastError;
@@ -3215,12 +3268,12 @@ Is this 100% accurate?`;
         const msg = err.message || '';
 
         if (
-          status === 400 || 
-          status === 401 || 
+          status === 400 ||
+          status === 401 ||
           status === 403 ||
-          msg.includes('API_KEY_INVALID') || 
-          msg.includes('key not valid') || 
-          msg.includes('API key not valid') || 
+          msg.includes('API_KEY_INVALID') ||
+          msg.includes('key not valid') ||
+          msg.includes('API key not valid') ||
           msg.includes('API key is missing') ||
           msg.includes('API key error')
         ) {
@@ -3252,7 +3305,7 @@ Is this 100% accurate?`;
             blanks = parsed.blanks || [];
             if (tableRows.length > 0) return { tableRows, blanks, source: 'json' };
           }
-        } catch (e) {}
+        } catch (e) { }
 
         // 2. Check for Markdown table rows fallback
         const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
@@ -3289,17 +3342,32 @@ Is this 100% accurate?`;
       }
 
       function insertTextIntoCell(xmlDoc, cell, text, colorHex, ns) {
-        let p = cell.getElementsByTagName('w:p')[0];
+        const paragraphs = Array.from(cell.getElementsByTagName('w:p'));
+        let p = paragraphs[0];
         if (!p) {
           p = xmlDoc.createElementNS(ns, 'w:p');
           cell.appendChild(p);
         } else {
-          // Clear any empty or placeholder text runs, keep paragraph properties
+          // Clear any empty or placeholder text runs from the first paragraph, keep paragraph properties (pPr)
           const children = Array.from(p.childNodes);
           for (const ch of children) {
             const name = ch.nodeName || ch.localName || '';
             if (!name.endsWith('pPr')) {
               p.removeChild(ch);
+            }
+          }
+        }
+
+        // Also delete placeholder text runs from any subsequent paragraphs in this cell
+        for (let i = 1; i < paragraphs.length; i++) {
+          const extraP = paragraphs[i];
+          if (isPlaceholderText(extraP.textContent)) {
+            const extraChildren = Array.from(extraP.childNodes);
+            for (const ch of extraChildren) {
+              const name = ch.nodeName || ch.localName || '';
+              if (!name.endsWith('pPr')) {
+                extraP.removeChild(ch);
+              }
             }
           }
         }
@@ -3313,15 +3381,15 @@ Is this 100% accurate?`;
           const rPr = xmlDoc.createElementNS(ns, 'w:rPr');
 
           const color = xmlDoc.createElementNS(ns, 'w:color');
-          color.setAttributeNS(ns, 'w:val', colorHex);
+          color.setAttribute('w:val', colorHex);
           rPr.appendChild(color);
 
           const sz = xmlDoc.createElementNS(ns, 'w:sz');
-          sz.setAttributeNS(ns, 'w:val', '24');
+          sz.setAttribute('w:val', '24');
           rPr.appendChild(sz);
 
           const szCs = xmlDoc.createElementNS(ns, 'w:szCs');
-          szCs.setAttributeNS(ns, 'w:val', '24');
+          szCs.setAttribute('w:val', '24');
           rPr.appendChild(szCs);
 
           r.appendChild(rPr);
@@ -3339,18 +3407,20 @@ Is this 100% accurate?`;
         const runs = Array.from(p.getElementsByTagName('w:r'));
         let replaced = false;
 
+        const blankRegex = /[.\u2026\uFF0E\u00B7\u2022]{2,}|[_\uFF3F\u2013\u2014\u2012\u2015\u2500\u002D\uFE4F\uFE4D\uFE4C]{2,}/;
+
         for (const r of runs) {
           const tNodes = Array.from(r.getElementsByTagName('w:t'));
           for (const t of tNodes) {
-            if (/[.]{3,}|_{3,}/.test(t.textContent)) {
-              t.textContent = t.textContent.replace(/[.]{3,}|_{3,}/, text);
+            if (blankRegex.test(t.textContent)) {
+              t.textContent = t.textContent.replace(blankRegex, text);
               let rPr = r.getElementsByTagName('w:rPr')[0];
               if (!rPr) {
                 rPr = xmlDoc.createElementNS(ns, 'w:rPr');
                 r.insertBefore(rPr, r.firstChild);
               }
               const color = xmlDoc.createElementNS(ns, 'w:color');
-              color.setAttributeNS(ns, 'w:val', colorHex);
+              color.setAttribute('w:val', colorHex);
               rPr.appendChild(color);
               replaced = true;
               break;
@@ -3363,7 +3433,7 @@ Is this 100% accurate?`;
           const r = xmlDoc.createElementNS(ns, 'w:r');
           const rPr = xmlDoc.createElementNS(ns, 'w:rPr');
           const color = xmlDoc.createElementNS(ns, 'w:color');
-          color.setAttributeNS(ns, 'w:val', colorHex);
+          color.setAttribute('w:val', colorHex);
           rPr.appendChild(color);
           r.appendChild(rPr);
 
@@ -3404,15 +3474,15 @@ Is this 100% accurate?`;
                     const row = rows[r];
                     const cells = Array.from(row.getElementsByTagName('w:tc'));
 
-                    // Check if row has empty cells (header rows usually have text; data rows are blank)
-                    const isAllEmpty = cells.every(c => c.textContent.trim().length === 0);
-                    const isPartiallyEmpty = cells.some(c => c.textContent.trim().length === 0);
+                    // Check if row has empty or placeholder cells
+                    const isAllEmpty = cells.every(c => isPlaceholderText(c.textContent));
+                    const isPartiallyEmpty = cells.some(c => isPlaceholderText(c.textContent));
 
                     if ((isAllEmpty || (r > 0 && isPartiallyEmpty)) && answerRowIdx < parsed.tableRows.length) {
                       const ansRow = parsed.tableRows[answerRowIdx++];
                       for (let c = 0; c < cells.length; c++) {
                         const cell = cells[c];
-                        if (cell.textContent.trim().length === 0 && c < ansRow.length) {
+                        if (isPlaceholderText(cell.textContent) && c < ansRow.length) {
                           insertTextIntoCell(xmlDoc, cell, ansRow[c], cleanHex, W_NS);
                           filledCount++;
                         }
@@ -3425,6 +3495,7 @@ Is this 100% accurate?`;
               // 2. IN-PLACE PARAGRAPH BLANK FILLING (outside tables)
               const paragraphs = Array.from(xmlDoc.getElementsByTagName('w:p'));
               let blankIdx = 0;
+              const blankPattern = /[.\u2026\uFF0E\u00B7\u2022]{2,}|[_\uFF3F\u2013\u2014\u2012\u2015\u2500\u002D\uFE4F\uFE4D\uFE4C]{2,}/;
               for (const p of paragraphs) {
                 let parent = p.parentNode;
                 let inTable = false;
@@ -3439,7 +3510,7 @@ Is this 100% accurate?`;
                 if (inTable) continue;
 
                 const text = p.textContent || '';
-                if (/[.]{3,}|_{3,}/.test(text) && parsed.blanks && blankIdx < parsed.blanks.length) {
+                if (blankPattern.test(text) && parsed.blanks && blankIdx < parsed.blanks.length) {
                   insertTextIntoBlankParagraph(xmlDoc, p, parsed.blanks[blankIdx++], cleanHex, W_NS);
                   filledCount++;
                 }
@@ -3782,7 +3853,7 @@ Is this 100% accurate?`;
         if (targetType === 'api_keys') targetName = 'saved API key';
 
         dom.antiSpamModalMsg.textContent = `this will delete all ${targetName} from the web PERMANENTLY. ARE YOU SURE?`;
-        
+
         // Initial button configuration: [BACK] then [COMFIRM?]
         renderAntiSpamButtons(false);
         dom.antiSpamModalOverlay.classList.add('show');
@@ -3819,13 +3890,16 @@ Is this 100% accurate?`;
       function handleAntiSpamFinalClick() {
         // Execute deletion
         if (state.antiSpamTarget === 'uploaded') {
+          deleteLocalFile('uploaded', 'all');
           state.uploadedFiles = [];
           renderUploadedChips();
           updatePreviewDrawer();
         } else if (state.antiSpamTarget === 'outputted') {
+          deleteLocalFile('outputted', 'all');
           state.outputFiles = [];
           renderOutputFiles();
         } else if (state.antiSpamTarget === 'api_keys') {
+          deleteLocalFile('api_key', 'all');
           state.savedApiKeys = [];
           state.defaultApiKey = '';
           localStorage.removeItem('ASTAR_SAVED_KEYS');
@@ -3880,11 +3954,7 @@ Is this 100% accurate?`;
       // EVENT LISTENERS SETUP
       // ----------------------------------------------------
       function setupEventListeners() {
-        // 1. Welcome screen buttons
-        dom.btnContinueGoogle.addEventListener('click', () => setAuthMode('google'));
-        dom.btnContinueAnon.addEventListener('click', () => setAuthMode('anonymous'));
-
-        // 2. Header navigation
+        // 1. Header navigation
         dom.navTabs.forEach(tab => {
           tab.addEventListener('click', () => switchTab(tab.dataset.tab));
         });
@@ -4114,4 +4184,5 @@ Is this 100% accurate?`;
     })();
   </script>
 </body>
+
 </html>

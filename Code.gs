@@ -446,22 +446,12 @@ function callGeminiApi(apiKey, model, systemInstruction, contents) {
 
 
 /**
- * Save an output file directly to Google Drive.
+ * Local device file handling (Google Drive disabled per user requirement).
+ * Files are downloaded and saved directly to the user's local device.
  */
 function saveFileToGoogleDrive(fileName, base64Content, mimeType) {
-  try {
-    var decoded = Utilities.base64Decode(base64Content);
-    var blob = Utilities.newBlob(decoded, mimeType || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', fileName);
-    var file = DriveApp.createFile(blob);
-    return {
-      success: true,
-      fileId: file.getId(),
-      url: file.getUrl()
-    };
-  } catch (e) {
-    return {
-      success: false,
-      error: e.toString()
-    };
-  }
+  return {
+    success: true,
+    message: 'Local saving enabled. Files download directly to the user device.'
+  };
 }

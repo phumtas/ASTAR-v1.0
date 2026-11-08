@@ -23,6 +23,29 @@ const MIME_TYPES = {
   '.pdf': 'application/pdf'
 };
 
+function clearSavedApiKeyFolder() {
+  const targetDir = path.join(__dirname, 'saved API key');
+  if (fs.existsSync(targetDir)) {
+    try {
+      const items = fs.readdirSync(targetDir);
+      for (const item of items) {
+        const fp = path.join(targetDir, item);
+        try {
+          fs.rmSync(fp, { recursive: true, force: true });
+        } catch (e) {
+          try { fs.unlinkSync(fp); } catch (e2) {}
+        }
+      }
+      console.log(`[Storage] Cleared all items in: saved API key`);
+      return true;
+    } catch (err) {
+      console.error(`[Storage] Error clearing saved API key folder:`, err.message);
+      return false;
+    }
+  }
+  return false;
+}
+
 function forwardToGoogle(model, apiKey, payload, apiVersion, callback) {
   if (typeof apiVersion === 'function') {
     callback = apiVersion;
@@ -268,6 +291,135 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Handle Save Local File (uploaded files, outputted files, saved API key)
+  if (req.url.startsWith('/api/save-local') && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { category, fileName, contentBase64, text } = JSON.parse(body);
+        let folderName = 'uploaded files';
+        if (category === 'outputted') folderName = 'outputted files';
+        else if (category === 'api_key') folderName = 'saved API key';
+
+        const targetDir = path.join(__dirname, folderName);
+        if (!fs.existsSync(targetDir)) {
+          fs.mkdirSync(targetDir, { recursive: true });
+        }
+
+        if (category === 'api_key') {
+          // Save API key into saved API key folder
+          const keysFile = path.join(targetDir, 'api_keys.json');
+          let keysList = [];
+          if (fs.existsSync(keysFile)) {
+            try { keysList = JSON.parse(fs.readFileSync(keysFile, 'utf8')); } catch (e) {}
+          }
+          const cleanKey = (text || '').trim();
+          if (cleanKey && !keysList.find(k => k.key === cleanKey)) {
+            keysList.push({
+              key: cleanKey,
+              masked: cleanKey.slice(0, 4) + '...' + cleanKey.slice(-4),
+              name: fileName || ('key_' + (keysList.length + 1)),
+              date: new Date().toLocaleString()
+            });
+            fs.writeFileSync(keysFile, JSON.stringify(keysList, null, 2), 'utf8');
+          }
+          // Also save as plain text
+          fs.writeFileSync(path.join(targetDir, 'api_key.txt'), cleanKey, 'utf8');
+          console.log(`[Storage] Saved locally: ${folderName}/api_key.txt`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, folder: folderName }));
+          return;
+        }
+
+        // For binary files (docx, pdf)
+        const safeName = path.basename(fileName || 'file');
+        const targetPath = path.join(targetDir, safeName);
+        if (contentBase64) {
+          const buffer = Buffer.from(contentBase64, 'base64');
+          fs.writeFileSync(targetPath, buffer);
+          console.log(`[Storage] Saved locally: ${folderName}/${safeName} (${buffer.length} bytes)`);
+        } else if (text) {
+          fs.writeFileSync(targetPath, text, 'utf8');
+          console.log(`[Storage] Saved locally: ${folderName}/${safeName}`);
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, folder: folderName, file: safeName }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // Handle Delete Local File or Folder Contents / Clear API Keys
+  if ((req.url.startsWith('/api/delete-local') || req.url.startsWith('/api/clear-api-keys')) && (req.method === 'POST' || req.method === 'GET')) {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        let category = '';
+        let fileName = '';
+
+        try {
+          const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+          category = parsedUrl.searchParams.get('category') || '';
+          fileName = parsedUrl.searchParams.get('fileName') || '';
+        } catch (e) {}
+
+        if (body) {
+          try {
+            const parsed = JSON.parse(body);
+            if (parsed.category) category = parsed.category;
+            if (parsed.fileName) fileName = parsed.fileName;
+          } catch (e) {
+            if (body.includes('api_key')) category = 'api_key';
+          }
+        }
+
+        // If requested to clear api keys (e.g., when index.html is closed)
+        if (req.url.startsWith('/api/clear-api-keys') || category === 'api_key' || category === 'api_keys') {
+          clearSavedApiKeyFolder();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, cleared: 'saved API key' }));
+          return;
+        }
+
+        let folderName = 'uploaded files';
+        if (category === 'outputted') folderName = 'outputted files';
+
+        const targetDir = path.join(__dirname, folderName);
+        if (fs.existsSync(targetDir)) {
+          if (fileName === 'all' || !fileName) {
+            // Delete all files inside the folder
+            const files = fs.readdirSync(targetDir);
+            for (const f of files) {
+              const fp = path.join(targetDir, f);
+              try { fs.rmSync(fp, { recursive: true, force: true }); } catch (e) {
+                if (fs.statSync(fp).isFile()) fs.unlinkSync(fp);
+              }
+            }
+            console.log(`[Storage] Cleared all local files in: ${folderName}`);
+          } else {
+            const safeName = path.basename(fileName);
+            const fp = path.join(targetDir, safeName);
+            if (fs.existsSync(fp)) fs.unlinkSync(fp);
+            console.log(`[Storage] Deleted: ${folderName}/${safeName}`);
+          }
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
   // Static File Serving
   let reqPath = decodeURI(req.url.split('?')[0]);
   if (reqPath === '/' || reqPath === '') reqPath = '/Index.html';
@@ -306,4 +458,17 @@ server.listen(PORT, () => {
   console.log(`🚀 A* - the homework destroyer is running at:`);
   console.log(`   http://localhost:${PORT}`);
   console.log(`======================================================\n`);
+});
+
+// Clean up "saved API key" folder on process termination
+process.on('SIGINT', () => {
+  console.log('\n[Server] Shutting down: cleaning all items in "saved API key" folder...');
+  clearSavedApiKeyFolder();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('\n[Server] Terminating: cleaning all items in "saved API key" folder...');
+  clearSavedApiKeyFolder();
+  process.exit(0);
 });
