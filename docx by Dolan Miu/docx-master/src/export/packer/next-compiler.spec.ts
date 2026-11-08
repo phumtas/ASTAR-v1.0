@@ -1,0 +1,717 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { File } from "@file/file";
+import { obfuscate } from "@file/fonts/obfuscate-ttf-to-odttf";
+import { Footer, Header } from "@file/header";
+import { LevelFormat } from "@file/numbering";
+import { Bookmark, ExternalHyperlink, ImageRun, Paragraph, TextRun, WpsShapeRun } from "@file/paragraph";
+import { BuilderElement } from "@file/xml-components";
+import * as convenienceFunctions from "@util/convenience-functions";
+import { zipFiles } from "@util/zip";
+
+import { Compiler } from "./next-compiler";
+import { textOf, unzip } from "../../tests/zip";
+
+describe("Compiler", () => {
+    let compiler: Compiler;
+
+    beforeEach(() => {
+        compiler = new Compiler();
+    });
+
+    // The package's files, zipped as the Packer zips them, and unzipped
+    const compile = (...options: Parameters<Compiler["compile"]>): ReadonlyMap<string, Uint8Array> =>
+        unzip(zipFiles(compiler.compile(...options)));
+
+    beforeAll(() => {
+        vi.spyOn(convenienceFunctions, "uniqueId").mockReturnValue("test");
+    });
+
+    afterAll(() => {
+        vi.resetAllMocks();
+    });
+
+    describe("#compile()", () => {
+        it("should pack all the content", { timeout: 99999999 }, () => {
+            const file = new File({
+                sections: [],
+                comments: {
+                    children: [{ id: 0, children: [new Paragraph("comment")] }],
+                },
+            });
+            const zipFile = compile(file);
+            const fileNames = [...zipFile.keys()];
+
+            expect(fileNames).is.an.instanceof(Array);
+            expect(fileNames).has.length(19);
+            expect(fileNames).to.include("word/document.xml");
+            expect(fileNames).to.include("word/styles.xml");
+            expect(fileNames).to.include("docProps/core.xml");
+            expect(fileNames).to.include("docProps/custom.xml");
+            expect(fileNames).to.include("docProps/app.xml");
+            expect(fileNames).to.include("word/numbering.xml");
+            expect(fileNames).to.include("word/footnotes.xml");
+            expect(fileNames).to.include("word/_rels/footnotes.xml.rels");
+            expect(fileNames).to.include("word/endnotes.xml");
+            expect(fileNames).to.include("word/_rels/endnotes.xml.rels");
+            expect(fileNames).to.include("word/settings.xml");
+            expect(fileNames).to.include("word/comments.xml");
+            expect(fileNames).to.include("word/fontTable.xml");
+            expect(fileNames).to.include("word/_rels/document.xml.rels");
+            expect(fileNames).to.include("word/_rels/fontTable.xml.rels");
+            expect(fileNames).to.include("word/theme/theme1.xml");
+            expect(fileNames).to.include("[Content_Types].xml");
+            expect(fileNames).to.include("_rels/.rels");
+        });
+
+        it("should not pack a comments part, or refer to one, when there are no comments", () => {
+            const zipFile = compile(new File({ sections: [], comments: { children: [] } }));
+            const fileNames = [...zipFile.keys()];
+
+            expect(fileNames).to.not.include("word/comments.xml");
+            expect(fileNames).to.not.include("word/_rels/comments.xml.rels");
+            expect(textOf(zipFile, "[Content_Types].xml")).to.not.contain("comments");
+            expect(textOf(zipFile, "word/_rels/document.xml.rels")).to.not.contain("comments");
+        });
+
+        it("should pack a comments part, and refer to it, when there are comments", () => {
+            const zipFile = compile(new File({ sections: [], comments: { children: [{ id: 0, children: [new Paragraph("comment")] }] } }));
+            const fileNames = [...zipFile.keys()];
+
+            expect(fileNames).to.include("word/comments.xml");
+            expect(fileNames).to.include("word/_rels/comments.xml.rels");
+            expect(textOf(zipFile, "[Content_Types].xml")).to.contain(
+                '<Override ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml" PartName="/word/comments.xml"/>',
+            );
+            expect(textOf(zipFile, "word/_rels/document.xml.rels")).to.contain(
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"',
+            );
+        });
+
+        describe("macros", () => {
+            // The start of a compound file, which is all the document checks a VBA project for
+            const project = Uint8Array.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0x00]);
+
+            it("should pack the VBA project, without the events part when the macros handle no events", () => {
+                const zipFile = compile(new File({ sections: [], macros: { project } }));
+                const fileNames = [...zipFile.keys()];
+
+                expect(zipFile.get("word/vbaProject.bin")).toEqual(project);
+                expect(fileNames).not.toContain("word/vbaData.xml");
+                expect(fileNames).not.toContain("word/_rels/vbaProject.bin.rels");
+                expect(textOf(zipFile, "word/_rels/document.xml.rels")).toContain(
+                    'Type="http://schemas.microsoft.com/office/2006/relationships/vbaProject" Target="vbaProject.bin"',
+                );
+            });
+
+            it("should pack the events the macros handle, and the VBA project's relationship to them", () => {
+                const zipFile = compile(new File({ sections: [], macros: { project, events: ["open"] } }));
+
+                expect(textOf(zipFile, "word/vbaData.xml")).toBe(
+                    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+                        '<wne:vbaSuppData xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml"><wne:docEvents><wne:eventDocOpen/></wne:docEvents></wne:vbaSuppData>',
+                );
+                expect(textOf(zipFile, "word/_rels/vbaProject.bin.rels")).toContain(
+                    '<Relationship Id="rId1" Type="http://schemas.microsoft.com/office/2006/relationships/wordVbaData" Target="vbaData.xml"/>',
+                );
+            });
+        });
+
+        it("should pack a bibliography's sources as Word does, in a custom XML part with its properties", () => {
+            const sources = new BuilderElement({ name: "b:Sources" });
+            const zipFile = compile(new File({ sections: [], bibliography: { sources } }));
+
+            expect(textOf(zipFile, "customXml/item1.xml")).toBe('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><b:Sources/>');
+            expect(textOf(zipFile, "customXml/itemProps1.xml")).to.match(
+                /^<\?xml version="1.0" encoding="UTF-8" standalone="no"\?><ds:datastoreItem ds:itemID="\{[0-9A-F-]{36}\}" xmlns:ds="http:\/\/schemas.openxmlformats.org\/officeDocument\/2006\/customXml"><ds:schemaRefs><ds:schemaRef ds:uri="http:\/\/schemas.openxmlformats.org\/officeDocument\/2006\/bibliography"\/><\/ds:schemaRefs><\/ds:datastoreItem>$/,
+            );
+            expect(textOf(zipFile, "customXml/_rels/item1.xml.rels")).toContain(
+                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXmlProps" Target="itemProps1.xml"/>',
+            );
+            expect(textOf(zipFile, "word/_rels/document.xml.rels")).toContain(
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml" Target="../customXml/item1.xml"',
+            );
+        });
+
+        it("should give an image in a comment a relationship from the comments part", () => {
+            const image = new ImageRun({ type: "png", data: Buffer.from("", "base64"), transformation: { width: 10, height: 10 } });
+            const zipFile = compile(
+                new File({ sections: [], comments: { children: [{ id: 0, children: [new Paragraph({ children: [image] })] }] } }),
+            );
+
+            expect(textOf(zipFile, "word/comments.xml")).to.contain('r:embed="rId1"');
+            expect(textOf(zipFile, "word/_rels/comments.xml.rels")).to.match(
+                /<Relationship Id="rId1" Type="http:\/\/schemas.openxmlformats.org\/officeDocument\/2006\/relationships\/image" Target="media\/[^"]+\.png"\/>/,
+            );
+        });
+
+        it("should give an image in an endnote a relationship from the endnotes part", () => {
+            const image = new ImageRun({ type: "png", data: Buffer.from("", "base64"), transformation: { width: 10, height: 10 } });
+            const zipFile = compile(new File({ sections: [], endnotes: { 1: { children: [new Paragraph({ children: [image] })] } } }));
+
+            expect(textOf(zipFile, "word/endnotes.xml")).to.contain('r:embed="rId1"');
+            expect(textOf(zipFile, "word/_rels/endnotes.xml.rels")).to.match(
+                /<Relationship Id="rId1" Type="http:\/\/schemas.openxmlformats.org\/officeDocument\/2006\/relationships\/image" Target="media\/[^"]+\.png"\/>/,
+            );
+        });
+
+        it("should write the numbering id of a list in an endnote, and define the list", () => {
+            const zipFile = compile(
+                new File({
+                    numbering: {
+                        config: [{ reference: "endnote-list", levels: [{ level: 0, format: LevelFormat.DECIMAL, text: "%1." }] }],
+                    },
+                    endnotes: {
+                        1: { children: [new Paragraph({ text: "Listed", numbering: { reference: "endnote-list", level: 0 } })] },
+                    },
+                    sections: [],
+                }),
+            );
+
+            expect(textOf(zipFile, "word/endnotes.xml")).to.contain('<w:numId w:val="2"/>');
+            expect(textOf(zipFile, "word/numbering.xml")).to.contain('<w:num w:numId="2">');
+        });
+
+        describe("restarting a list", () => {
+            const numIdsIn = (xml: string): readonly string[] => Array.from(xml.matchAll(/<w:numId w:val="(\d+)"\/>/g), ([, id]) => id);
+
+            const createRestartedListFile = (): File =>
+                new File({
+                    numbering: {
+                        config: [{ reference: "steps", levels: [{ level: 0, format: LevelFormat.DECIMAL, text: "%1." }] }],
+                    },
+                    sections: [
+                        {
+                            children: [
+                                new Paragraph({ text: "One", numbering: { reference: "steps", level: 0 } }),
+                                new Paragraph({ text: "Two", numbering: { reference: "steps", level: 0 } }),
+                                new Paragraph({ text: "A heading between the lists" }),
+                                new Paragraph({ text: "One again", numbering: { reference: "steps", level: 0, restart: true } }),
+                                new Paragraph({ text: "Two again", numbering: { reference: "steps", level: 0 } }),
+                                new Paragraph({ text: "Another heading" }),
+                                new Paragraph({ text: "One a third time", numbering: { reference: "steps", level: 0, restart: true } }),
+                                new Paragraph({ text: "Two a third time", numbering: { reference: "steps", level: 0 } }),
+                            ],
+                        },
+                    ],
+                });
+
+            it("should put the restarting paragraph and the paragraphs after it in a new list that starts from 1", () => {
+                const zipFile = compile(createRestartedListFile());
+
+                const document = textOf(zipFile, "word/document.xml") ?? "";
+                const numbering = textOf(zipFile, "word/numbering.xml") ?? "";
+
+                expect(numIdsIn(document)).to.deep.equal(["2", "2", "3", "3", "4", "4"]);
+                for (const numId of ["2", "3", "4"]) {
+                    expect(numbering).to.match(
+                        new RegExp(
+                            `<w:num w:numId="${numId}"><w:abstractNumId w:val="\\d+"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/>`,
+                        ),
+                    );
+                }
+            });
+
+            it("should write the same lists when the document is compiled again", () => {
+                const file = createRestartedListFile();
+                compiler.compile(file);
+                const zipFile = compile(file);
+
+                const document = textOf(zipFile, "word/document.xml") ?? "";
+                const numbering = textOf(zipFile, "word/numbering.xml") ?? "";
+
+                expect(numIdsIn(document)).to.deep.equal(["2", "2", "3", "3", "4", "4"]);
+                expect(numbering).to.not.contain('w:numId="5"');
+            });
+        });
+
+        it("should pack all additional headers and footers", { timeout: 99999999 }, () => {
+            const file = new File({
+                sections: [
+                    {
+                        headers: {
+                            default: new Header({
+                                children: [new Paragraph("test")],
+                            }),
+                        },
+                        footers: {
+                            default: new Footer({
+                                children: [new Paragraph("test")],
+                            }),
+                        },
+                        children: [],
+                    },
+                    {
+                        headers: {
+                            default: new Header({
+                                children: [new Paragraph("test")],
+                            }),
+                        },
+                        footers: {
+                            default: new Footer({
+                                children: [new Paragraph("test")],
+                            }),
+                        },
+                        children: [],
+                    },
+                ],
+            });
+
+            const zipFile = compile(file);
+            const fileNames = [...zipFile.keys()];
+
+            expect(fileNames).is.an.instanceof(Array);
+            expect(fileNames).has.length(25);
+
+            expect(fileNames).to.include("word/header1.xml");
+            expect(fileNames).to.include("word/_rels/header1.xml.rels");
+            expect(fileNames).to.include("word/header2.xml");
+            expect(fileNames).to.include("word/_rels/header2.xml.rels");
+            expect(fileNames).to.include("word/footer1.xml");
+            expect(fileNames).to.include("word/_rels/footer1.xml.rels");
+            expect(fileNames).to.include("word/footer2.xml");
+            expect(fileNames).to.include("word/_rels/footer2.xml.rels");
+        });
+
+        it("should pack subfile overrides", { timeout: 99999999 }, () => {
+            const file = new File({
+                sections: [],
+                comments: {
+                    children: [],
+                },
+            });
+            const subfileData1 = "comments";
+            const subfileData2 = "commentsExtended";
+            const overrides = [
+                { path: "word/comments.xml", data: subfileData1 },
+                { path: "word/commentsExtended.xml", data: subfileData2 },
+            ];
+            const zipFile = compile(file, "", overrides);
+            const fileNames = [...zipFile.keys()];
+
+            expect(fileNames).is.an.instanceof(Array);
+            expect(fileNames).has.length(19);
+
+            expect(fileNames).to.include("word/comments.xml");
+            expect(fileNames).to.include("word/commentsExtended.xml");
+
+            const commentsText = textOf(zipFile, "word/comments.xml");
+            const commentsExtendedText = textOf(zipFile, "word/commentsExtended.xml");
+
+            expect(commentsText).toBe(subfileData1);
+            expect(commentsExtendedText).toBe(subfileData2);
+        });
+
+        it("should include commentsExtended.xml when comments have parentId", { timeout: 99999999 }, () => {
+            const file = new File({
+                sections: [],
+                comments: {
+                    children: [
+                        { id: 0, children: [new Paragraph("parent")] },
+                        { id: 1, children: [new Paragraph("reply")], parentId: 0 },
+                    ],
+                },
+            });
+            const zipFile = compile(file);
+            const fileNames = [...zipFile.keys()];
+
+            expect(fileNames).to.include("word/commentsExtended.xml");
+
+            const commentsExtendedText = textOf(zipFile, "word/commentsExtended.xml");
+            expect(commentsExtendedText).to.contain("w15:commentsEx");
+            expect(commentsExtendedText).to.contain("w15:commentEx");
+            expect(commentsExtendedText).to.contain("w15:paraId");
+            expect(commentsExtendedText).to.contain("w15:paraIdParent");
+        });
+
+        it("should not include commentsIds.xml when comments have no durableId", () => {
+            const file = new File({
+                sections: [],
+                comments: {
+                    children: [{ id: 0, children: [new Paragraph("comment")] }],
+                },
+            });
+            const zipFile = compile(file);
+            const fileNames = [...zipFile.keys()];
+
+            expect(fileNames).to.not.include("word/commentsIds.xml");
+        });
+
+        it("should include commentsIds.xml for a single (non-threaded) comment with durableId", { timeout: 99999999 }, () => {
+            const file = new File({
+                sections: [],
+                comments: {
+                    children: [{ id: 0, children: [new Paragraph("comment")], durableId: "12AB34CD" }],
+                },
+            });
+            const zipFile = compile(file);
+            const fileNames = [...zipFile.keys()];
+
+            expect(fileNames).to.include("word/commentsIds.xml");
+
+            const commentsIdsText = textOf(zipFile, "word/commentsIds.xml");
+            expect(commentsIdsText).to.contain("w16cid:commentsIds");
+            expect(commentsIdsText).to.contain("w16cid:commentId");
+            expect(commentsIdsText).to.contain('w16cid:paraId="00000001"');
+            expect(commentsIdsText).to.contain('w16cid:durableId="12AB34CD"');
+
+            // Content type override is registered
+            const contentTypesText = textOf(zipFile, "[Content_Types].xml");
+            expect(contentTypesText).to.contain("application/vnd.openxmlformats-officedocument.wordprocessingml.commentsIds+xml");
+            expect(contentTypesText).to.contain("/word/commentsIds.xml");
+
+            // Relationship is registered
+            const relsText = textOf(zipFile, "word/_rels/document.xml.rels");
+            expect(relsText).to.contain("http://schemas.microsoft.com/office/2016/09/relationships/commentsIds");
+            expect(relsText).to.contain("commentsIds.xml");
+        });
+
+        it("should include commentsIds.xml mapping paraId to durableId for threaded comments", { timeout: 99999999 }, () => {
+            const file = new File({
+                sections: [],
+                comments: {
+                    children: [
+                        { id: 0, children: [new Paragraph("parent")], durableId: "11112222" },
+                        { id: 1, children: [new Paragraph("reply")], parentId: 0, durableId: "33334444" },
+                    ],
+                },
+            });
+            const zipFile = compile(file);
+            const fileNames = [...zipFile.keys()];
+
+            expect(fileNames).to.include("word/commentsIds.xml");
+            expect(fileNames).to.include("word/commentsExtended.xml");
+
+            const commentsIdsText = textOf(zipFile, "word/commentsIds.xml");
+            expect(commentsIdsText).to.contain('w16cid:paraId="00000001"');
+            expect(commentsIdsText).to.contain('w16cid:durableId="11112222"');
+            expect(commentsIdsText).to.contain('w16cid:paraId="00000002"');
+            expect(commentsIdsText).to.contain('w16cid:durableId="33334444"');
+        });
+
+        it("should emit commentsIds.xml falling back to paraId for comments without a durableId", { timeout: 99999999 }, () => {
+            const file = new File({
+                sections: [],
+                comments: {
+                    children: [
+                        { id: 0, children: [new Paragraph("with durable")], durableId: "12AB34CD" },
+                        { id: 1, children: [new Paragraph("without durable")] },
+                    ],
+                },
+            });
+            const zipFile = compile(file);
+            const fileNames = [...zipFile.keys()];
+
+            expect(fileNames).to.include("word/commentsIds.xml");
+
+            const commentsIdsText = textOf(zipFile, "word/commentsIds.xml");
+            // Comment WITH a durableId keeps its durableId (paraId 00000001 for id 0)
+            expect(commentsIdsText).to.contain('w16cid:paraId="00000001"');
+            expect(commentsIdsText).to.contain('w16cid:durableId="12AB34CD"');
+            // Comment WITHOUT a durableId falls back to its generated paraId (00000002 for id 1)
+            expect(commentsIdsText).to.contain('w16cid:paraId="00000002"');
+            expect(commentsIdsText).to.contain('w16cid:durableId="00000002"');
+        });
+
+        it("should write each bookmark with one distinct id shared by its start and end", async () => {
+            const bookmarked = (name: string): Paragraph =>
+                new Paragraph({ children: [new Bookmark({ id: name, children: [new TextRun(name)] })] });
+            const file = new File({
+                sections: [
+                    {
+                        headers: { default: new Header({ children: [bookmarked("header")] }) },
+                        footers: { default: new Footer({ children: [bookmarked("footer")] }) },
+                        children: [bookmarked("first"), bookmarked("second")],
+                    },
+                ],
+            });
+
+            // Headers and footers are formatted more than once per compile, and a
+            // document can be packed repeatedly, so compile twice.
+            compiler.compile(file);
+            const zipFile = compile(file);
+            const xml = (
+                await Promise.all(["word/document.xml", "word/header1.xml", "word/footer1.xml"].map((name) => textOf(zipFile, name)))
+            ).join("");
+
+            const idsOf = (tag: string): readonly (readonly string[])[] =>
+                [...xml.matchAll(new RegExp(`<${tag} ([^>]*)>`, "g"))].map(([, attributes]) =>
+                    [...attributes.matchAll(/w:id="(\d+)"/g)].map(([, id]) => id),
+                );
+            const startIds = idsOf("w:bookmarkStart");
+            const endIds = idsOf("w:bookmarkEnd");
+
+            expect(startIds).to.have.length(4);
+            expect(startIds.every((ids) => ids.length === 1)).to.equal(true);
+            expect(new Set(startIds.flat()).size).to.equal(4);
+            expect(endIds).to.deep.equal(startIds);
+        });
+
+        it("should write each drawing with a distinct id", async () => {
+            const image = (): Paragraph =>
+                new Paragraph({
+                    children: [new ImageRun({ type: "png", data: Buffer.from("", "base64"), transformation: { width: 10, height: 10 } })],
+                });
+            const textBox = (): Paragraph =>
+                new Paragraph({
+                    children: [
+                        new WpsShapeRun({ type: "wps", children: [new Paragraph("text")], transformation: { width: 10, height: 10 } }),
+                    ],
+                });
+            const file = new File({
+                sections: [
+                    {
+                        headers: { default: new Header({ children: [textBox(), image()] }) },
+                        footers: { default: new Footer({ children: [image()] }) },
+                        children: [image(), textBox(), image()],
+                    },
+                ],
+            });
+
+            // Headers and footers are formatted more than once per compile, and a
+            // document can be packed repeatedly, so compile twice.
+            compiler.compile(file);
+            const zipFile = compile(file);
+            const xml = (
+                await Promise.all(["word/document.xml", "word/header1.xml", "word/footer1.xml"].map((name) => textOf(zipFile, name)))
+            ).join("");
+
+            const ids = [...xml.matchAll(/<wp:docPr id="(\d+)"/g)].map(([, id]) => id);
+
+            expect(ids).to.have.length(6);
+            expect(new Set(ids).size).to.equal(6);
+        });
+
+        it("should write the same package when a document is packed again", () => {
+            // Packing again used to repeat the lists, custom properties, links on pictures and relationships the first
+            // pack wrote, which Word can't open. Apps pack again when a user downloads a document a second time
+            const image = (): ImageRun =>
+                new ImageRun({ type: "png", data: Buffer.from("", "base64"), transformation: { width: 10, height: 10 } });
+            const file = new File({
+                customProperties: [{ name: "Project", value: "docx" }],
+                numbering: { config: [{ reference: "footer-list", levels: [{ level: 0, format: LevelFormat.DECIMAL, text: "%1." }] }] },
+                footnotes: { 1: { children: [new Paragraph({ children: [image()] })] } },
+                endnotes: { 1: { children: [new Paragraph({ children: [image()] })] } },
+                comments: { children: [{ id: 0, children: [new Paragraph({ children: [image()] })] }] },
+                sections: [
+                    {
+                        headers: { default: new Header({ children: [new Paragraph({ children: [image()] })] }) },
+                        footers: {
+                            default: new Footer({
+                                children: [
+                                    new Paragraph({ text: "Listed", numbering: { reference: "footer-list", level: 0 } }),
+                                    new Paragraph({ children: [image()] }),
+                                ],
+                            }),
+                        },
+                        children: [
+                            new Paragraph({ text: "Bulleted", bullet: { level: 0 } }),
+                            new Paragraph({
+                                children: [
+                                    new ExternalHyperlink({ link: "https://example.com", children: [new TextRun("Link"), image()] }),
+                                ],
+                            }),
+                        ],
+                    },
+                ],
+            });
+            const partsOf = (zipFile: ReadonlyMap<string, Uint8Array>): Record<string, string | undefined> =>
+                Object.fromEntries([...zipFile.keys()].map((path) => [path, textOf(zipFile, path)]));
+
+            const first = partsOf(compile(file));
+            const second = partsOf(compile(file));
+
+            expect(second).to.deep.equal(first);
+        });
+
+        it("should define a list used only in a footer the first time a document is packed", () => {
+            const file = new File({
+                numbering: { config: [{ reference: "footer-list", levels: [{ level: 0, format: LevelFormat.DECIMAL, text: "%1." }] }] },
+                sections: [
+                    {
+                        footers: {
+                            default: new Footer({
+                                children: [new Paragraph({ text: "Listed", numbering: { reference: "footer-list", level: 0 } })],
+                            }),
+                        },
+                        children: [],
+                    },
+                ],
+            });
+
+            const zipFile = compile(file);
+            const footer = textOf(zipFile, "word/footer1.xml");
+            const numbering = textOf(zipFile, "word/numbering.xml");
+            const [, numId] = footer?.match(/<w:numId w:val="(\d+)"\/>/) ?? [];
+
+            expect(numId).to.equal("2");
+            expect(numbering).to.contain(`<w:num w:numId="${numId}">`);
+        });
+
+        it("should call the format method X times equalling X files to be formatted", () => {
+            // This test is required because before, there was a case where Document was formatted twice, which was inefficient
+            // This also caused issues such as running prepForXml multiple times as format() was ran multiple times.
+            const paragraph = new Paragraph("");
+            const file = new File({
+                sections: [
+                    {
+                        properties: {},
+                        children: [paragraph],
+                    },
+                ],
+            });
+
+            const spy = vi.spyOn(compiler["formatter"], "format");
+
+            compiler.compile(file);
+            expect(spy).toHaveBeenCalledTimes(18);
+        });
+
+        it("should work with media datas", () => {
+            const file = new File({
+                sections: [
+                    {
+                        headers: {
+                            default: new Header({
+                                children: [new Paragraph("test")],
+                            }),
+                        },
+                        footers: {
+                            default: new Footer({
+                                children: [new Paragraph("test")],
+                            }),
+                        },
+                        children: [
+                            new Paragraph({
+                                children: [
+                                    new ImageRun({
+                                        type: "png",
+                                        data: Buffer.from("", "base64"),
+                                        transformation: {
+                                            width: 100,
+                                            height: 100,
+                                        },
+                                    }),
+                                    new ImageRun({
+                                        type: "svg",
+                                        data: Buffer.from("", "base64"),
+                                        transformation: {
+                                            width: 100,
+                                            height: 100,
+                                        },
+                                        fallback: {
+                                            type: "png",
+                                            data: Buffer.from("", "base64"),
+                                        },
+                                    }),
+                                ],
+                            }),
+                        ],
+                    },
+                ],
+            });
+
+            vi.spyOn(compiler["imageReplacer"], "getMediaData").mockReturnValue([
+                {
+                    type: "png",
+                    data: Buffer.from(""),
+                    fileName: "test",
+                    transformation: {
+                        pixels: {
+                            x: 100,
+                            y: 100,
+                        },
+                        emus: {
+                            x: 100,
+                            y: 100,
+                        },
+                    },
+                },
+                {
+                    type: "svg",
+                    data: Buffer.from(""),
+                    fileName: "test",
+                    transformation: {
+                        pixels: {
+                            x: 100,
+                            y: 100,
+                        },
+                        emus: {
+                            x: 100,
+                            y: 100,
+                        },
+                    },
+                    fallback: {
+                        type: "png",
+                        data: Buffer.from(""),
+                        fileName: "test",
+                        transformation: {
+                            pixels: {
+                                x: 100,
+                                y: 100,
+                            },
+                            emus: {
+                                x: 100,
+                                y: 100,
+                            },
+                        },
+                    },
+                },
+            ]);
+
+            compiler.compile(file);
+        });
+
+        it("should work with fonts", () => {
+            const file = new File({
+                sections: [],
+                fonts: [{ name: "Pacifico", data: Buffer.from("") }],
+            });
+
+            compiler.compile(file);
+        });
+
+        it("should write embedded fonts to sequential filenames in the zip (no spaces or special chars from family name)", () => {
+            // Regression for https://github.com/dolanmiu/docx/issues/3019 —
+            // fonts whose user-facing family name contains spaces / non-ASCII
+            // used to be written into the package zip with the family name as
+            // the filename (e.g. `EB Garamond.odttf`). Word rejects those
+            // paths and shows a "found unreadable content" recovery prompt on
+            // open. Sequential names side-step that.
+            const file = new File({
+                sections: [],
+                fonts: [
+                    { name: "EB Garamond", data: Buffer.from("") },
+                    { name: "Source Serif 4", data: Buffer.from("") },
+                ],
+            });
+
+            const zip = compile(file);
+            const fileNames = [...zip.keys()];
+            expect(fileNames).to.include("word/fonts/font1.odttf");
+            expect(fileNames).to.include("word/fonts/font2.odttf");
+            expect(fileNames).to.not.include("word/fonts/EB Garamond.odttf");
+            expect(fileNames).to.not.include("word/fonts/Source Serif 4.odttf");
+        });
+
+        it("should write each face of an embedded font to a file of its own, obfuscated with its own key", async () => {
+            const file = new File({
+                sections: [],
+                fonts: [
+                    {
+                        name: "Probe",
+                        data: Buffer.alloc(64, 1),
+                        bold: Buffer.alloc(64, 2),
+                        italic: Buffer.alloc(64, 3),
+                        boldItalic: Buffer.alloc(64, 4),
+                    },
+                ],
+            });
+
+            const zip = compile(file);
+            const written = await Promise.all([1, 2, 3, 4].map((n) => zip.get(`word/fonts/font${n}.odttf`)));
+            expect(written).to.deep.equal(file.FontTable.files.map(({ data, fontKey }) => obfuscate(data, fontKey)));
+            expect([...zip.keys()]).to.not.include("word/fonts/font5.odttf");
+        });
+    });
+});

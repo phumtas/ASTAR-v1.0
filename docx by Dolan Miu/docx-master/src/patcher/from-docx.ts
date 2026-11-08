@@ -1,0 +1,695 @@
+/**
+ * Document patching module for modifying existing .docx files.
+ *
+ * This module provides functionality to patch existing Word documents by replacing
+ * placeholder text with new content while preserving the original document structure.
+ *
+ * @module
+ */
+import type { Stream } from "stream";
+
+import { ImageReplacer } from "@export/packer/image-replacer";
+import { xmlifyPackageParts } from "@export/packer/package-part-writer";
+import { DocumentAttributeNamespaces } from "@file/document";
+import type { IViewWrapper } from "@file/document-wrapper";
+import type { File } from "@file/file";
+import type { FileChild } from "@file/file-child";
+import type { NoteContent } from "@file/footnotes";
+import { type IMediaData, Media } from "@file/media";
+import { type INumberingOptions, Numbering } from "@file/numbering";
+import { PackageParts } from "@file/package-part/package-part";
+import { Bookmark, ConcreteHyperlink, ExternalHyperlink, type Paragraph, type ParagraphChild } from "@file/paragraph";
+import { externalHyperlinkTarget } from "@file/paragraph/links/external-hyperlink-target";
+import { type RelationshipType, TargetModeType } from "@file/relationships/relationship/relationship";
+import type { IContext } from "@file/xml-components";
+import { uniqueId } from "@util/convenience-functions";
+import type { OutputByType, OutputType } from "@util/output-type";
+import { type XmlElement as Element, stringifyElement } from "@util/xml";
+import { zipFiles, zipOutput } from "@util/zip";
+
+import { findBookmarkIds, renumberBookmarksAvoiding } from "./bookmark-ids";
+import { appendContentType, appendContentTypeOverride } from "./content-types-manager";
+import { type PatchDocumentProperties, patchCoreProperties } from "./core-properties";
+import { findDrawingIds, renumberDrawingsAvoiding } from "./drawing-ids";
+import { type DrawingPatch, patchDrawings, relationshipsPathOf } from "./drawing-patch";
+import { type ZipArchive, loadZip } from "./load-zip";
+import { patchNotes } from "./notes";
+import { patchNumbering } from "./numbering";
+import { type TemplatePageNumberEstimator, fillTemplatePageNumbers } from "./page-numbers";
+import { PatchType } from "./patch-type";
+import { appendRelationship, createRelationshipFile, getNextRelationshipIndex } from "./relationship-manager";
+import { replacer } from "./replacer";
+import { patchStyles } from "./styles";
+import { patchTableRows } from "./table-rows";
+import { readThemeColors } from "./theme-colors";
+import { trimPlaceholders as trimPlaceholdersIn } from "./trim-placeholders";
+import { decodeUtf8, toJson } from "./util";
+import { removeShapeTypesIn } from "./vml-shape-types";
+
+/**
+ * Supported input data types for document patching.
+ *
+ * The patcher can accept documents in various formats including buffers,
+ * arrays, and streams, such as `fs.createReadStream`'s or `Packer.toStream`'s.
+ */
+// eslint-disable-next-line functional/prefer-readonly-type
+export type InputDataType = Buffer | string | number[] | Uint8Array | ArrayBuffer | Blob | NodeJS.ReadableStream | Stream | ZipArchive;
+
+export { PatchType } from "./patch-type";
+export { DrawingPatch } from "./drawing-patch";
+export type { TemplateDrawing, TemplatePackage, TemplatePart } from "./drawing-patch";
+export { ImagePatch } from "./image-patch";
+export type { ImagePatchOptions, ImagePatchTransformation } from "./image-patch";
+export type { PatchedTemplate, TemplatePageNumberEstimator } from "./page-numbers";
+export type { PatchDocumentProperties } from "./core-properties";
+
+/**
+ * Patch definition for paragraph-level replacement.
+ *
+ * Replaces placeholder text with inline content (runs, hyperlinks, etc.)
+ * while preserving the surrounding paragraph structure.
+ */
+type ParagraphPatch = {
+    /** Indicates this is a paragraph-level patch */
+    readonly type: typeof PatchType.PARAGRAPH;
+    /** Content to insert (runs, hyperlinks, images, etc.) */
+    readonly children: readonly ParagraphChild[];
+};
+
+/**
+ * Patch definition for document-level replacement.
+ *
+ * Replaces placeholder text with block-level content (entire paragraphs, tables, etc.).
+ */
+type FilePatch = {
+    /** Indicates this is a document-level patch */
+    readonly type: typeof PatchType.DOCUMENT;
+    /** Content to insert (paragraphs, tables, etc.) */
+    readonly children: readonly FileChild[];
+};
+
+/**
+ * Internal type for tracking image relationships that need to be added.
+ */
+type IImageRelationshipAddition = {
+    /** XML file path where the image is used */
+    readonly key: string;
+    /** Media data for the images */
+    readonly mediaDatas: readonly IMediaData[];
+};
+
+/**
+ * Internal type for tracking the relationships that need to be added, such as to a hyperlink's address or a chart.
+ */
+type IRelationshipAddition = {
+    /** XML file path the relationship is from */
+    readonly key: string;
+    /** The relationship's id, without its "rId" */
+    readonly id: string | number;
+    readonly type: RelationshipType;
+    readonly target: string;
+    readonly targetMode?: (typeof TargetModeType)[keyof typeof TargetModeType];
+};
+
+/**
+ * Union type representing all patch types.
+ */
+export type IPatch = ParagraphPatch | FilePatch;
+
+/**
+ * Patch definition that repeats the rows of a table in the template, once for each row of data, so a table can be
+ * designed in Word and filled in with any number of rows.
+ *
+ * The rows it repeats are those that hold its fields: placeholders made of the patch's key, a dot and the field's name,
+ * such as `{{items.name}}` and `{{items.price}}` for the patch `items`. Each copy's fields are patched with a row's
+ * patches, by their field's name, and the other rows of the table, such as its header, are kept as they are. Rows next
+ * to each other are repeated together, such as a row for an item and a row for its notes.
+ *
+ * A field that a row has no patch for is left empty. With no rows, the rows are removed, and so is a table left with
+ * none. The other patches are applied after the rows are repeated, so a placeholder of theirs in a repeated row, such as
+ * `{{currency}}`, is patched in every copy.
+ *
+ * @example
+ * ```typescript
+ * const text = (value: string): IPatch => ({ type: PatchType.PARAGRAPH, children: [new TextRun(value)] });
+ *
+ * await patchDocument({
+ *   outputType: "nodebuffer",
+ *   data: template,
+ *   patches: {
+ *     items: {
+ *       type: PatchType.TABLE_ROWS,
+ *       rows: [
+ *         { name: text("Apples"), price: text("1.20") },
+ *         { name: text("Pears"), price: text("0.90") },
+ *       ],
+ *     },
+ *   },
+ * });
+ * ```
+ *
+ * @publicApi
+ */
+export type TableRowsPatch = {
+    /** Indicates this patch repeats the rows of a table */
+    readonly type: typeof PatchType.TABLE_ROWS;
+    /**
+     * The patches for each copy of the rows, by the name of the field they patch, such as `name` for `{{items.name}}`.
+     * A field's patch can repeat rows of a table in the copy in turn, whose fields are then such as
+     * `{{items.parts.name}}`. When those fields are in the copy's own row, rather than in a table in it, the row is
+     * repeated for each part, with its item's fields, and an item without parts has no row
+     */
+    readonly rows: readonly Readonly<Record<string, IPatch | TableRowsPatch | undefined>>[];
+};
+
+/**
+ * Output format types for patched documents.
+ */
+export type PatchDocumentOutputType = OutputType;
+
+/**
+ * Options for patching a document.
+ *
+ * @property outputType - Desired output format (buffer, blob, string, etc.)
+ * @property data - The input document to patch
+ * @property patches - Map of placeholder keys to patch definitions
+ * @property keepOriginalStyles - Whether to preserve original text formatting
+ * @property placeholderDelimiters - Custom delimiter characters for placeholders
+ * @property recursive - Whether to replace every occurrence of a placeholder in a paragraph, rather than only the first
+ * @property trimPlaceholders - Whether to patch a placeholder with spaces inside its delimiters, such as `{{ name }}`
+ * @property footnotes - The footnotes that patches refer to with a `FootnoteReferenceRun`
+ * @property endnotes - The endnotes that patches refer to with an `EndnoteReferenceRun`
+ * @property numbering - The lists that the paragraphs in patches use, by their references
+ * @property pageNumbers - Works out the page each bookmark is on, to write the page numbers of page references
+ * @property properties - The document's properties to set, such as its title
+ */
+export type PatchDocumentOptions<T extends PatchDocumentOutputType = PatchDocumentOutputType> = {
+    /** Output format type */
+    readonly outputType: T;
+    /** Input document data */
+    readonly data: InputDataType;
+    /**
+     * Mapping of placeholder keys to patch content, to a {@link TableRowsPatch} that repeats the rows of a table, or to a
+     * {@link DrawingPatch}, such as an {@link ImagePatch} or `docx/charts`' `ChartDataPatch`, for a drawing whose alt text
+     * holds the placeholder
+     */
+    readonly patches: Readonly<Record<string, IPatch | TableRowsPatch | DrawingPatch>>;
+    /** Preserve original formatting of replaced text (default: true) */
+    readonly keepOriginalStyles?: boolean;
+    /** Custom placeholder delimiters (default: {{ and }}) */
+    readonly placeholderDelimiters?: Readonly<{
+        readonly start: string;
+        readonly end: string;
+    }>;
+    /** Replace every occurrence of a placeholder in a paragraph, rather than only the first (default: true) */
+    readonly recursive?: boolean;
+    /**
+     * Patch a placeholder with spaces inside its delimiters, such as `{{ name }}` or `{{name }}`, as if it had none, so a
+     * template's placeholders needn't be typed exactly. Spaces inside the key itself, such as in `{{first name}}`, are
+     * still part of it. Only the placeholders of patches lose their spaces (default: false)
+     */
+    readonly trimPlaceholders?: boolean;
+    /**
+     * The footnotes that patches refer to, by the id given to their `FootnoteReferenceRun`s, as in a `Document`. Each
+     * reference a patch inserts gets a footnote of its own, with an id that none of the document's footnotes have
+     */
+    readonly footnotes?: Readonly<Record<string, { readonly children: readonly Paragraph[] }>>;
+    /** The endnotes that patches refer to, by the id given to their `EndnoteReferenceRun`s, as with footnotes */
+    readonly endnotes?: Readonly<Record<string, { readonly children: readonly Paragraph[] }>>;
+    /**
+     * The lists that the paragraphs in patches use, as in a `Document`. A paragraph is put in one with
+     * `numbering: { reference, level }`. Each list that patches use is added to the document's numbering, with ids that
+     * none of the template's lists have, and so is the bullet list of `bullet` paragraphs
+     */
+    readonly numbering?: INumberingOptions;
+    /**
+     * Works out the page each bookmark of the patched document is on, and how many pages it has, so the page numbers of
+     * its tables of contents and page references, and its numbers of pages, are written with it, rather than left as they
+     * were in the template. Give it `estimatePageNumbers` from `docx/layout`. See {@link TemplatePageNumberEstimator}
+     */
+    readonly pageNumbers?: TemplatePageNumberEstimator;
+    /**
+     * The document's properties to set, such as its title, tags (`keywords`) and comments (`description`), which Word
+     * shows in File > Info. They replace the template's, and the template's other properties are kept
+     */
+    readonly properties?: PatchDocumentProperties;
+};
+
+/**
+ * Throws if a patch, or a patch for a field of one of its rows, isn't one `patchDocument` can apply, such as a patch
+ * from JavaScript without its children.
+ *
+ * @param key - The patch's key, such as "items", or for a field of a row, such as "items.name"
+ * @param inTableRow - Whether the patch is for a field of a row, where a drawing patch can't be
+ */
+const assertValidPatch = (
+    key: string,
+    patch: IPatch | TableRowsPatch | DrawingPatch,
+    { inTableRow }: { readonly inTableRow: boolean },
+): void => {
+    if (patch?.type === PatchType.TABLE_ROWS && Array.isArray(patch.rows)) {
+        for (const row of patch.rows as readonly unknown[]) {
+            if (typeof row !== "object" || row === null) {
+                throw new Error(`Invalid patch "${key}". Expected each of its rows to be an object of patches, by the name of their field`);
+            }
+            for (const [field, fieldPatch] of Object.entries(row as TableRowsPatch["rows"][number])) {
+                // A field without a patch is left empty
+                if (fieldPatch !== undefined) {
+                    assertValidPatch(`${key}.${field}`, fieldPatch, { inTableRow: true });
+                }
+            }
+        }
+        return;
+    }
+
+    const valid =
+        patch?.type === PatchType.DRAWING
+            ? !inTableRow && typeof patch.patch === "function"
+            : patch?.type !== PatchType.TABLE_ROWS && Array.isArray(patch?.children);
+    if (!valid) {
+        const others = inTableRow
+            ? "or { type: PatchType.TABLE_ROWS, rows: [...] }"
+            : "{ type: PatchType.TABLE_ROWS, rows: [...] }, or a drawing patch such as ImagePatch, or ChartDataPatch from docx/charts";
+        throw new Error(`Invalid patch "${key}". Expected { type: PatchType.PARAGRAPH or PatchType.DOCUMENT, children: [...] }, ${others}`);
+    }
+};
+
+const imageReplacer = new ImageReplacer();
+const UTF16LE = new Uint8Array([0xff, 0xfe]);
+const UTF16BE = new Uint8Array([0xfe, 0xff]);
+
+// The root elements of the parts patches are written into, which are given the namespaces of what patches insert
+const PATCHED_PART_ROOTS: ReadonlySet<string> = new Set(["w:document", "w:hdr", "w:ftr", "w:footnotes", "w:endnotes", "w:comments"]);
+
+const compareByteArrays = (a: Uint8Array, b: Uint8Array): boolean => {
+    if (a.length !== b.length) {
+        return false;
+    }
+    for (let i = 0; i < a.length; i++) {
+        if (a[i] !== b[i]) {
+            return false;
+        }
+    }
+    return true;
+};
+
+/**
+ * Patches an existing .docx document by replacing placeholders with new content.
+ *
+ * This function opens an existing Word document, searches for placeholder text
+ * (e.g., {{name}}), and replaces it with the provided content while preserving
+ * the original document structure and optionally the original formatting.
+ *
+ * @param options - Configuration options for patching
+ * @returns A promise resolving to the patched document in the specified output format
+ *
+ * @example
+ * ```typescript
+ * // Patch with paragraph content
+ * const buffer = await patchDocument({
+ *   outputType: "nodebuffer",
+ *   data: templateBuffer,
+ *   patches: {
+ *     name: {
+ *       type: PatchType.PARAGRAPH,
+ *       children: [new TextRun({ text: "John Doe", bold: true })],
+ *     },
+ *   },
+ * });
+ *
+ * // Patch with custom delimiters
+ * const buffer = await patchDocument({
+ *   outputType: "nodebuffer",
+ *   data: templateBuffer,
+ *   patches: { ... },
+ *   placeholderDelimiters: { start: "<<", end: ">>" },
+ * });
+ * ```
+ *
+ * @publicApi
+ */
+export const patchDocument = async <T extends PatchDocumentOutputType = PatchDocumentOutputType>({
+    outputType,
+    data,
+    patches,
+    keepOriginalStyles,
+    placeholderDelimiters = { start: "{{", end: "}}" } as const,
+    recursive = true,
+    trimPlaceholders = false,
+    footnotes,
+    endnotes,
+    numbering = { config: [] },
+    pageNumbers,
+    properties,
+}: PatchDocumentOptions<T>): Promise<OutputByType[T]> => {
+    const zipContent = await loadZip(data);
+    const contexts = new Map<string, IContext>();
+    // Theme colors in patches are written with the hex color they come to in the document's theme
+    const themeColors = readThemeColors(zipContent);
+    // The content types of parts that patches add to the package, such as charts
+    // eslint-disable-next-line functional/prefer-readonly-type
+    const contentTypeOverrides: { readonly contentType: string; readonly partName: string }[] = [];
+    const file = {
+        Media: new Media(),
+        // The paragraphs in patches add the lists they use to it as they're written, as in a Document
+        Numbering: new Numbering(numbering),
+        Theme: themeColors && { Colors: themeColors },
+        // The notes that reference runs in patches bring with them are given to the notes patcher as they're written
+        FootNotes: {
+            View: { idOf: (reference: object, note: NoteContent, context: IContext) => carryNote("footnotes", reference, note, context) },
+        },
+        Endnotes: {
+            View: { idOf: (reference: object, note: NoteContent, context: IContext) => carryNote("endnotes", reference, note, context) },
+        },
+        PackageParts: new PackageParts(
+            {
+                // eslint-disable-next-line functional/immutable-data
+                addOverride: (contentType: string, partName: string) => contentTypeOverrides.push({ contentType, partName }),
+            },
+            // New parts take numbers the template's own parts, such as its charts, don't have
+            new Set([...zipContent.keys()].filter((path) => path.startsWith("word/")).map((path) => path.slice("word/".length))),
+        ),
+    } as unknown as File;
+
+    const map = new Map<string, Element>();
+
+    // eslint-disable-next-line functional/prefer-readonly-type
+    const imageRelationshipAdditions: IImageRelationshipAddition[] = [];
+    // eslint-disable-next-line functional/prefer-readonly-type
+    const relationshipAdditions: IRelationshipAddition[] = [];
+    let hasMedia = false;
+
+    const binaryContentMap = new Map<string, Uint8Array>();
+
+    if (!placeholderDelimiters?.start.trim() || !placeholderDelimiters?.end.trim()) {
+        throw new Error("Both start and end delimiters must be non-empty strings.");
+    }
+    const { start, end } = placeholderDelimiters;
+
+    for (const [key, patch] of Object.entries(patches)) {
+        assertValidPatch(key, patch, { inTableRow: false });
+    }
+
+    for (const [key, binaryValue] of zipContent) {
+        const startBytes = binaryValue.slice(0, 2);
+        if (compareByteArrays(startBytes, UTF16LE) || compareByteArrays(startBytes, UTF16BE)) {
+            // eslint-disable-next-line functional/immutable-data
+            binaryContentMap.set(key, binaryValue);
+            continue;
+        }
+
+        if (!key.endsWith(".xml") && !key.endsWith(".rels")) {
+            // eslint-disable-next-line functional/immutable-data
+            binaryContentMap.set(key, binaryValue);
+            continue;
+        }
+
+        const json = toJson(decodeUtf8(binaryValue));
+
+        // The root of a part patches are written into: the document, a header, a footer, the notes or the comments
+        const root = json.elements?.find((i) => PATCHED_PART_ROOTS.has(i.name ?? ""));
+        if (root && root.attributes) {
+            // We could check all namespaces from Document, but we'll instead
+            // check only those that may be used by our element types. VML (v) and Office's (o) are for legacy
+            // shapes, such as text boxes and the embedded files of docx/embedded-files
+
+            for (const ns of ["mc", "wp", "r", "w15", "m", "v", "o"] as const) {
+                root.attributes[`xmlns:${ns}`] = DocumentAttributeNamespaces[ns];
+            }
+            root.attributes["mc:Ignorable"] = `${root.attributes["mc:Ignorable"] || ""} w15`.trim();
+        }
+
+        // eslint-disable-next-line functional/immutable-data
+        map.set(key, json);
+    }
+
+    // Bookmark ids must be unique within the document, so the bookmarks patches insert are kept clear of the template's
+    const renumberBookmarks = renumberBookmarksAvoiding([...map.values()].flatMap(findBookmarkIds));
+    // So are the ids of drawings, even in different parts, so the drawings patches insert get ids no drawing has
+    const renumberDrawings = renumberDrawingsAvoiding([...map.values()].flatMap(findDrawingIds));
+
+    // Each part has one view wrapper, so content can tell which part it is written in, as notes are only in the body
+    const viewWrappers = new Map<string, IViewWrapper>();
+    const viewWrapperOf = (key: string): IViewWrapper => {
+        const existing = viewWrappers.get(key);
+        if (existing) {
+            return existing;
+        }
+        const viewWrapper = {
+            Relationships: {
+                addRelationship: (
+                    id: string | number,
+                    type: RelationshipType,
+                    target: string,
+                    targetMode?: (typeof TargetModeType)[keyof typeof TargetModeType],
+                ) => {
+                    // eslint-disable-next-line functional/immutable-data
+                    relationshipAdditions.push({ key, id, type, target, targetMode });
+                },
+            },
+        } as unknown as IViewWrapper;
+        // eslint-disable-next-line functional/immutable-data
+        viewWrappers.set(key, viewWrapper);
+        return viewWrapper;
+    };
+    const createContext = (key: string): IContext => ({ file, viewWrapper: viewWrapperOf(key), stack: [] });
+
+    const addContentTypeOverride = (contentType: string, partName: string): void => {
+        // eslint-disable-next-line functional/immutable-data
+        contentTypeOverrides.push({ contentType, partName });
+    };
+    // The styles that patches use, such as a heading's, are added once they and the notes are in, if the template lacks them
+    const styles = patchStyles(map, createContext);
+    // The lists that the patches use are written once the patches and notes are in, with ids the template's lists don't have
+    const lists = patchNumbering(file.Numbering, map, { createContext, addContentTypeOverride });
+    // The footnotes and endnotes that the patches refer to are written once the patches are in, one for each reference
+    const notes = patchNotes({ footnotes, endnotes }, map, {
+        createContext,
+        addContentTypeOverride,
+        renumberBookmarks,
+        renumberDrawings,
+        renumberLists: lists.renumber,
+        useStyles: styles.use,
+    });
+    // Word has notes only in a document's body, so a reference run with its own note is left out of other parts
+    const carryNote = (kind: "footnotes" | "endnotes", reference: object, note: NoteContent, context: IContext): number | undefined =>
+        context.viewWrapper === viewWrapperOf("word/document.xml") ? notes.carry(kind, reference, note) : undefined;
+
+    if (trimPlaceholders) {
+        const keysWhere = (test: (type: string) => boolean): readonly string[] =>
+            Object.entries(patches).flatMap(([key, patch]) => (test(patch.type) ? [key] : []));
+        const keys = {
+            delimiters: { start, end },
+            // A patch without a type, from JavaScript, is a paragraph patch
+            textKeys: new Set(keysWhere((type) => type !== PatchType.TABLE_ROWS && type !== PatchType.DRAWING)),
+            tableRowsKeys: keysWhere((type) => type === PatchType.TABLE_ROWS),
+            drawingKeys: new Set(keysWhere((type) => type === PatchType.DRAWING)),
+        };
+        for (const [key, json] of map) {
+            if (key.startsWith("word/") && !key.endsWith(".rels")) {
+                trimPlaceholdersIn(json, keys);
+            }
+        }
+    }
+
+    // Drawings whose alt text holds a placeholder, such as charts, are patched first, so their patches only see the
+    // template's own drawings, and not those the other patches add
+    patchDrawings(
+        {
+            parts: map,
+            binaryParts: binaryContentMap,
+            file,
+            patches: Object.entries(patches).flatMap(([key, patch]) => (patch.type === PatchType.DRAWING ? [[key, patch] as const] : [])),
+            delimiters: { start, end },
+        },
+        createContext,
+    );
+
+    const textPatches = Object.entries(patches).flatMap(([key, patch]) =>
+        patch.type === PatchType.DRAWING ? [] : [[key, patch] as const],
+    );
+    // Rows of tables are repeated first, so the other patches fill their placeholders in every copy of a row
+    const patchesInOrder = [
+        ...textPatches.filter(([, patch]) => patch.type === PatchType.TABLE_ROWS),
+        ...textPatches.filter(([, patch]) => patch.type !== PatchType.TABLE_ROWS),
+    ];
+
+    for (const [key, json] of [...map]) {
+        if (!key.startsWith("word/") || key.endsWith(".xml.rels")) {
+            continue;
+        }
+        const context = createContext(key);
+        // eslint-disable-next-line functional/immutable-data
+        contexts.set(key, context);
+        // The VML shape types the part has, such as the picture frame embedded files are drawn in, aren't inserted again
+        const removeShapeTypes = removeShapeTypesIn(json);
+
+        // Patches a placeholder in an element of the part: its root, or a copy of the rows of a table that a patch repeats
+        const patchPlaceholder = (element: Element, patchKey: string, patchValue: IPatch | TableRowsPatch): void => {
+            if (patchValue.type === PatchType.TABLE_ROWS) {
+                patchTableRows({
+                    json: element,
+                    key: patchKey,
+                    patch: patchValue,
+                    delimiters: { start, end },
+                    patchPlaceholder,
+                    renumberDrawings,
+                });
+                return;
+            }
+
+            // The relationships of the patch's hyperlinks, which the part only gets if the placeholder is in it
+            // eslint-disable-next-line functional/prefer-readonly-type
+            const hyperlinkRelationships: IRelationshipAddition[] = [];
+
+            // TODO: mutates json. Make it immutable
+            // The replacer patches every occurrence in one pass, and never searches the content it inserts,
+            // so a patch that contains its own placeholder is fine
+            // https://github.com/dolanmiu/docx/issues/2267
+            const { didFindOccurrence } = replacer({
+                json: element,
+                patch: {
+                    ...patchValue,
+                    children: patchValue.children
+                        // A bookmark is written as its start, its children and its end, as it is in a paragraph
+                        .flatMap((child) => (child instanceof Bookmark ? child.writtenAs : [child]))
+                        .map((child) => {
+                            // We need to replace external hyperlinks with concrete hyperlinks
+                            if (child instanceof ExternalHyperlink) {
+                                const { target, anchor } = externalHyperlinkTarget(child.options.link);
+                                // The full link goes with the split one, so pictures in the hyperlink can link to the
+                                // address with its fragment
+                                const concreteHyperlink = new ConcreteHyperlink(
+                                    child.options.children,
+                                    uniqueId(),
+                                    anchor,
+                                    child.options.link,
+                                );
+                                // eslint-disable-next-line functional/immutable-data
+                                hyperlinkRelationships.push({
+                                    key,
+                                    id: concreteHyperlink.linkId,
+                                    type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+                                    target,
+                                    targetMode: TargetModeType.EXTERNAL,
+                                });
+                                return concreteHyperlink;
+                            } else {
+                                return child;
+                            }
+                        }),
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                } as any,
+                patchText: `${start}${patchKey}${end}`,
+                context,
+                keepOriginalStyles,
+                recursive,
+                renumberIds: (elements) =>
+                    styles.use(lists.renumber(notes.renumber(renumberBookmarks(renumberDrawings(removeShapeTypes(elements)))))),
+            });
+
+            if (didFindOccurrence) {
+                // eslint-disable-next-line functional/immutable-data
+                relationshipAdditions.push(...hyperlinkRelationships);
+            }
+        };
+
+        for (const [patchKey, patchValue] of patchesInOrder) {
+            patchPlaceholder(json, patchKey, patchValue);
+        }
+    }
+
+    notes.write();
+    lists.write();
+    styles.write();
+
+    for (const [key, json] of map) {
+        if (!key.startsWith("word/") || key.endsWith(".xml.rels")) {
+            continue;
+        }
+        const mediaDatas = imageReplacer.getMediaData(JSON.stringify(json), file.Media);
+        if (mediaDatas.length > 0) {
+            hasMedia = true;
+            // eslint-disable-next-line functional/immutable-data
+            imageRelationshipAdditions.push({
+                key,
+                mediaDatas,
+            });
+        }
+    }
+
+    for (const { key, mediaDatas } of imageRelationshipAdditions) {
+        const relationshipKey = relationshipsPathOf(key);
+        const relationshipsJson = map.get(relationshipKey) ?? createRelationshipFile();
+        // eslint-disable-next-line functional/immutable-data
+        map.set(relationshipKey, relationshipsJson);
+
+        const index = getNextRelationshipIndex(relationshipsJson);
+        const newJson = imageReplacer.replace(JSON.stringify(map.get(key)), mediaDatas, index);
+        // eslint-disable-next-line functional/immutable-data
+        map.set(key, JSON.parse(newJson) as Element);
+
+        for (let i = 0; i < mediaDatas.length; i++) {
+            const { fileName } = mediaDatas[i];
+            appendRelationship(
+                relationshipsJson,
+                index + i,
+                "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
+                `media/${fileName}`,
+            );
+        }
+    }
+
+    for (const { key, id, type, target, targetMode } of relationshipAdditions) {
+        const relationshipKey = relationshipsPathOf(key);
+
+        const relationshipsJson = map.get(relationshipKey) ?? createRelationshipFile();
+        // eslint-disable-next-line functional/immutable-data
+        map.set(relationshipKey, relationshipsJson);
+
+        appendRelationship(relationshipsJson, id, type, target, targetMode);
+    }
+
+    // The pages are worked out once everything is patched in
+    if (pageNumbers) {
+        await fillTemplatePageNumbers(map, pageNumbers, binaryContentMap);
+    }
+
+    if (properties) {
+        patchCoreProperties(map, binaryContentMap, properties, { addContentTypeOverride });
+    }
+
+    // The parts that patches added to the package, such as charts, which add their own parts as they are written, such
+    // as a chart's workbook
+    const packageParts = xmlifyPackageParts(file, undefined);
+
+    if (hasMedia || contentTypeOverrides.length > 0) {
+        const contentTypesJson = map.get("[Content_Types].xml");
+
+        if (!contentTypesJson) {
+            throw new Error("Could not find content types file");
+        }
+
+        if (hasMedia) {
+            appendContentType(contentTypesJson, "image/png", "png");
+            appendContentType(contentTypesJson, "image/jpeg", "jpeg");
+            appendContentType(contentTypesJson, "image/jpeg", "jpg");
+            appendContentType(contentTypesJson, "image/bmp", "bmp");
+            appendContentType(contentTypesJson, "image/gif", "gif");
+            appendContentType(contentTypesJson, "image/svg+xml", "svg");
+        }
+
+        for (const { contentType, partName } of contentTypeOverrides) {
+            appendContentTypeOverride(contentTypesJson, contentType, partName);
+        }
+    }
+
+    const zip = zipFiles([
+        ...[...map].map(([key, value]) => [key, stringifyElement(value)] as const),
+        ...binaryContentMap,
+        ...file.Media.Array.map(({ data: media, fileName }) => [`word/media/${fileName}`, media] as const),
+        ...packageParts.map(({ path, data: partData }) => [path, partData] as const),
+    ]);
+
+    return zipOutput(zip, outputType, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+};

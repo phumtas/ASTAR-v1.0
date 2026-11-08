@@ -1,0 +1,69 @@
+import { describe, expect, it } from "vitest";
+
+import { Formatter } from "@export/formatter";
+import { BorderStyle } from "@file/border";
+
+import { createBorderElement } from "./border";
+
+describe("BorderElement", () => {
+    describe("#createBorderElement", () => {
+        it("should create a simple border element", () => {
+            const border = createBorderElement("w:top", {
+                style: BorderStyle.SINGLE,
+            });
+            const tree = new Formatter().format(border);
+            expect(tree).to.deep.equal({
+                "w:top": {
+                    _attr: {
+                        "w:val": "single",
+                    },
+                },
+            });
+        });
+        it("should create a simple border element with a size", () => {
+            const border = createBorderElement("w:top", {
+                style: BorderStyle.SINGLE,
+                size: 22,
+            });
+            const tree = new Formatter().format(border);
+            expect(tree).to.deep.equal({
+                "w:top": {
+                    _attr: {
+                        "w:val": "single",
+                        "w:sz": 22,
+                    },
+                },
+            });
+        });
+        it("should create a simple border element with space", () => {
+            const border = createBorderElement("w:top", {
+                style: BorderStyle.SINGLE,
+                space: 22,
+            });
+            const tree = new Formatter().format(border);
+            expect(tree).to.deep.equal({
+                "w:top": {
+                    _attr: {
+                        "w:val": "single",
+                        "w:space": 22,
+                    },
+                },
+            });
+        });
+        it("should create a border in a color of the document's theme", () => {
+            const border = createBorderElement("w:top", { style: BorderStyle.SINGLE, size: 4, color: { theme: "accent1", lighter: 60 } });
+            const tree = new Formatter().format(border);
+            expect(tree).to.deep.equal({
+                "w:top": {
+                    _attr: {
+                        "w:val": "single",
+                        "w:color": "B4C6E7",
+                        "w:themeColor": "accent1",
+                        "w:themeTint": "66",
+                        "w:sz": 4,
+                    },
+                },
+            });
+        });
+    });
+});

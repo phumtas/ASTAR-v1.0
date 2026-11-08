@@ -1,0 +1,293 @@
+import { describe, expect, it } from "vitest";
+
+import { Formatter } from "@export/formatter";
+
+import { Settings } from "./settings";
+
+describe("Settings", () => {
+    describe("#constructor", () => {
+        it("should create a empty Settings with correct rootKey", () => {
+            const settings = new Settings({});
+            const tree = new Formatter().format(settings);
+
+            expect(Object.keys(tree)).has.length(1);
+            expect(tree["w:settings"]).to.be.an("array");
+        });
+
+        it("should add updateFields setting", () => {
+            const settings = new Settings({
+                updateFields: true,
+            });
+
+            const tree = new Formatter().format(settings);
+            expect(Object.keys(tree)).has.length(1);
+            expect(tree["w:settings"]).to.be.an("array");
+
+            expect(tree["w:settings"]).to.deep.include({
+                "w:updateFields": {},
+            });
+        });
+
+        it("should indicate modern word compatibility by default", () => {
+            const settings = new Settings({});
+
+            const tree = new Formatter().format(settings);
+            expect(Object.keys(tree)).has.length(1);
+            expect(tree["w:settings"]).to.be.an("array");
+
+            const compat = tree["w:settings"][3];
+            expect(compat).to.be.an("object").with.keys("w:compat");
+            expect(compat["w:compat"]).to.deep.include({
+                "w:compatSetting": {
+                    _attr: {
+                        "w:val": 15,
+                        "w:uri": "http://schemas.microsoft.com/office/word",
+                        "w:name": "compatibilityMode",
+                    },
+                },
+            });
+        });
+
+        it("should add embedTrueTypeFonts setting", () => {
+            const settings = new Settings({
+                embedFonts: true,
+            });
+
+            const tree = new Formatter().format(settings);
+            expect(tree["w:settings"]).to.deep.include({
+                "w:embedTrueTypeFonts": {},
+            });
+        });
+
+        it("should add trackRevisions setting", () => {
+            const settings = new Settings({
+                trackRevisions: true,
+            });
+
+            const tree = new Formatter().format(settings);
+            expect(Object.keys(tree)).has.length(1);
+            expect(tree["w:settings"]).to.be.an("array");
+
+            expect(tree["w:settings"]).to.deep.include({
+                "w:trackRevisions": {},
+            });
+        });
+
+        it("should protect the document", () => {
+            const settings = new Settings({
+                protection: { type: "comments" },
+            });
+
+            const tree = new Formatter().format(settings);
+            expect(tree["w:settings"]).to.deep.include({
+                "w:documentProtection": { _attr: { "w:edit": "comments", "w:enforcement": true } },
+            });
+        });
+
+        it("should add compatibility setting with default compatability version", () => {
+            const settings = new Settings({
+                compatibility: {},
+            });
+
+            const tree = new Formatter().format(settings);
+            expect(Object.keys(tree)).has.length(1);
+            expect(tree["w:settings"]).to.be.an("array");
+
+            expect(tree["w:settings"]).to.deep.include({
+                "w:compat": [
+                    {
+                        "w:compatSetting": {
+                            _attr: {
+                                "w:name": "compatibilityMode",
+                                "w:uri": "http://schemas.microsoft.com/office/word",
+                                "w:val": 15,
+                            },
+                        },
+                    },
+                ],
+            });
+        });
+
+        it("should add compatibility setting with version", () => {
+            const settings = new Settings({
+                compatibility: {
+                    version: 99,
+                },
+            });
+
+            const tree = new Formatter().format(settings);
+            expect(Object.keys(tree)).has.length(1);
+            expect(tree["w:settings"]).to.be.an("array");
+
+            expect(tree["w:settings"]).to.deep.include({
+                "w:compat": [
+                    {
+                        "w:compatSetting": {
+                            _attr: {
+                                "w:name": "compatibilityMode",
+                                "w:uri": "http://schemas.microsoft.com/office/word",
+                                "w:val": 99,
+                            },
+                        },
+                    },
+                ],
+            });
+        });
+
+        it("should write a half-inch defaultTabStop when none is given, as Pages puts no tab stops without one", () => {
+            const tree = new Formatter().format(new Settings({}));
+            expect(tree["w:settings"]).to.deep.include({
+                "w:defaultTabStop": {
+                    _attr: {
+                        "w:val": 720,
+                    },
+                },
+            });
+        });
+
+        it("should add defaultTabStop setting with version", () => {
+            const settings = new Settings({
+                defaultTabStop: 100,
+            });
+
+            const tree = new Formatter().format(settings);
+            expect(Object.keys(tree)).has.length(1);
+            expect(tree["w:settings"]).to.be.an("array");
+            expect(tree["w:settings"]).to.deep.include({
+                "w:defaultTabStop": {
+                    _attr: {
+                        "w:val": 100,
+                    },
+                },
+            });
+        });
+
+        it("should add autoHyphenation setting", () => {
+            const options = {
+                hyphenation: {
+                    autoHyphenation: true,
+                },
+            };
+
+            const tree = new Formatter().format(new Settings(options));
+            expect(Object.keys(tree)).has.length(1);
+            expect(tree["w:settings"]).to.be.an("array");
+            expect(tree["w:settings"]).to.deep.include({
+                "w:autoHyphenation": {},
+            });
+        });
+
+        it("should add doNotHyphenateCaps setting", () => {
+            const options = {
+                hyphenation: {
+                    doNotHyphenateCaps: true,
+                },
+            };
+
+            const tree = new Formatter().format(new Settings(options));
+            expect(Object.keys(tree)).has.length(1);
+            expect(tree["w:settings"]).to.be.an("array");
+            expect(tree["w:settings"]).to.deep.include({
+                "w:doNotHyphenateCaps": {},
+            });
+        });
+
+        it("should add hyphenationZone setting", () => {
+            const options = {
+                hyphenation: {
+                    hyphenationZone: 200,
+                },
+            };
+
+            const tree = new Formatter().format(new Settings(options));
+            expect(Object.keys(tree)).has.length(1);
+            expect(tree["w:settings"]).to.be.an("array");
+            expect(tree["w:settings"]).to.deep.include({
+                "w:hyphenationZone": {
+                    _attr: {
+                        "w:val": 200,
+                    },
+                },
+            });
+        });
+
+        it("should add consecutiveHyphenLimit setting", () => {
+            const options = {
+                hyphenation: {
+                    consecutiveHyphenLimit: 3,
+                },
+            };
+
+            const tree = new Formatter().format(new Settings(options));
+            expect(Object.keys(tree)).has.length(1);
+            expect(tree["w:settings"]).to.be.an("array");
+            expect(tree["w:settings"]).to.deep.include({
+                "w:consecutiveHyphenLimit": {
+                    _attr: {
+                        "w:val": 3,
+                    },
+                },
+            });
+        });
+
+        it("should write every setting in the schema's order, whatever order the options are given in", () => {
+            const settings = new Settings({
+                updateFields: true,
+                evenAndOddHeaders: true,
+                hyphenation: {
+                    doNotHyphenateCaps: true,
+                    hyphenationZone: 200,
+                    consecutiveHyphenLimit: 3,
+                    autoHyphenation: true,
+                },
+                defaultTabStop: 100,
+                protection: { type: "readOnly" },
+                trackRevisions: true,
+                embedFonts: true,
+            });
+
+            const tree = new Formatter().format(settings);
+            const elements = (tree["w:settings"] as readonly Record<string, unknown>[]).map((child) => Object.keys(child)[0]);
+            expect(elements).to.deep.equal([
+                "_attr",
+                "w:displayBackgroundShape",
+                "w:embedTrueTypeFonts",
+                "w:trackRevisions",
+                "w:documentProtection",
+                "w:defaultTabStop",
+                "w:autoHyphenation",
+                "w:consecutiveHyphenLimit",
+                "w:hyphenationZone",
+                "w:doNotHyphenateCaps",
+                "w:evenAndOddHeaders",
+                "w:updateFields",
+                "w:compat",
+            ]);
+        });
+
+        // TODO: Remove when deprecating compatibilityModeVersion
+        it("should add compatibility setting with legacy version", () => {
+            const settings = new Settings({
+                compatibilityModeVersion: 99,
+            });
+
+            const tree = new Formatter().format(settings);
+            expect(Object.keys(tree)).has.length(1);
+            expect(tree["w:settings"]).to.be.an("array");
+
+            expect(tree["w:settings"]).to.deep.include({
+                "w:compat": [
+                    {
+                        "w:compatSetting": {
+                            _attr: {
+                                "w:name": "compatibilityMode",
+                                "w:uri": "http://schemas.microsoft.com/office/word",
+                                "w:val": 99,
+                            },
+                        },
+                    },
+                ],
+            });
+        });
+    });
+});

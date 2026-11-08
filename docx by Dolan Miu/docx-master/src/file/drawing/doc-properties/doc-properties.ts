@@ -1,0 +1,134 @@
+/**
+ * Document Properties module for DrawingML elements.
+ *
+ * This module provides non-visual properties for drawing elements,
+ * including name, description, and accessibility information.
+ *
+ * Reference: https://c-rex.net/projects/samples/ooxml/e1/Part4/OOXML_P4_DOCX_docPr_topic_ID0ES32OB.html
+ *
+ * @module
+ */
+import { ConcreteHyperlink } from "@file/paragraph";
+import { type IContext, type IXmlableObject, NextAttributeComponent, XmlComponent } from "@file/xml-components";
+import { docPropertiesUniqueNumericId } from "@util/convenience-functions";
+
+import { DrawingLink, type DrawingLinkOptions, createDecorativeExtensionList } from "./non-visual-drawing-properties";
+
+// <complexType name="CT_NonVisualDrawingProps">
+//     <sequence>
+//         <element name="hlinkClick" type="CT_Hyperlink" minOccurs="0" maxOccurs="1" />
+//         <element name="hlinkHover" type="CT_Hyperlink" minOccurs="0" maxOccurs="1" />
+//         <element name="extLst" type="CT_OfficeArtExtensionList" minOccurs="0" maxOccurs="1" />
+//     </sequence>
+//     <attribute name="id" type="ST_DrawingElementId" use="required" />
+//     <attribute name="name" type="xsd:string" use="required" />
+//     <attribute name="descr" type="xsd:string" use="optional" default="" />
+//     <attribute name="hidden" type="xsd:boolean" use="optional" default="false" />
+// </complexType>
+
+/**
+ * Options for configuring document properties of a drawing: its name and alternative text, written in `wp:docPr`.
+ */
+export type DocPropertiesOptions = {
+    /** The drawing's name, which Word shows in its Selection Pane. Default is an empty name */
+    readonly name?: string;
+    /** Description/alt text for accessibility */
+    readonly description?: string;
+    /** Title of the drawing element */
+    readonly title?: string;
+    readonly id?: string;
+};
+
+/**
+ * Represents non-visual drawing properties in a WordprocessingML document.
+ *
+ * DocProperties contains metadata about a drawing element such as
+ * its name, description (alt text), and title for accessibility.
+ *
+ * Reference: https://c-rex.net/projects/samples/ooxml/e1/Part4/OOXML_P4_DOCX_docPr_topic_ID0ES32OB.html
+ *
+ * ## XSD Schema
+ * ```xml
+ * <xsd:complexType name="CT_NonVisualDrawingProps">
+ *   <xsd:sequence>
+ *     <xsd:element name="hlinkClick" type="CT_Hyperlink" minOccurs="0"/>
+ *     <xsd:element name="hlinkHover" type="CT_Hyperlink" minOccurs="0"/>
+ *     <xsd:element name="extLst" type="CT_OfficeArtExtensionList" minOccurs="0"/>
+ *   </xsd:sequence>
+ *   <xsd:attribute name="id" type="ST_DrawingElementId" use="required"/>
+ *   <xsd:attribute name="name" type="xsd:string" use="required"/>
+ *   <xsd:attribute name="descr" type="xsd:string"/>
+ *   <xsd:attribute name="hidden" type="xsd:boolean"/>
+ * </xsd:complexType>
+ * ```
+ */
+export class DocProperties extends XmlComponent {
+    private readonly link?: DrawingLink;
+    private readonly decorative?: boolean;
+
+    public constructor(
+        // The name is required in the XML, so a drawing without one is given an empty name
+        { name = "", description, title, id }: DocPropertiesOptions = {},
+        { link, decorative }: DrawingLinkOptions = {},
+    ) {
+        super("wp:docPr");
+
+        const attributes: Record<string, { readonly key: string; readonly value: string | number }> = {
+            id: {
+                key: "id",
+                value: id ?? docPropertiesUniqueNumericId(),
+            },
+            name: {
+                key: "name",
+                value: name,
+            },
+        };
+
+        // Leave out empty alt text, as Word 2007 will not open a document with an empty description and title here. See #1113.
+        if (description) {
+            attributes.description = {
+                key: "descr",
+                value: description,
+            };
+        }
+
+        if (title) {
+            attributes.title = {
+                key: "title",
+                value: title,
+            };
+        }
+
+        this.root.push(new NextAttributeComponent(attributes));
+        this.link = link === undefined ? undefined : new DrawingLink(link);
+        this.decorative = decorative;
+    }
+
+    public prepForXml(context: IContext): IXmlableObject | undefined {
+        if (this.link) {
+            this.link.addRelationship(context);
+            this.root.push(this.link.createClick(true));
+        } else {
+            for (let i = context.stack.length - 1; i >= 0; i--) {
+                const element = context.stack[i];
+                if (!(element instanceof ConcreteHyperlink)) {
+                    continue;
+                }
+
+                // The hyperlink picks the relationship, as its own may be missing the fragment it moved to its anchor
+                this.root.push(element.createDrawingClick(context, true));
+                break;
+            }
+        }
+
+        // The extension list comes after the link in the schema
+        if (this.decorative) {
+            this.root.push(createDecorativeExtensionList(true));
+        }
+
+        const result = super.prepForXml(context);
+        // Keep only the attributes, so the element is the same if the document is written again
+        this.root.splice(1);
+        return result;
+    }
+}

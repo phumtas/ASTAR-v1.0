@@ -1,0 +1,112 @@
+# Endnotes
+
+!> Endnotes require an understanding of [Sections](usage/sections.md).
+
+Endnotes allow you to add references that appear at the end of the document. They are ideal for academic papers, research documents, and formal publications where lengthy citations would clutter the main text.
+
+?> For references that appear at the bottom of each page, see [Footnotes](usage/footnotes.md). To add endnotes to an existing document, see [Templates](usage/templates.md#footnotes-and-endnotes).
+
+## Example
+
+```ts live
+import { Document, EndnoteReferenceRun, Paragraph, TextRun } from "docx";
+
+const doc = new Document({
+    endnotes: {
+        1: { children: [new Paragraph("This is the first endnote with some detailed explanation.")] },
+        2: { children: [new Paragraph("Second endnote"), new Paragraph("With multiple paragraphs for more complex content.")] },
+        3: { children: [new Paragraph("Third endnote referencing important source material.")] },
+        4: { children: [new Paragraph("Fourth endnote from a different section.")] },
+    },
+    sections: [
+        {
+            children: [
+                new Paragraph({
+                    children: [
+                        new TextRun("This document demonstrates endnotes functionality. "),
+                        new TextRun("Here is some text with an endnote reference"),
+                        new EndnoteReferenceRun(1),
+                        new TextRun(". This allows for detailed citations and references "),
+                        new EndnoteReferenceRun(2),
+                        new TextRun(" without cluttering the main text flow."),
+                    ],
+                }),
+                new Paragraph({
+                    children: [
+                        new TextRun("Endnotes appear at the end of the document, "),
+                        new TextRun("unlike footnotes which appear at the bottom of each page"),
+                        new EndnoteReferenceRun(3),
+                        new TextRun(". This makes them ideal for academic papers and formal documents."),
+                    ],
+                }),
+            ],
+        },
+        {
+            children: [
+                new Paragraph({
+                    children: [
+                        new TextRun("This is content from a different section "),
+                        new TextRun("with its own endnote reference"),
+                        new EndnoteReferenceRun(4),
+                        new TextRun(". Endnotes from all sections appear together at the document end."),
+                    ],
+                }),
+            ],
+        },
+    ],
+});
+```
+
+## Usage
+
+### Document Configuration
+
+Add endnotes to the `endnotes` property in the `Document` constructor:
+
+- Keys are reference numbers (as strings)
+- Values are objects with `children` array of `Paragraph` objects
+- Endnotes can contain multiple paragraphs for complex content
+
+### EndnoteReferenceRun
+
+Insert `EndnoteReferenceRun` in paragraphs to create reference markers:
+
+- Takes the `id` of one of the endnotes, its key, or the endnote's content (see below)
+- Automatically styled as superscript
+- References the corresponding endnote content
+
+## Endnotes With Their Content
+
+An `EndnoteReferenceRun` can be given its endnote's content, its `children`, instead of the id of one of the document's `endnotes`, as a [footnote](usage/footnotes.md#footnotes-with-their-content) can. The endnote is added to the document's endnotes when the document is written, with an id none of them has:
+
+```ts live
+import { Document, EndnoteReferenceRun, Paragraph, TextRun } from "docx";
+
+const doc = new Document({
+    sections: [
+        {
+            children: [
+                new Paragraph({
+                    children: [
+                        new TextRun("The method is described elsewhere"),
+                        new EndnoteReferenceRun({ children: [new Paragraph("Smith, A Book, 2001, page 12.")] }),
+                        new TextRun("."),
+                    ],
+                }),
+            ],
+        },
+    ],
+});
+```
+
+## Options
+
+| Property | Type                                        | Notes    | Description                                   |
+| -------- | ------------------------------------------- | -------- | --------------------------------------------- |
+| endnotes | `Record<string, { children: Paragraph[] }>` | Optional | Endnote definitions keyed by reference number |
+
+## Demo
+
+[Example](https://raw.githubusercontent.com/dolanmiu/docx/master/demo/footnotes-and-endnotes/endnotes.ts ":include")
+
+_Source: https://github.com/dolanmiu/docx/blob/master/demo/footnotes-and-endnotes/endnotes.ts_

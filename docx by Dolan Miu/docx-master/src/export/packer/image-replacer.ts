@@ -1,0 +1,48 @@
+/**
+ * Image replacer module for substituting image placeholders in XML.
+ *
+ * @module
+ */
+import type { IMediaData, Media } from "@file/media";
+
+import { findPlaceholders, replacePlaceholders } from "./placeholders";
+
+/**
+ * Replaces image placeholders with relationship IDs in XML content.
+ *
+ * During document compilation, images are referenced using placeholder tokens
+ * like {image1.png}. This class replaces those placeholders with the actual
+ * relationship IDs used in the OOXML structure.
+ *
+ * @example
+ * ```typescript
+ * const replacer = new ImageReplacer();
+ * const mediaData = replacer.getMediaData(xmlString, media);
+ * const updatedXml = replacer.replace(xmlString, mediaData, 1);
+ * ```
+ */
+export class ImageReplacer {
+    /**
+     * Replaces image placeholder tokens with relationship IDs.
+     *
+     * @param xmlData - The XML string containing image placeholders
+     * @param mediaData - Array of media data to replace
+     * @param offset - Starting offset for relationship IDs
+     * @returns XML string with placeholders replaced by relationship IDs
+     */
+    public replace(xmlData: string, mediaData: readonly IMediaData[], offset: number): string {
+        return replacePlaceholders(xmlData, new Map(mediaData.map((image, i) => [image.fileName, (offset + i).toString()])));
+    }
+
+    /**
+     * Extracts media data referenced in the XML content.
+     *
+     * @param xmlData - The XML string to search for media references
+     * @param media - The media collection to search within
+     * @returns Array of media data found in the XML
+     */
+    public getMediaData(xmlData: string, media: Media): readonly IMediaData[] {
+        const placeholders = findPlaceholders(xmlData);
+        return media.Array.filter((image) => placeholders.has(image.fileName));
+    }
+}

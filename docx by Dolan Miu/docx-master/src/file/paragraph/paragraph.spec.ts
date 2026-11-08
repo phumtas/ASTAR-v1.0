@@ -1,0 +1,1468 @@
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { Formatter } from "@export/formatter";
+import { BorderStyle } from "@file/border";
+import { HorizontalPositionAlign, VerticalPositionAlign } from "@file/shared";
+import { EMPTY_OBJECT, type IContext, type IXmlableObject } from "@file/xml-components";
+import * as convenienceFunctions from "@util/convenience-functions";
+
+import { DocumentWrapper, type IViewWrapper } from "../document-wrapper";
+import type { File } from "../file";
+import { ShadingType } from "../shading";
+import { Table, TableCell, TableRow } from "../table";
+import { Textbox } from "../textbox";
+import { AlignmentType, HeadingLevel, LeaderType, PageBreak, TabStopPosition, TabStopType } from "./formatting";
+import { FrameAnchorType } from "./frame";
+import { Bookmark, ExternalHyperlink } from "./links";
+import { Math } from "./math";
+import { Paragraph, type ParagraphChild } from "./paragraph";
+import { TextRun } from "./run";
+import { CommentRangeStart } from "./run/comment-run";
+
+describe("Paragraph", () => {
+    beforeEach(() => {
+        vi.spyOn(convenienceFunctions, "uniqueId").mockReturnValue("test-unique-id");
+        vi.spyOn(convenienceFunctions, "bookmarkUniqueNumericId").mockReturnValue(-101);
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    describe("#constructor()", () => {
+        it("should create valid JSON", () => {
+            const paragraph = new Paragraph("");
+            const stringifiedJson = JSON.stringify(paragraph);
+
+            try {
+                JSON.parse(stringifiedJson);
+            } catch {
+                assert.isTrue(false);
+            }
+            assert.isTrue(true);
+        });
+
+        it("should create have valid properties", () => {
+            const paragraph = new Paragraph("");
+            const stringifiedJson = JSON.stringify(paragraph);
+            const newJson = JSON.parse(stringifiedJson);
+            assert.equal(newJson.root[0].rootKey, "w:pPr");
+        });
+
+        it("should only take what goes in a paragraph as children, not a paragraph or a table (#2395)", () => {
+            // TypeScript compares classes by their members, so a child type with no members of its own, such as
+            // CommentRangeStart, would let any component through, a paragraph included
+            const children: readonly ParagraphChild[] = [
+                new TextRun("Text"),
+                new CommentRangeStart(0),
+                new Math({ children: [] }),
+                new Textbox({ children: [new Paragraph("In a text box")] }),
+                // @ts-expect-error -- a paragraph can't be inside another
+                new Paragraph("Inner"),
+                // @ts-expect-error -- nor can a table
+                new Table({ rows: [new TableRow({ children: [new TableCell({ children: [] })] })] }),
+            ];
+
+            expect(children).toHaveLength(6);
+        });
+    });
+
+    describe("#with()", () => {
+        const run = (text: string): IXmlableObject => ({ "w:r": [{ "w:t": [{ _attr: { "xml:space": "preserve" } }, text] }] });
+
+        it("should make a new paragraph with the options given and the paragraph's own, leaving the paragraph as it is", () => {
+            const paragraph = new Paragraph({ style: "Quote", spacing: { after: 120 }, children: [new TextRun("Hello")] });
+            const indented = paragraph.with({ indent: { left: 720, right: 720 }, alignment: AlignmentType.RIGHT });
+
+            expect(new Formatter().format(indented)).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [
+                            { "w:pStyle": { _attr: { "w:val": "Quote" } } },
+                            { "w:spacing": { _attr: { "w:after": 120 } } },
+                            { "w:ind": { _attr: { "w:left": 720, "w:right": 720 } } },
+                            { "w:jc": { _attr: { "w:val": "right" } } },
+                        ],
+                    },
+                    run("Hello"),
+                ],
+            });
+            expect(new Formatter().format(paragraph)).to.deep.equal({
+                "w:p": [
+                    { "w:pPr": [{ "w:pStyle": { _attr: { "w:val": "Quote" } } }, { "w:spacing": { _attr: { "w:after": 120 } } }] },
+                    run("Hello"),
+                ],
+            });
+        });
+
+        it("should replace each option given as a whole, and remove one given as undefined", () => {
+            const paragraph = new Paragraph({ text: "Hello", spacing: { before: 240, after: 120 }, indent: { left: 720 } });
+            const changed = paragraph.with({ spacing: { before: 0 }, indent: undefined });
+
+            expect(new Formatter().format(changed)).to.deep.equal({
+                "w:p": [{ "w:pPr": [{ "w:spacing": { _attr: { "w:before": 0 } } }] }, run("Hello")],
+            });
+        });
+
+        it("should keep the text of a paragraph made from a string, which is its options' text", () => {
+            const paragraph = new Paragraph("Hello");
+
+            expect(paragraph.options).to.deep.equal({ text: "Hello" });
+            expect(new Formatter().format(paragraph.with({ style: "Quote" }))).to.deep.equal({
+                "w:p": [{ "w:pPr": [{ "w:pStyle": { _attr: { "w:val": "Quote" } } }] }, run("Hello")],
+            });
+        });
+
+        it("should replace the paragraph's children with those given", () => {
+            const paragraph = new Paragraph({ style: "Quote", children: [new TextRun("Old")] });
+
+            expect(new Formatter().format(paragraph.with({ children: [new TextRun("New")] }))).to.deep.equal({
+                "w:p": [{ "w:pPr": [{ "w:pStyle": { _attr: { "w:val": "Quote" } } }] }, run("New")],
+            });
+        });
+
+        it("should keep a bookmark in the paragraph's children", () => {
+            const paragraph = new Paragraph({ children: [new Bookmark({ id: "anchor", children: [new TextRun("Marked")] })] });
+
+            expect(new Formatter().format(paragraph.with({ style: "Quote" }))).to.deep.equal({
+                "w:p": [
+                    { "w:pPr": [{ "w:pStyle": { _attr: { "w:val": "Quote" } } }] },
+                    { "w:bookmarkStart": { _attr: { "w:name": "anchor", "w:id": -101 } } },
+                    run("Marked"),
+                    { "w:bookmarkEnd": { _attr: { "w:id": -101 } } },
+                ],
+            });
+        });
+    });
+
+    describe("#addRunToFront()", () => {
+        it("should put the run before the paragraph's content, after its properties", () => {
+            const paragraph = new Paragraph({ style: "Quote", children: [new TextRun("Second")] }).addRunToFront(new TextRun("First"));
+            expect(new Formatter().format(paragraph)).to.deep.equal({
+                "w:p": [
+                    { "w:pPr": [{ "w:pStyle": { _attr: { "w:val": "Quote" } } }] },
+                    { "w:r": [{ "w:t": [{ _attr: { "xml:space": "preserve" } }, "First"] }] },
+                    { "w:r": [{ "w:t": [{ _attr: { "xml:space": "preserve" } }, "Second"] }] },
+                ],
+            });
+        });
+    });
+
+    describe("#heading1()", () => {
+        it("should add heading style to JSON", () => {
+            const paragraph = new Paragraph({
+                heading: HeadingLevel.HEADING_1,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [{ "w:pStyle": { _attr: { "w:val": "Heading1" } } }],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#heading2()", () => {
+        it("should add heading style to JSON", () => {
+            const paragraph = new Paragraph({
+                heading: HeadingLevel.HEADING_2,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [{ "w:pStyle": { _attr: { "w:val": "Heading2" } } }],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#heading3()", () => {
+        it("should add heading style to JSON", () => {
+            const paragraph = new Paragraph({
+                heading: HeadingLevel.HEADING_3,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [{ "w:pStyle": { _attr: { "w:val": "Heading3" } } }],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#heading4()", () => {
+        it("should add heading style to JSON", () => {
+            const paragraph = new Paragraph({
+                heading: HeadingLevel.HEADING_4,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [{ "w:pStyle": { _attr: { "w:val": "Heading4" } } }],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#heading5()", () => {
+        it("should add heading style to JSON", () => {
+            const paragraph = new Paragraph({
+                heading: HeadingLevel.HEADING_5,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [{ "w:pStyle": { _attr: { "w:val": "Heading5" } } }],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#heading6()", () => {
+        it("should add heading style to JSON", () => {
+            const paragraph = new Paragraph({
+                heading: HeadingLevel.HEADING_6,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [{ "w:pStyle": { _attr: { "w:val": "Heading6" } } }],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#title()", () => {
+        it("should add title style to JSON", () => {
+            const paragraph = new Paragraph({
+                heading: HeadingLevel.TITLE,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [{ "w:pStyle": { _attr: { "w:val": "Title" } } }],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#center()", () => {
+        it("should add center alignment to JSON", () => {
+            const paragraph = new Paragraph({
+                alignment: AlignmentType.CENTER,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [{ "w:jc": { _attr: { "w:val": "center" } } }],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#left()", () => {
+        it("should add left alignment to JSON", () => {
+            const paragraph = new Paragraph({
+                alignment: AlignmentType.LEFT,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [{ "w:jc": { _attr: { "w:val": "left" } } }],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#right()", () => {
+        it("should add right alignment to JSON", () => {
+            const paragraph = new Paragraph({
+                alignment: AlignmentType.RIGHT,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [{ "w:jc": { _attr: { "w:val": "right" } } }],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#start()", () => {
+        it("should add start alignment to JSON", () => {
+            const paragraph = new Paragraph({
+                alignment: AlignmentType.START,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [{ "w:jc": { _attr: { "w:val": "start" } } }],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#end()", () => {
+        it("should add end alignment to JSON", () => {
+            const paragraph = new Paragraph({
+                alignment: AlignmentType.END,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [{ "w:jc": { _attr: { "w:val": "end" } } }],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#distribute()", () => {
+        it("should add distribute alignment to JSON", () => {
+            const paragraph = new Paragraph({
+                alignment: AlignmentType.DISTRIBUTE,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [{ "w:jc": { _attr: { "w:val": "distribute" } } }],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#justified()", () => {
+        it("should add justified alignment to JSON", () => {
+            const paragraph = new Paragraph({
+                alignment: AlignmentType.JUSTIFIED,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [{ "w:jc": { _attr: { "w:val": "both" } } }],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#maxRightTabStop()", () => {
+        it("should add right tab stop to JSON", () => {
+            const paragraph = new Paragraph({
+                tabStops: [
+                    {
+                        type: TabStopType.RIGHT,
+                        position: TabStopPosition.MAX,
+                    },
+                ],
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [
+                            {
+                                "w:tabs": [
+                                    {
+                                        "w:tab": {
+                                            _attr: {
+                                                "w:pos": 9026,
+                                                "w:val": "right",
+                                            },
+                                        },
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#leftTabStop()", () => {
+        it("should add leftTabStop to JSON", () => {
+            const paragraph = new Paragraph({
+                tabStops: [
+                    {
+                        type: TabStopType.LEFT,
+                        position: 100,
+                        leader: LeaderType.HYPHEN,
+                    },
+                ],
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [
+                            {
+                                "w:tabs": [
+                                    {
+                                        "w:tab": {
+                                            _attr: {
+                                                "w:pos": 100,
+                                                "w:val": "left",
+                                                "w:leader": "hyphen",
+                                            },
+                                        },
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#rightTabStop()", () => {
+        it("should add rightTabStop to JSON", () => {
+            const paragraph = new Paragraph({
+                tabStops: [
+                    {
+                        type: TabStopType.RIGHT,
+                        position: 100,
+                        leader: LeaderType.DOT,
+                    },
+                ],
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [
+                            {
+                                "w:tabs": [
+                                    {
+                                        "w:tab": {
+                                            _attr: {
+                                                "w:pos": 100,
+                                                "w:val": "right",
+                                                "w:leader": "dot",
+                                            },
+                                        },
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#centerTabStop()", () => {
+        it("should add centerTabStop to JSON", () => {
+            const paragraph = new Paragraph({
+                tabStops: [
+                    {
+                        type: TabStopType.CENTER,
+                        position: 100,
+                        leader: LeaderType.MIDDLE_DOT,
+                    },
+                ],
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [
+                            {
+                                "w:tabs": [
+                                    {
+                                        "w:tab": {
+                                            _attr: {
+                                                "w:pos": 100,
+                                                "w:val": "center",
+                                                "w:leader": "middleDot",
+                                            },
+                                        },
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#contextualSpacing()", () => {
+        it("should add contextualSpacing", () => {
+            const paragraph = new Paragraph({
+                contextualSpacing: true,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [{ "w:contextualSpacing": {} }],
+                    },
+                ],
+            });
+        });
+        it("should remove contextualSpacing", () => {
+            const paragraph = new Paragraph({
+                contextualSpacing: false,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [{ "w:contextualSpacing": { _attr: { "w:val": false } } }],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#thematicBreak()", () => {
+        it("should add thematic break to JSON", () => {
+            const paragraph = new Paragraph({
+                thematicBreak: true,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [
+                            {
+                                "w:pBdr": [
+                                    {
+                                        "w:bottom": {
+                                            _attr: {
+                                                "w:val": "single",
+                                                "w:color": "auto",
+                                                "w:space": 1,
+                                                "w:sz": 6,
+                                            },
+                                        },
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#paragraphBorders()", () => {
+        it("should add a left and right border to a paragraph", () => {
+            const paragraph = new Paragraph({
+                border: {
+                    left: {
+                        color: "auto",
+                        space: 1,
+                        style: BorderStyle.SINGLE,
+                        size: 6,
+                    },
+                    right: {
+                        color: "auto",
+                        space: 1,
+                        style: BorderStyle.SINGLE,
+                        size: 6,
+                    },
+                },
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [
+                            {
+                                "w:pBdr": [
+                                    {
+                                        "w:left": {
+                                            _attr: {
+                                                "w:color": "auto",
+                                                "w:space": 1,
+                                                "w:sz": 6,
+                                                "w:val": "single",
+                                            },
+                                        },
+                                    },
+                                    {
+                                        "w:right": {
+                                            _attr: {
+                                                "w:color": "auto",
+                                                "w:space": 1,
+                                                "w:sz": 6,
+                                                "w:val": "single",
+                                            },
+                                        },
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#pageBreak()", () => {
+        it("should add page break to JSON", () => {
+            const paragraph = new Paragraph({
+                children: [new PageBreak()],
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:r": [{ "w:br": { _attr: { "w:type": "page" } } }],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#pageBreakBefore()", () => {
+        it("should add page break before to JSON", () => {
+            const paragraph = new Paragraph({
+                pageBreakBefore: true,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [
+                            {
+                                "w:pageBreakBefore": EMPTY_OBJECT,
+                            },
+                        ],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#bullet()", () => {
+        it("should default to 0 indent level if no bullet was specified", () => {
+            const paragraph = new Paragraph({
+                bullet: {
+                    level: 0,
+                },
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.have.property("w:p").which.is.an("array").which.has.length.at.least(1);
+            expect(tree["w:p"][0]).to.have.property("w:pPr").which.is.an("array").which.has.length.at.least(1);
+            expect(tree["w:p"][0]["w:pPr"][0]).to.deep.equal({
+                "w:pStyle": { _attr: { "w:val": "ListParagraph" } },
+            });
+        });
+
+        it("should add list paragraph style to JSON", () => {
+            const paragraph = new Paragraph({
+                bullet: {
+                    level: 0,
+                },
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.have.property("w:p").which.is.an("array").which.has.length.at.least(1);
+            expect(tree["w:p"][0]).to.have.property("w:pPr").which.is.an("array").which.has.length.at.least(1);
+            expect(tree["w:p"][0]["w:pPr"][0]).to.deep.equal({
+                "w:pStyle": { _attr: { "w:val": "ListParagraph" } },
+            });
+        });
+
+        it("it should add numbered properties", () => {
+            const paragraph = new Paragraph({
+                bullet: {
+                    level: 1,
+                },
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.have.property("w:p").which.is.an("array").which.has.length.at.least(1);
+            expect(tree["w:p"][0]).to.have.property("w:pPr").which.is.an("array").which.has.length.at.least(2);
+            expect(tree["w:p"][0]["w:pPr"][1]).to.deep.equal({
+                "w:numPr": [{ "w:ilvl": { _attr: { "w:val": 1 } } }, { "w:numId": { _attr: { "w:val": 1 } } }],
+            });
+        });
+    });
+
+    describe("#setNumbering", () => {
+        const createNumberingContext = () => ({
+            file: {
+                Numbering: {
+                    createConcreteNumberingInstance: (_: string, __: number) => undefined,
+                },
+            } as unknown as File,
+            viewWrapper: new DocumentWrapper({ background: {} }),
+            stack: [],
+        });
+
+        it("should add list paragraph style to JSON", () => {
+            const paragraph = new Paragraph({
+                numbering: {
+                    reference: "test id",
+                    level: 0,
+                },
+            });
+            const tree = new Formatter().format(paragraph, createNumberingContext());
+            expect(tree).to.have.property("w:p").which.is.an("array").which.has.length.at.least(1);
+            expect(tree["w:p"][0]).to.have.property("w:pPr").which.is.an("array").which.has.length.at.least(1);
+            expect(tree["w:p"][0]["w:pPr"][0]).to.deep.equal({
+                "w:pStyle": { _attr: { "w:val": "ListParagraph" } },
+            });
+        });
+
+        it("should add a style to the list paragraph when provided", () => {
+            const paragraph = new Paragraph({
+                numbering: {
+                    reference: "test id",
+                    level: 0,
+                },
+                style: "myFancyStyle",
+            });
+            const tree = new Formatter().format(paragraph, createNumberingContext());
+            expect(tree).to.have.property("w:p").which.is.an("array").which.has.length.at.least(1);
+            expect(tree["w:p"][0]).to.have.property("w:pPr").which.is.an("array").which.has.length.at.least(1);
+            expect(tree["w:p"][0]["w:pPr"][0]).to.deep.equal({
+                "w:pStyle": { _attr: { "w:val": "myFancyStyle" } },
+            });
+        });
+
+        it("should not add ListParagraph style to a list when using custom numbering", () => {
+            const paragraph = new Paragraph({
+                numbering: {
+                    reference: "test id",
+                    level: 0,
+                    custom: true,
+                },
+            });
+            const tree = new Formatter().format(paragraph, createNumberingContext());
+            expect(tree).to.have.property("w:p").which.is.an("array").which.has.length.at.least(1);
+            expect(tree["w:p"][0]).to.have.property("w:pPr").which.is.an("array").which.has.length.at.least(1);
+            expect(tree["w:p"][0]["w:pPr"][0]).to.not.have.property("w:pStyle");
+        });
+
+        it("it should add numbered properties", () => {
+            const paragraph = new Paragraph({
+                numbering: {
+                    reference: "test id",
+                    level: 0,
+                    instance: 4,
+                },
+            });
+            const tree = new Formatter().format(paragraph, createNumberingContext());
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [
+                            { "w:pStyle": { _attr: { "w:val": "ListParagraph" } } },
+                            {
+                                "w:numPr": [{ "w:ilvl": { _attr: { "w:val": 0 } } }, { "w:numId": { _attr: { "w:val": "{test id-4}" } } }],
+                            },
+                        ],
+                    },
+                ],
+            });
+        });
+
+        it("should put the paragraph in a list it gives the definition of, adding the definition as it is written", () => {
+            const definition = { reference: "own-list", levels: [{ level: 0, text: "%1." }] };
+            const createConcreteNumberingInstance = vi.fn();
+            const paragraph = new Paragraph({ numbering: { reference: definition, level: 0, instance: 2 } });
+
+            const tree = new Formatter().format(paragraph, {
+                ...createNumberingContext(),
+                file: { Numbering: { createConcreteNumberingInstance } } as unknown as File,
+            });
+
+            expect(createConcreteNumberingInstance).toHaveBeenCalledWith("own-list", 2, definition, undefined);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [
+                            { "w:pStyle": { _attr: { "w:val": "ListParagraph" } } },
+                            {
+                                "w:numPr": [{ "w:ilvl": { _attr: { "w:val": 0 } } }, { "w:numId": { _attr: { "w:val": "{own-list-2}" } } }],
+                            },
+                        ],
+                    },
+                ],
+            });
+        });
+
+        it("should not give the numbering a definition for a paragraph in one of the document's lists", () => {
+            const createConcreteNumberingInstance = vi.fn();
+            const paragraph = new Paragraph({ numbering: { reference: "steps", level: 0 } });
+
+            new Formatter().format(paragraph, {
+                ...createNumberingContext(),
+                file: { Numbering: { createConcreteNumberingInstance } } as unknown as File,
+            });
+
+            expect(createConcreteNumberingInstance).toHaveBeenCalledWith("steps", 0, undefined, undefined);
+        });
+
+        describe("restart", () => {
+            // Writes the paragraphs one after another in one part, as a part's paragraphs are written, giving their list ids
+            const listIdsOf = (paragraphs: readonly Paragraph[], context: IContext = createNumberingContext()): readonly string[] =>
+                paragraphs.map((paragraph) => {
+                    const xml = JSON.stringify(new Formatter().format(paragraph, context));
+                    return /"w:numId":\{"_attr":\{"w:val":"\{([^}]+)\}"/.exec(xml)?.[1] ?? "";
+                });
+
+            it("should put the paragraph and the paragraphs after it that leave out instance in a list of its own", () => {
+                const ids = listIdsOf([
+                    new Paragraph({ numbering: { reference: "steps", level: 0 } }),
+                    new Paragraph({ numbering: { reference: "steps", level: 0, restart: true } }),
+                    new Paragraph({ numbering: { reference: "steps", level: 1 } }),
+                    new Paragraph({ numbering: { reference: "steps", level: 0, restart: true } }),
+                    new Paragraph({ numbering: { reference: "steps", level: 0 } }),
+                ]);
+
+                expect(ids[0]).to.equal("steps-0");
+                expect(ids[1]).to.match(/^steps-restart \d+$/);
+                expect(ids[2]).to.equal(ids[1]);
+                expect(ids[3])
+                    .to.match(/^steps-restart \d+$/)
+                    .and.not.equal(ids[1]);
+                expect(ids[4]).to.equal(ids[3]);
+            });
+
+            it("should create the restarted list's concrete numbering instance", () => {
+                const createConcreteNumberingInstance = vi.fn();
+                const [id] = listIdsOf([new Paragraph({ numbering: { reference: "steps", level: 0, restart: true } })], {
+                    ...createNumberingContext(),
+                    file: { Numbering: { createConcreteNumberingInstance } } as unknown as File,
+                });
+
+                expect(createConcreteNumberingInstance).toHaveBeenCalledWith(
+                    "steps",
+                    0,
+                    undefined,
+                    Number(id.replace("steps-restart ", "")),
+                );
+            });
+
+            it("should only restart lists of the same reference", () => {
+                const ids = listIdsOf([
+                    new Paragraph({ numbering: { reference: "steps", level: 0, restart: true } }),
+                    new Paragraph({ numbering: { reference: "other", level: 0 } }),
+                ]);
+
+                expect(ids[1]).to.equal("other-0");
+            });
+
+            it("should keep a paragraph that gives an instance in that instance, without moving the paragraphs after it", () => {
+                const ids = listIdsOf([
+                    new Paragraph({ numbering: { reference: "steps", level: 0, instance: 3, restart: true } }),
+                    new Paragraph({ numbering: { reference: "steps", level: 0 } }),
+                    new Paragraph({ numbering: { reference: "steps", level: 0, restart: true } }),
+                    new Paragraph({ numbering: { reference: "steps", level: 0, instance: 3 } }),
+                ]);
+
+                expect(ids[0]).to.equal("steps-3");
+                expect(ids[1]).to.equal("steps-0");
+                expect(ids[3]).to.equal("steps-3");
+            });
+
+            it("should start each part from the first list", () => {
+                const paragraphs = [
+                    new Paragraph({ numbering: { reference: "steps", level: 0 } }),
+                    new Paragraph({ numbering: { reference: "steps", level: 0, restart: true } }),
+                ];
+
+                const first = listIdsOf(paragraphs);
+                const second = listIdsOf(paragraphs);
+
+                expect(second).to.deep.equal(first);
+                expect(listIdsOf([paragraphs[0]])).to.deep.equal(["steps-0"]);
+            });
+
+            it("should not move the paragraphs after it onto another list for the formatting a revision keeps", () => {
+                const ids = listIdsOf([
+                    new Paragraph({
+                        numbering: { reference: "steps", level: 0 },
+                        revision: {
+                            id: 1,
+                            author: "Firstname Lastname",
+                            date: "2020-10-06T09:05:00Z",
+                            numbering: { reference: "steps", level: 0, restart: true },
+                        },
+                    }),
+                    new Paragraph({ numbering: { reference: "steps", level: 0 } }),
+                ]);
+
+                expect(ids).to.deep.equal(["steps-0", "steps-0"]);
+            });
+
+            it("should keep the list the paragraph was in before it restarted in the formatting a revision keeps", () => {
+                const context = createNumberingContext();
+                const [previousList] = listIdsOf([new Paragraph({ numbering: { reference: "steps", level: 0, restart: true } })], context);
+
+                const xml = JSON.stringify(
+                    new Formatter().format(
+                        new Paragraph({
+                            numbering: { reference: "steps", level: 0, restart: true },
+                            revision: {
+                                id: 1,
+                                author: "Firstname Lastname",
+                                date: "2020-10-06T09:05:00Z",
+                                numbering: { reference: "steps", level: 0 },
+                            },
+                        }),
+                        context,
+                    ),
+                );
+                const [restartedList, earlierList] = Array.from(
+                    xml.matchAll(/"w:numId":\{"_attr":\{"w:val":"\{([^}]+)\}"/g),
+                    ([, id]) => id,
+                );
+
+                expect(restartedList)
+                    .to.match(/^steps-restart \d+$/)
+                    .and.not.equal(previousList);
+                expect(earlierList).to.equal(previousList);
+            });
+
+            it("should write the list a paragraph is in for each part it is written in", () => {
+                const paragraph = new Paragraph({ numbering: { reference: "steps", level: 0 } });
+
+                const [inRestartedList] = listIdsOf([
+                    new Paragraph({ numbering: { reference: "steps", level: 0, restart: true } }),
+                    paragraph,
+                ]).slice(1);
+                const [inFirstList] = listIdsOf([paragraph]);
+
+                expect(inRestartedList).to.match(/^steps-restart \d+$/);
+                expect(inFirstList).to.equal("steps-0");
+            });
+        });
+
+        it("should not add ListParagraph style when custom is true", () => {
+            const paragraph = new Paragraph({
+                numbering: {
+                    reference: "test id",
+                    level: 0,
+                    custom: true,
+                },
+            });
+            const tree = new Formatter().format(paragraph, createNumberingContext());
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [
+                            {
+                                "w:numPr": [{ "w:ilvl": { _attr: { "w:val": 0 } } }, { "w:numId": { _attr: { "w:val": "{test id-0}" } } }],
+                            },
+                        ],
+                    },
+                ],
+            });
+        });
+    });
+
+    it("it should add bookmark", () => {
+        const paragraph = new Paragraph({
+            children: [
+                new Bookmark({
+                    id: "test-id",
+                    children: [new TextRun("test")],
+                }),
+            ],
+        });
+        const tree = new Formatter().format(paragraph);
+        expect(tree).to.deep.equal({
+            "w:p": [
+                {
+                    "w:bookmarkStart": {
+                        _attr: {
+                            "w:id": -101,
+                            "w:name": "test-id",
+                        },
+                    },
+                },
+                {
+                    "w:r": [
+                        {
+                            "w:t": [
+                                {
+                                    _attr: {
+                                        "xml:space": "preserve",
+                                    },
+                                },
+                                "test",
+                            ],
+                        },
+                    ],
+                },
+                {
+                    "w:bookmarkEnd": {
+                        _attr: {
+                            "w:id": -101,
+                        },
+                    },
+                },
+            ],
+        });
+    });
+
+    it("should add a bookmark in a bookmark", () => {
+        const paragraph = new Paragraph({
+            children: [
+                new Bookmark({
+                    id: "outer",
+                    children: [new TextRun("A"), new Bookmark({ id: "inner", children: [new TextRun("B")] })],
+                }),
+            ],
+        });
+        const tree = new Formatter().format(paragraph)["w:p"] as readonly Record<string, { readonly _attr: Record<string, unknown> }>[];
+
+        expect(tree.map((element) => Object.keys(element)[0])).to.deep.equal([
+            "w:bookmarkStart",
+            "w:r",
+            "w:bookmarkStart",
+            "w:r",
+            "w:bookmarkEnd",
+            "w:bookmarkEnd",
+        ]);
+        expect([tree[0]["w:bookmarkStart"]._attr["w:name"], tree[2]["w:bookmarkStart"]._attr["w:name"]]).to.deep.equal(["outer", "inner"]);
+    });
+
+    describe("#style", () => {
+        it("should set the paragraph style to the given styleId", () => {
+            const paragraph = new Paragraph({
+                style: "myFancyStyle",
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [{ "w:pStyle": { _attr: { "w:val": "myFancyStyle" } } }],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#indent", () => {
+        it("should set the paragraph indent to the given values", () => {
+            const paragraph = new Paragraph({
+                indent: { left: 720 },
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [{ "w:ind": { _attr: { "w:left": 720 } } }],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#spacing", () => {
+        it("should set the paragraph spacing to the given values", () => {
+            const paragraph = new Paragraph({
+                spacing: { before: 90, line: 50 },
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [{ "w:spacing": { _attr: { "w:before": 90, "w:line": 50 } } }],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#keepLines", () => {
+        it("should set the paragraph keepLines sub-component", () => {
+            const paragraph = new Paragraph({
+                keepLines: true,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [{ "w:pPr": [{ "w:keepLines": EMPTY_OBJECT }] }],
+            });
+        });
+    });
+
+    describe("#keepNext", () => {
+        it("should set the paragraph keepNext sub-component", () => {
+            const paragraph = new Paragraph({
+                keepNext: true,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [{ "w:pPr": [{ "w:keepNext": EMPTY_OBJECT }] }],
+            });
+        });
+    });
+
+    describe("#bidirectional", () => {
+        it("set paragraph right to left layout", () => {
+            const paragraph = new Paragraph({
+                bidirectional: true,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [{ "w:pPr": [{ "w:bidi": EMPTY_OBJECT }] }],
+            });
+        });
+
+        // Word reads w:jc left and right as the start and end of the paragraph, so in a w:bidi paragraph left is the right of the page
+        it("writes RIGHT as w:jc left so a right-to-left paragraph lands on the right of the page", () => {
+            const paragraph = new Paragraph({
+                bidirectional: true,
+                alignment: AlignmentType.RIGHT,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [{ "w:pPr": [{ "w:bidi": EMPTY_OBJECT }, { "w:jc": { _attr: { "w:val": "left" } } }] }],
+            });
+        });
+
+        it("writes LEFT as w:jc right so a right-to-left paragraph lands on the left of the page", () => {
+            const paragraph = new Paragraph({
+                bidirectional: true,
+                alignment: AlignmentType.LEFT,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [{ "w:pPr": [{ "w:bidi": EMPTY_OBJECT }, { "w:jc": { _attr: { "w:val": "right" } } }] }],
+            });
+        });
+
+        it.each([
+            ["START", AlignmentType.START, "start"],
+            ["END", AlignmentType.END, "end"],
+            ["CENTER", AlignmentType.CENTER, "center"],
+            ["JUSTIFIED", AlignmentType.JUSTIFIED, "both"],
+        ])("keeps %s unchanged in a right-to-left paragraph, since it does not name a side of the page", (_, alignment, expected) => {
+            const paragraph = new Paragraph({
+                bidirectional: true,
+                alignment,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [{ "w:pPr": [{ "w:bidi": EMPTY_OBJECT }, { "w:jc": { _attr: { "w:val": expected } } }] }],
+            });
+        });
+
+        it("keeps RIGHT as w:jc right when bidirectional is turned off", () => {
+            const paragraph = new Paragraph({
+                bidirectional: false,
+                alignment: AlignmentType.RIGHT,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [{ "w:pPr": [{ "w:bidi": { _attr: { "w:val": false } } }, { "w:jc": { _attr: { "w:val": "right" } } }] }],
+            });
+        });
+
+        it("swaps the alignment in a tracked change by the direction the change itself records", () => {
+            const paragraph = new Paragraph({
+                alignment: AlignmentType.RIGHT,
+                revision: {
+                    id: 1,
+                    author: "Firstname Lastname",
+                    date: "123",
+                    bidirectional: true,
+                    alignment: AlignmentType.RIGHT,
+                },
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [
+                            { "w:jc": { _attr: { "w:val": "right" } } },
+                            {
+                                "w:pPrChange": [
+                                    { _attr: { "w:author": "Firstname Lastname", "w:date": "123", "w:id": 1 } },
+                                    { "w:pPr": [{ "w:bidi": EMPTY_OBJECT }, { "w:jc": { _attr: { "w:val": "left" } } }] },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#suppressLineNumbers", () => {
+        it("should disable line numbers", () => {
+            const paragraph = new Paragraph({
+                suppressLineNumbers: true,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [{ "w:pPr": [{ "w:suppressLineNumbers": EMPTY_OBJECT }] }],
+            });
+        });
+    });
+
+    describe("#outlineLevel", () => {
+        it("should set paragraph outline level to the given value", () => {
+            const paragraph = new Paragraph({
+                outlineLevel: 0,
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [{ "w:outlineLvl": { _attr: { "w:val": 0 } } }],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#shading", () => {
+        it("should set shading to the given value", () => {
+            const paragraph = new Paragraph({
+                shading: {
+                    type: ShadingType.REVERSE_DIAGONAL_STRIPE,
+                    color: "00FFFF",
+                    fill: "FF0000",
+                },
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [
+                            {
+                                "w:shd": {
+                                    _attr: {
+                                        "w:color": "00FFFF",
+                                        "w:fill": "FF0000",
+                                        "w:val": "reverseDiagStripe",
+                                    },
+                                },
+                            },
+                        ],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#frame", () => {
+        it("should set frame attribute", () => {
+            const paragraph = new Paragraph({
+                frame: {
+                    type: "alignment",
+                    width: 4000,
+                    height: 1000,
+                    anchor: {
+                        horizontal: FrameAnchorType.MARGIN,
+                        vertical: FrameAnchorType.MARGIN,
+                    },
+                    alignment: {
+                        x: HorizontalPositionAlign.CENTER,
+                        y: VerticalPositionAlign.TOP,
+                    },
+                },
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [
+                            {
+                                "w:framePr": {
+                                    _attr: {
+                                        "w:h": 1000,
+                                        "w:hAnchor": "margin",
+                                        "w:vAnchor": "margin",
+                                        "w:w": 4000,
+                                        "w:xAlign": "center",
+                                        "w:yAlign": "top",
+                                    },
+                                },
+                            },
+                        ],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#prepForXml", () => {
+        it.each([
+            ["https://example.com/#foo#bar", "https://example.com/", "foo#bar"],
+            ["https://example.com/?q=a%23b#section", "https://example.com/?q=a%23b", "section"],
+            ["../document.docx#bookmark", "../document.docx", "bookmark"],
+            ["https://example.com/%23literal", "https://example.com/%23literal", undefined],
+            ["https://example.com/", "https://example.com/", undefined],
+            ["https://example.com/#", "https://example.com/#", undefined],
+            ["#bookmark", "#bookmark", undefined],
+            ["", "", undefined],
+        ])("should preserve the external hyperlink fragment in %s", (link, target, anchor) => {
+            const paragraph = new Paragraph({ children: [new ExternalHyperlink({ link, children: [new TextRun("Link")] })] });
+            const addRelationship = vi.fn();
+            const tree = new Formatter().format(paragraph, {
+                viewWrapper: { Relationships: { addRelationship } } as unknown as IViewWrapper,
+                file: {} as File,
+                stack: [],
+            });
+
+            expect(tree["w:p"][0]["w:hyperlink"][0]._attr).to.deep.equal({
+                "w:history": 1,
+                "r:id": "rIdtest-unique-id",
+                ...(anchor ? { "w:anchor": anchor } : {}),
+            });
+            expect(addRelationship).toHaveBeenCalledWith(
+                "test-unique-id",
+                "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+                target,
+                "External",
+            );
+        });
+
+        it("should set Internal Hyperlink", () => {
+            const paragraph = new Paragraph({
+                children: [
+                    new ExternalHyperlink({
+                        children: [new TextRun("test")],
+                        link: "http://www.google.com",
+                    }),
+                ],
+            });
+            const viewWrapperMock = {
+                Relationships: {
+                    // eslint-disable-next-line @typescript-eslint/no-empty-function
+                    addRelationship: () => {},
+                },
+            } as unknown as IViewWrapper;
+
+            const file = {} as unknown as File;
+            paragraph.prepForXml({
+                viewWrapper: viewWrapperMock,
+                file: file,
+                stack: [],
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:hyperlink": [
+                            {
+                                _attr: {
+                                    "r:id": "rIdtest-unique-id",
+                                    "w:history": 1,
+                                },
+                            },
+                            {
+                                "w:r": [
+                                    {
+                                        "w:t": [
+                                            {
+                                                _attr: {
+                                                    "xml:space": "preserve",
+                                                },
+                                            },
+                                            "test",
+                                        ],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#revision", () => {
+        it("should create paragraph with revision properties", () => {
+            const paragraph = new Paragraph({
+                heading: HeadingLevel.HEADING_1,
+                alignment: AlignmentType.RIGHT,
+                revision: {
+                    id: 1,
+                    author: "Firstname Lastename",
+                    date: "123",
+                    heading: HeadingLevel.HEADING_2,
+                    alignment: AlignmentType.LEFT,
+                },
+            });
+            const tree = new Formatter().format(paragraph);
+            expect(tree).to.deep.equal({
+                "w:p": [
+                    {
+                        "w:pPr": [
+                            {
+                                "w:pStyle": {
+                                    _attr: {
+                                        "w:val": "Heading1",
+                                    },
+                                },
+                            },
+                            {
+                                "w:jc": {
+                                    _attr: {
+                                        "w:val": "right",
+                                    },
+                                },
+                            },
+                            {
+                                "w:pPrChange": [
+                                    {
+                                        _attr: {
+                                            "w:author": "Firstname Lastename",
+                                            "w:date": "123",
+                                            "w:id": 1,
+                                        },
+                                    },
+                                    {
+                                        "w:pPr": [
+                                            {
+                                                "w:pStyle": {
+                                                    _attr: {
+                                                        "w:val": "Heading2",
+                                                    },
+                                                },
+                                            },
+                                            {
+                                                "w:jc": {
+                                                    _attr: {
+                                                        "w:val": "left",
+                                                    },
+                                                },
+                                            },
+                                        ],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            });
+        });
+    });
+});

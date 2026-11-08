@@ -1,0 +1,1204 @@
+import { describe, expect, it } from "vitest";
+
+import { Formatter } from "@export/formatter";
+import type { IXmlableObject } from "@file/xml-components";
+
+import { sectionMarginDefaults, sectionPageSizeDefaults } from "./document";
+import { File } from "./file";
+import { Footer, Header } from "./header";
+import { Paragraph, TextRun } from "./paragraph";
+import { createDefaultStyles } from "./styles/factory";
+import { StyleForCharacter, StyleForParagraph } from "./styles/style";
+
+const PAGE_SIZE_DEFAULTS = {
+    "w:h": sectionPageSizeDefaults.HEIGHT,
+    "w:orient": sectionPageSizeDefaults.ORIENTATION,
+    "w:w": sectionPageSizeDefaults.WIDTH,
+};
+
+describe("File", () => {
+    describe("#constructor", () => {
+        it("should create with correct headers and footers", () => {
+            const doc = new File({
+                sections: [
+                    {
+                        headers: {
+                            default: new Header(),
+                        },
+                        footers: {
+                            default: new Footer(),
+                        },
+                        children: [],
+                    },
+                ],
+            });
+
+            const tree = new Formatter().format(doc.Document.View.Body);
+
+            expect(tree["w:body"][0]["w:sectPr"][0]["w:headerReference"]._attr["w:type"]).to.equal("default");
+            expect(tree["w:body"][0]["w:sectPr"][1]["w:footerReference"]._attr["w:type"]).to.equal("default");
+        });
+
+        it("should create with first headers and footers", () => {
+            const doc = new File({
+                sections: [
+                    {
+                        headers: {
+                            first: new Header(),
+                        },
+                        footers: {
+                            first: new Footer(),
+                        },
+                        children: [],
+                    },
+                ],
+            });
+
+            const tree = new Formatter().format(doc.Document.View.Body);
+            expect(tree["w:body"][0]["w:sectPr"][0]["w:headerReference"]._attr["w:type"]).to.equal("first");
+            expect(tree["w:body"][0]["w:sectPr"][1]["w:footerReference"]._attr["w:type"]).to.equal("first");
+        });
+
+        it("should create with correct headers", () => {
+            const doc = new File({
+                sections: [
+                    {
+                        headers: {
+                            default: new Header(),
+                            first: new Header(),
+                            even: new Header(),
+                        },
+                        footers: {
+                            default: new Footer(),
+                            first: new Footer(),
+                            even: new Footer(),
+                        },
+                        children: [],
+                    },
+                ],
+            });
+
+            const tree = new Formatter().format(doc.Document.View.Body);
+
+            expect(tree["w:body"][0]["w:sectPr"][0]["w:headerReference"]._attr["w:type"]).to.equal("default");
+            expect(tree["w:body"][0]["w:sectPr"][1]["w:headerReference"]._attr["w:type"]).to.equal("first");
+            expect(tree["w:body"][0]["w:sectPr"][2]["w:headerReference"]._attr["w:type"]).to.equal("even");
+
+            expect(tree["w:body"][0]["w:sectPr"][3]["w:footerReference"]._attr["w:type"]).to.equal("default");
+            expect(tree["w:body"][0]["w:sectPr"][4]["w:footerReference"]._attr["w:type"]).to.equal("first");
+            expect(tree["w:body"][0]["w:sectPr"][5]["w:footerReference"]._attr["w:type"]).to.equal("even");
+        });
+
+        it("should add child", () => {
+            const doc = new File({
+                sections: [
+                    {
+                        children: [new Paragraph("test")],
+                    },
+                ],
+            });
+
+            const tree = new Formatter().format(doc.Document.View.Body);
+
+            expect(tree).to.deep.equal({
+                "w:body": [
+                    {
+                        "w:p": [
+                            {
+                                "w:r": [
+                                    {
+                                        "w:t": [
+                                            {
+                                                _attr: {
+                                                    "xml:space": "preserve",
+                                                },
+                                            },
+                                            "test",
+                                        ],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "w:sectPr": [
+                            {
+                                "w:pgSz": {
+                                    _attr: PAGE_SIZE_DEFAULTS,
+                                },
+                            },
+                            {
+                                "w:pgMar": {
+                                    _attr: {
+                                        "w:bottom": sectionMarginDefaults.BOTTOM,
+                                        "w:footer": sectionMarginDefaults.FOOTER,
+                                        "w:gutter": sectionMarginDefaults.GUTTER,
+                                        "w:header": sectionMarginDefaults.HEADER,
+                                        "w:left": sectionMarginDefaults.LEFT,
+                                        "w:right": sectionMarginDefaults.RIGHT,
+                                        "w:top": sectionMarginDefaults.TOP,
+                                    },
+                                },
+                            },
+                            {
+                                "w:pgNumType": {
+                                    _attr: {},
+                                },
+                            },
+                            // {
+                            //     "w:cols": {
+                            //         _attr: {
+                            //             "w:num": 1,
+                            //             "w:sep": false,
+                            //             "w:space": 708,
+                            //         },
+                            //     },
+                            // },
+                            {
+                                "w:docGrid": {
+                                    _attr: {
+                                        "w:linePitch": 360,
+                                    },
+                                },
+                            },
+                        ],
+                    },
+                ],
+            });
+        });
+
+        it("should end each section but the last in its last paragraph, the same way each time the document is written", () => {
+            const doc = new File({
+                numbering: { config: [{ reference: "list", levels: [{ level: 0, format: "decimal", text: "%1." }] }] },
+                sections: [
+                    { children: [new Paragraph({ style: "Heading1", numbering: { reference: "list", level: 0 }, text: "First" })] },
+                    { children: [new Paragraph("Second")] },
+                ],
+            });
+            const write = (): string =>
+                JSON.stringify(new Formatter().format(doc.Document.View, { file: doc, viewWrapper: doc.Document, stack: [] }));
+
+            const xml = write();
+
+            expect(write()).to.equal(xml);
+            expect(xml.match(/"w:sectPr"/g)).to.have.length(2);
+            const paragraphs = xml.split(`{"w:p":`).slice(1);
+            expect(paragraphs).to.have.length(2);
+            const [first] = paragraphs;
+            expect(first).to.include("First");
+            expect(first.indexOf(`{"w:pStyle":`)).to.be.lessThan(first.indexOf(`{"w:numPr":`));
+            expect(first.indexOf(`{"w:numPr":`)).to.be.lessThan(first.indexOf(`{"w:sectPr":`));
+        });
+    });
+
+    describe("#createFootnote", () => {
+        it("should create footnote", () => {
+            const wrapper = new File({
+                footnotes: {
+                    1: {
+                        children: [new Paragraph("hello")],
+                    },
+                },
+                sections: [],
+            });
+
+            const tree = new Formatter().format(wrapper.FootNotes.View);
+
+            expect(tree).to.deep.equal({
+                "w:footnotes": [
+                    {
+                        _attr: {
+                            "mc:Ignorable": "w14 w15 wp14",
+                            "xmlns:m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
+                            "xmlns:mc": "http://schemas.openxmlformats.org/markup-compatibility/2006",
+                            "xmlns:o": "urn:schemas-microsoft-com:office:office",
+                            "xmlns:r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+                            "xmlns:v": "urn:schemas-microsoft-com:vml",
+                            "xmlns:w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+                            "xmlns:w10": "urn:schemas-microsoft-com:office:word",
+                            "xmlns:w14": "http://schemas.microsoft.com/office/word/2010/wordml",
+                            "xmlns:w15": "http://schemas.microsoft.com/office/word/2012/wordml",
+                            "xmlns:wne": "http://schemas.microsoft.com/office/word/2006/wordml",
+                            "xmlns:wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
+                            "xmlns:wp14": "http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing",
+                            "xmlns:wpc": "http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas",
+                            "xmlns:wpg": "http://schemas.microsoft.com/office/word/2010/wordprocessingGroup",
+                            "xmlns:wpi": "http://schemas.microsoft.com/office/word/2010/wordprocessingInk",
+                            "xmlns:wps": "http://schemas.microsoft.com/office/word/2010/wordprocessingShape",
+                        },
+                    },
+                    {
+                        "w:footnote": [
+                            {
+                                _attr: {
+                                    "w:id": -1,
+                                    "w:type": "separator",
+                                },
+                            },
+                            {
+                                "w:p": [
+                                    {
+                                        "w:pPr": [
+                                            {
+                                                "w:spacing": {
+                                                    _attr: {
+                                                        "w:after": 0,
+                                                        "w:line": 240,
+                                                        "w:lineRule": "auto",
+                                                    },
+                                                },
+                                            },
+                                        ],
+                                    },
+                                    {
+                                        "w:r": [
+                                            {
+                                                "w:rPr": [
+                                                    {
+                                                        "w:rStyle": {
+                                                            _attr: {
+                                                                "w:val": "FootnoteReference",
+                                                            },
+                                                        },
+                                                    },
+                                                ],
+                                            },
+                                            {
+                                                "w:footnoteRef": {},
+                                            },
+                                        ],
+                                    },
+                                    {
+                                        "w:r": [
+                                            {
+                                                "w:separator": {},
+                                            },
+                                        ],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "w:footnote": [
+                            {
+                                _attr: {
+                                    "w:id": 0,
+                                    "w:type": "continuationSeparator",
+                                },
+                            },
+                            {
+                                "w:p": [
+                                    {
+                                        "w:pPr": [
+                                            {
+                                                "w:spacing": {
+                                                    _attr: {
+                                                        "w:after": 0,
+                                                        "w:line": 240,
+                                                        "w:lineRule": "auto",
+                                                    },
+                                                },
+                                            },
+                                        ],
+                                    },
+                                    {
+                                        "w:r": [
+                                            {
+                                                "w:rPr": [
+                                                    {
+                                                        "w:rStyle": {
+                                                            _attr: {
+                                                                "w:val": "FootnoteReference",
+                                                            },
+                                                        },
+                                                    },
+                                                ],
+                                            },
+                                            {
+                                                "w:footnoteRef": {},
+                                            },
+                                        ],
+                                    },
+                                    {
+                                        "w:r": [
+                                            {
+                                                "w:continuationSeparator": {},
+                                            },
+                                        ],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "w:footnote": [
+                            {
+                                _attr: {
+                                    "w:id": 1,
+                                },
+                            },
+                            {
+                                "w:p": [
+                                    {
+                                        "w:r": [
+                                            {
+                                                "w:rPr": [
+                                                    {
+                                                        "w:rStyle": {
+                                                            _attr: {
+                                                                "w:val": "FootnoteReference",
+                                                            },
+                                                        },
+                                                    },
+                                                ],
+                                            },
+                                            {
+                                                "w:footnoteRef": {},
+                                            },
+                                        ],
+                                    },
+                                    {
+                                        "w:r": [
+                                            {
+                                                "w:t": [
+                                                    {
+                                                        _attr: {
+                                                            "xml:space": "preserve",
+                                                        },
+                                                    },
+                                                    "hello",
+                                                ],
+                                            },
+                                        ],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            });
+        });
+    });
+
+    describe("#createEndnote", () => {
+        it("should create endnote", () => {
+            const wrapper = new File({
+                endnotes: {
+                    1: {
+                        children: [new Paragraph("hello endnote")],
+                    },
+                },
+                sections: [],
+            });
+
+            const tree = new Formatter().format(wrapper.Endnotes.View);
+
+            expect(tree["w:endnotes"]).to.be.an("array");
+            // Should have attributes, two default endnotes (separator and continuation separator), plus one created endnote
+            expect(tree["w:endnotes"].length).to.equal(4);
+        });
+    });
+
+    it("should create default run and paragraph property document defaults", () => {
+        const doc = new File({
+            styles: {
+                default: {},
+            },
+            sections: [],
+        });
+
+        const tree = new Formatter().format(doc.Styles);
+
+        expect(tree["w:styles"][1]).to.deep.equal({
+            "w:docDefaults": [
+                {
+                    "w:rPrDefault": {},
+                },
+                {
+                    "w:pPrDefault": {},
+                },
+            ],
+        });
+    });
+
+    it("should format line numbers with the lineNumber style given in styles.default", () => {
+        const doc = new File({
+            styles: {
+                default: {
+                    lineNumber: { run: { font: "Calibri", size: 20 } },
+                },
+            },
+            sections: [],
+        });
+
+        const tree = new Formatter().format(doc.Styles)["w:styles"];
+        const lineNumberStyles = tree.filter((child: { readonly "w:style"?: readonly { readonly _attr?: Record<string, string> }[] }) =>
+            child["w:style"]?.some((part) => part._attr?.["w:styleId"] === "LineNumber"),
+        );
+        expect(lineNumberStyles).to.deep.equal([
+            new Formatter().format(createDefaultStyles({ lineNumber: { run: { font: "Calibri", size: 20 } } }).lineNumber),
+        ]);
+    });
+
+    describe("the TOC 1 to TOC 9 styles of the entries of tables of contents", () => {
+        // The left indent of each TOC style, by its id
+        const indentsIn = (doc: File): Record<string, unknown> =>
+            Object.fromEntries(
+                (new Formatter().format(doc.Styles)["w:styles"] as readonly IXmlableObject[]).flatMap((child) => {
+                    const parts: readonly IXmlableObject[] = [child["w:style"] ?? []].flat();
+                    const id = parts[0]?._attr?.["w:styleId"];
+                    const paragraph: readonly IXmlableObject[] = parts.find((part) => part["w:pPr"])?.["w:pPr"] ?? [];
+                    const indent = paragraph.find((part) => part["w:ind"])?.["w:ind"]._attr["w:left"];
+                    return /^TOC\d$/.test(String(id)) ? [[id, indent ?? 0]] : [];
+                }),
+            );
+
+        it("are written as Word adds them, each level indented 10 points more than the one above, the size of docx's text", () => {
+            expect(indentsIn(new File({ sections: [] }))).to.deep.equal({
+                TOC1: 0,
+                TOC2: 200,
+                TOC3: 400,
+                TOC4: 600,
+                TOC5: 800,
+                TOC6: 1000,
+                TOC7: 1200,
+                TOC8: 1400,
+                TOC9: 1600,
+            });
+        });
+
+        it("indent each level by the document's default font size, as Word does", () => {
+            const indentsWithSize = (size: number | `${number}pt`): unknown =>
+                indentsIn(new File({ styles: { default: { document: { run: { size } } } }, sections: [] })).TOC3;
+
+            expect(indentsWithSize(22)).to.equal(440);
+            expect(indentsWithSize("14pt")).to.equal(560);
+        });
+
+        it("are replaced by a paragraph style with their id", () => {
+            const doc = new File({
+                styles: { paragraphStyles: [{ id: "TOC2", name: "toc 2", paragraph: { indent: { left: 720 } } }] },
+                sections: [],
+            });
+
+            expect(indentsIn(doc)).to.include({ TOC1: 0, TOC2: 720, TOC3: 400 });
+        });
+
+        it("are replaced by a paragraph style with their name, such as a template's in another language, so no two styles have one name", () => {
+            const doc = new File({
+                externalStyles: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+                    <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+                        <w:style w:type="paragraph" w:styleId="Verzeichnis2"><w:name w:val="toc 2"/></w:style>
+                    </w:styles>`,
+                sections: [],
+            });
+
+            expect(Object.keys(indentsIn(doc))).to.deep.equal(["TOC1", "TOC3", "TOC4", "TOC5", "TOC6", "TOC7", "TOC8", "TOC9"]);
+        });
+
+        it("are kept beside a character style with their name, which the entries, as paragraphs, can't take", () => {
+            const doc = new File({ styles: { characterStyles: [{ id: "Toc2Char", name: "toc 2" }] }, sections: [] });
+
+            expect(indentsIn(doc)).to.include({ TOC2: 200 });
+        });
+    });
+
+    it("should write Word's caption style, so paragraphs with the style Caption are captions", () => {
+        const doc = new File({ sections: [] });
+
+        const tree = new Formatter().format(doc.Styles)["w:styles"];
+        const captionStyles = tree.filter((child: { readonly "w:style"?: readonly { readonly _attr?: Record<string, string> }[] }) =>
+            child["w:style"]?.some((part) => part._attr?.["w:styleId"] === "Caption"),
+        );
+        expect(captionStyles).to.deep.equal([new Formatter().format(createDefaultStyles().caption)]);
+    });
+
+    it("should format captions with the caption style given in styles.default", () => {
+        const doc = new File({
+            styles: {
+                default: {
+                    caption: { run: { color: "FF0000", size: 20 } },
+                },
+            },
+            sections: [],
+        });
+
+        const tree = new Formatter().format(doc.Styles)["w:styles"];
+        const captionStyles = tree.filter((child: { readonly "w:style"?: readonly { readonly _attr?: Record<string, string> }[] }) =>
+            child["w:style"]?.some((part) => part._attr?.["w:styleId"] === "Caption"),
+        );
+        expect(captionStyles).to.deep.equal([
+            new Formatter().format(createDefaultStyles({ caption: { run: { color: "FF0000", size: 20 } } }).caption),
+        ]);
+    });
+
+    it("should write a paragraph style with the id Caption in place of docx's caption style", () => {
+        const doc = new File({
+            styles: {
+                paragraphStyles: [{ id: "Caption", name: "caption", run: { bold: true } }],
+            },
+            sections: [],
+        });
+
+        const tree = new Formatter().format(doc.Styles)["w:styles"];
+        const captionStyles = tree.filter((child: { readonly "w:style"?: readonly { readonly _attr?: Record<string, string> }[] }) =>
+            child["w:style"]?.some((part) => part._attr?.["w:styleId"] === "Caption"),
+        );
+        expect(captionStyles).to.have.length(1);
+        expect(captionStyles[0]["w:style"]).to.deep.include({ "w:rPr": [{ "w:b": {} }, { "w:bCs": {} }] });
+    });
+
+    it("should write Word's bibliography style, which bibliographies' paragraphs are in, and format it with styles.default", () => {
+        const stylesOf = (doc: File): readonly unknown[] => {
+            const styles = new Formatter().format(doc.Styles)["w:styles"];
+            return styles.filter((child: { readonly "w:style"?: readonly { readonly _attr?: Record<string, string> }[] }) =>
+                child["w:style"]?.some((part) => part._attr?.["w:styleId"] === "Bibliography"),
+            );
+        };
+
+        expect(stylesOf(new File({ sections: [] }))).to.deep.equal([new Formatter().format(createDefaultStyles().bibliography)]);
+        expect(stylesOf(new File({ styles: { default: { bibliography: { run: { size: 20 } } } }, sections: [] }))).to.deep.equal([
+            new Formatter().format(createDefaultStyles({ bibliography: { run: { size: 20 } } }).bibliography),
+        ]);
+    });
+
+    it("should create with even and odd headers and footers", () => {
+        const doc = new File({
+            evenAndOddHeaderAndFooters: true,
+            sections: [],
+        });
+
+        const tree = new Formatter().format(doc.Settings);
+
+        expect(tree["w:settings"][3]).to.deep.equal({ "w:evenAndOddHeaders": {} });
+    });
+
+    it("should tell Word to keep embedded fonts when the document is saved again", () => {
+        const doc = new File({
+            sections: [],
+            fonts: [{ name: "Pacifico", data: Buffer.from("") }],
+        });
+
+        const tree = new Formatter().format(doc.Settings);
+
+        expect(tree["w:settings"]).to.deep.include({ "w:embedTrueTypeFonts": {} });
+    });
+
+    it("should protect the document with its protection option", () => {
+        const doc = new File({
+            sections: [],
+            protection: { type: "trackedChanges" },
+        });
+
+        const tree = new Formatter().format(doc.Settings);
+
+        expect(tree["w:settings"]).to.deep.include({
+            "w:documentProtection": { _attr: { "w:edit": "trackedChanges", "w:enforcement": true } },
+        });
+    });
+
+    it("should not write embedTrueTypeFonts when no fonts are embedded", () => {
+        for (const fonts of [undefined, []]) {
+            const doc = new File({ sections: [], fonts });
+
+            const tree = new Formatter().format(doc.Settings);
+            const elements = (tree["w:settings"] as readonly Record<string, unknown>[]).map((child) => Object.keys(child)[0]);
+
+            expect(elements).to.not.include("w:embedTrueTypeFonts");
+        }
+    });
+
+    describe("#comments", () => {
+        it("should create comments", () => {
+            const doc = new File({
+                comments: {
+                    children: [],
+                },
+                sections: [],
+            });
+
+            expect(doc.Comments).to.not.be.undefined;
+        });
+
+        it("should not add a comments relationship or content type when there are no comments", () => {
+            const doc = new File({
+                comments: {
+                    children: [],
+                },
+                sections: [],
+            });
+
+            expect(JSON.stringify(new Formatter().format(doc.Document.Relationships))).to.not.contain("comments");
+            expect(JSON.stringify(new Formatter().format(doc.ContentTypes))).to.not.contain("comments");
+        });
+
+        it("should add a comments relationship and content type when there are comments", () => {
+            const doc = new File({
+                comments: {
+                    children: [{ id: 0, children: [new Paragraph("comment")] }],
+                },
+                sections: [],
+            });
+
+            expect(JSON.stringify(new Formatter().format(doc.Document.Relationships))).to.contain(
+                JSON.stringify({
+                    Id: "rId6",
+                    Type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments",
+                    Target: "comments.xml",
+                }),
+            );
+            expect(JSON.stringify(new Formatter().format(doc.ContentTypes))).to.contain(
+                JSON.stringify({
+                    ContentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml",
+                    PartName: "/word/comments.xml",
+                }),
+            );
+        });
+
+        it("should create CommentsExtended when comments have parentId", () => {
+            const doc = new File({
+                comments: {
+                    children: [
+                        { id: 0, children: [new Paragraph("parent")] },
+                        { id: 1, children: [new Paragraph("reply")], parentId: 0 },
+                    ],
+                },
+                sections: [],
+            });
+
+            expect(doc.CommentsExtended).to.not.be.undefined;
+        });
+
+        it("should not create CommentsExtended when no parentId", () => {
+            const doc = new File({
+                comments: {
+                    children: [{ id: 0, children: [new Paragraph("comment")] }],
+                },
+                sections: [],
+            });
+
+            expect(doc.CommentsExtended).to.be.undefined;
+        });
+
+        it("should create CommentsIds when a single (non-threaded) comment has durableId", () => {
+            const doc = new File({
+                comments: {
+                    children: [{ id: 0, children: [new Paragraph("comment")], durableId: "12AB34CD" }],
+                },
+                sections: [],
+            });
+
+            expect(doc.CommentsIds).to.not.be.undefined;
+
+            const tree = new Formatter().format(doc.CommentsIds!);
+            const root = tree["w16cid:commentsIds"] as readonly Record<string, { readonly _attr: Record<string, string> }>[];
+            const commentId = root.find((entry) => "w16cid:commentId" in entry)?.["w16cid:commentId"];
+            expect(commentId).to.not.be.undefined;
+            expect(commentId!._attr["w16cid:durableId"]).to.equal("12AB34CD");
+            expect(commentId!._attr["w16cid:paraId"]).to.be.a("string");
+        });
+
+        it("should create CommentsIds when threaded comments have durableId", () => {
+            const doc = new File({
+                comments: {
+                    children: [
+                        { id: 0, children: [new Paragraph("parent")], durableId: "11112222" },
+                        { id: 1, children: [new Paragraph("reply")], parentId: 0, durableId: "33334444" },
+                    ],
+                },
+                sections: [],
+            });
+
+            expect(doc.CommentsIds).to.not.be.undefined;
+        });
+
+        it("should not create CommentsIds when no durableId", () => {
+            const doc = new File({
+                comments: {
+                    children: [{ id: 0, children: [new Paragraph("comment")] }],
+                },
+                sections: [],
+            });
+
+            expect(doc.CommentsIds).to.be.undefined;
+        });
+    });
+
+    describe("#numbering", () => {
+        it("should create", () => {
+            const doc = new File({
+                numbering: { config: [] },
+                sections: [],
+            });
+
+            expect(doc.Numbering).to.not.be.undefined;
+        });
+    });
+
+    describe("#getters", () => {
+        it("should have defined getters", () => {
+            const doc = new File({
+                sections: [],
+            });
+
+            expect(doc.CoreProperties).to.not.be.undefined;
+            expect(doc.Media).to.not.be.undefined;
+            expect(doc.FileRelationships).to.not.be.undefined;
+            expect(doc.Headers).to.not.be.undefined;
+            expect(doc.Footers).to.not.be.undefined;
+            expect(doc.ContentTypes).to.not.be.undefined;
+            expect(doc.CustomProperties).to.not.be.undefined;
+            expect(doc.AppProperties).to.not.be.undefined;
+            expect(doc.FootNotes).to.not.be.undefined;
+            expect(doc.Settings).to.not.be.undefined;
+            expect(doc.Comments).to.not.be.undefined;
+            expect(doc.Theme).to.not.be.undefined;
+        });
+    });
+
+    describe("#bibliography", () => {
+        const CUSTOM_XML = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml";
+
+        it("should have no sources part without a bibliography", () => {
+            const doc = new File({ sections: [] });
+
+            expect(doc.Bibliography).toBeUndefined();
+            expect(JSON.stringify(new Formatter().format(doc.Document.Relationships))).not.toContain(CUSTOM_XML);
+            expect(JSON.stringify(new Formatter().format(doc.ContentTypes))).not.toContain("customXml");
+        });
+
+        it("should keep the sources in a custom XML part, with its properties, as Word does", () => {
+            const sources = new Paragraph("Sources");
+            const doc = new File({ bibliography: { sources }, sections: [] });
+
+            expect(doc.Bibliography?.sources).toBe(sources);
+            const properties = new Formatter().format(doc.Bibliography!.properties);
+            expect(properties["ds:datastoreItem"][0]._attr["ds:itemID"]).to.match(/^\{[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}\}$/);
+            expect(new Formatter().format(doc.Bibliography!.relationships)).toEqual({
+                Relationships: [
+                    { _attr: { xmlns: "http://schemas.openxmlformats.org/package/2006/relationships" } },
+                    {
+                        Relationship: {
+                            _attr: {
+                                Id: "rId1",
+                                Type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXmlProps",
+                                Target: "itemProps1.xml",
+                            },
+                        },
+                    },
+                ],
+            });
+            expect(JSON.stringify(new Formatter().format(doc.ContentTypes))).toContain(
+                JSON.stringify({
+                    ContentType: "application/vnd.openxmlformats-officedocument.customXmlProperties+xml",
+                    PartName: "/customXml/itemProps1.xml",
+                }),
+            );
+        });
+
+        it("should relate the document to the sources after the theme and the macros", () => {
+            const project = Uint8Array.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0x00]);
+            const relationships = JSON.stringify(
+                new Formatter().format(
+                    new File({ bibliography: { sources: new Paragraph("") }, macros: { project }, sections: [] }).Document.Relationships,
+                ),
+            );
+
+            expect(relationships).toContain(JSON.stringify({ Id: "rId8", Type: CUSTOM_XML, Target: "../customXml/item1.xml" }));
+            expect(
+                JSON.stringify(
+                    new Formatter().format(new File({ bibliography: { sources: new Paragraph("") }, sections: [] }).Document.Relationships),
+                ),
+            ).toContain(JSON.stringify({ Id: "rId7", Type: CUSTOM_XML, Target: "../customXml/item1.xml" }));
+        });
+    });
+
+    describe("#macros", () => {
+        // The start of a compound file, which is all the document checks a VBA project for
+        const project = Uint8Array.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0x00]);
+        const VBA_PROJECT = "http://schemas.microsoft.com/office/2006/relationships/vbaProject";
+
+        it("should leave a document without macros a .docx, with no VBA project", () => {
+            const doc = new File({ sections: [] });
+
+            expect(doc.Macros).toBeUndefined();
+            expect(JSON.stringify(new Formatter().format(doc.Document.Relationships))).not.toContain(VBA_PROJECT);
+            expect(JSON.stringify(new Formatter().format(doc.ContentTypes))).toContain(
+                JSON.stringify({
+                    ContentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+                    PartName: "/word/document.xml",
+                }),
+            );
+        });
+
+        it("should make a document with macros macro-enabled, with a relationship to its VBA project after the theme's", () => {
+            const doc = new File({ macros: { project }, sections: [] });
+            const contentTypes = JSON.stringify(new Formatter().format(doc.ContentTypes));
+
+            expect(doc.Macros?.project).toBe(project);
+            expect(doc.Macros?.events).toBeUndefined();
+            expect(doc.Macros?.relationships.RelationshipCount).toBe(0);
+            expect(JSON.stringify(new Formatter().format(doc.Document.Relationships))).toContain(
+                JSON.stringify({ Id: "rId7", Type: VBA_PROJECT, Target: "vbaProject.bin" }),
+            );
+            expect(contentTypes).toContain(
+                JSON.stringify({ ContentType: "application/vnd.ms-word.document.macroEnabled.main+xml", PartName: "/word/document.xml" }),
+            );
+            expect(contentTypes).not.toContain("wordprocessingml.document.main+xml");
+            expect(contentTypes).toContain(
+                JSON.stringify({ ContentType: "application/vnd.ms-office.vbaProject", PartName: "/word/vbaProject.bin" }),
+            );
+            expect(contentTypes).not.toContain("vbaData");
+        });
+
+        it("should list the events the macros handle, with a relationship to them from the VBA project", () => {
+            const doc = new File({ macros: { project, events: ["close", "open"] }, sections: [] });
+
+            expect(new Formatter().format(doc.Macros!.events!)).toEqual({
+                "wne:vbaSuppData": [
+                    { _attr: { "xmlns:wne": "http://schemas.microsoft.com/office/word/2006/wordml" } },
+                    { "wne:docEvents": [{ "wne:eventDocOpen": {} }, { "wne:eventDocClose": {} }] },
+                ],
+            });
+            expect(new Formatter().format(doc.Macros!.relationships)).toEqual({
+                Relationships: [
+                    { _attr: { xmlns: "http://schemas.openxmlformats.org/package/2006/relationships" } },
+                    {
+                        Relationship: {
+                            _attr: {
+                                Id: "rId1",
+                                Type: "http://schemas.microsoft.com/office/2006/relationships/wordVbaData",
+                                Target: "vbaData.xml",
+                            },
+                        },
+                    },
+                ],
+            });
+            expect(JSON.stringify(new Formatter().format(doc.ContentTypes))).toContain(
+                JSON.stringify({ ContentType: "application/vnd.ms-word.vbaData+xml", PartName: "/word/vbaData.xml" }),
+            );
+        });
+
+        it("should take a VBA project as an ArrayBuffer", () => {
+            const doc = new File({ macros: { project: project.buffer }, sections: [] });
+
+            expect(doc.Macros?.project).toEqual(project);
+        });
+
+        it("should throw for macros that aren't a VBA project, such as a .docm", () => {
+            expect(() => new File({ macros: { project: Uint8Array.from([0x50, 0x4b, 0x03, 0x04]) }, sections: [] })).toThrow(
+                "macros.project isn't a VBA project",
+            );
+        });
+    });
+
+    describe("#theme", () => {
+        it("should write a theme with the given colors and fonts, and a relationship to it after the headers' and footers'", () => {
+            const doc = new File({
+                theme: { name: "Forest", colors: { accent1: "2E7D32" }, fonts: { headings: "Georgia" } },
+                sections: [{ headers: { default: new Header() }, footers: { default: new Footer() }, children: [] }],
+            });
+
+            const relationships = new Formatter().format(doc.Document.Relationships)["Relationships"];
+            const ids = relationships
+                .slice(1)
+                .map(({ Relationship }: { readonly Relationship: { readonly _attr: object } }) => Relationship._attr);
+            expect(ids.slice(-3)).to.deep.equal([
+                {
+                    Id: "rId6",
+                    Type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header",
+                    Target: "header1.xml",
+                },
+                {
+                    Id: "rId7",
+                    Type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer",
+                    Target: "footer1.xml",
+                },
+                {
+                    Id: "rId8",
+                    Type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme",
+                    Target: "theme/theme1.xml",
+                },
+            ]);
+
+            const theme = new Formatter().format(doc.Theme)["a:theme"];
+            expect(theme[0]._attr.name).to.equal("Forest");
+            const [colors, fonts] = theme[1]["a:themeElements"];
+            expect(colors["a:clrScheme"][5]).to.deep.equal({ "a:accent1": [{ "a:srgbClr": { _attr: { val: "2E7D32" } } }] });
+            expect(fonts["a:fontScheme"][1]["a:majorFont"][0]).to.deep.equal({ "a:latin": { _attr: { typeface: "Georgia" } } });
+        });
+
+        it("should write theme colors in text, borders and shading with the colors they come to in the document's theme", () => {
+            const doc = new File({
+                theme: { colors: { accent1: "2E7D32", light2: "EEF2F3" } },
+                sections: [
+                    {
+                        children: [
+                            new Paragraph({
+                                border: { bottom: { style: "single", size: 6, color: { theme: "accent1" } } },
+                                shading: { type: "clear", fill: { theme: "light2" } },
+                                children: [new TextRun({ text: "Green", color: { theme: "accent1", darker: 25 } })],
+                            }),
+                        ],
+                    },
+                ],
+            });
+
+            const xml = JSON.stringify(new Formatter().format(doc.Document.View, { file: doc, viewWrapper: doc.Document, stack: [] }));
+            expect(xml).to.include(
+                JSON.stringify({ "w:color": { _attr: { "w:val": "225D25", "w:themeColor": "accent1", "w:themeShade": "BF" } } }),
+            );
+            expect(xml).to.include(
+                JSON.stringify({ "w:bottom": { _attr: { "w:val": "single", "w:color": "2E7D32", "w:themeColor": "accent1", "w:sz": 6 } } }),
+            );
+            expect(xml).to.include(
+                JSON.stringify({ "w:shd": { _attr: { "w:fill": "EEF2F3", "w:themeFill": "light2", "w:val": "clear" } } }),
+            );
+        });
+    });
+
+    describe("#externalStyles", () => {
+        /** The formatted styles with the id given */
+        const stylesWithId = (file: File, id: string): readonly string[] => {
+            const children: readonly object[] = new Formatter().format(file.Styles)["w:styles"];
+            return children.map((child) => JSON.stringify(child)).filter((child) => child.includes(`"w:styleId":"${id}"`));
+        };
+
+        it("should write Normal Table, the default table style, unless the external styles have their own", () => {
+            expect(stylesWithId(new File({ sections: [] }), "TableNormal")).to.have.length(1);
+            const own = new File({
+                sections: [],
+                externalStyles: `<w:styles xmlns:w="main"><w:style w:type="table" w:default="1" w:styleId="TableNormal"><w:name w:val="Their Table"/></w:style></w:styles>`,
+            });
+            const styles = stylesWithId(own, "TableNormal");
+            expect(styles).to.have.length(1);
+            expect(styles[0]).to.include("Their Table");
+        });
+
+        it("should work with external styles", () => {
+            const doc = new File({
+                sections: [],
+                externalStyles: `
+                    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+                    <w:styles xmlns:mc="first" xmlns:r="second">
+                        <w:docDefaults>
+                        <w:rPrDefault>
+                            <w:rPr>
+                                <w:rFonts w:ascii="Arial" w:eastAsiaTheme="minorHAnsi" w:hAnsi="Arial" w:cstheme="minorHAnsi"/>
+                                <w:lang w:val="en-US" w:eastAsia="en-US" w:bidi="ar-SA"/>
+                            </w:rPr>
+                        </w:rPrDefault>
+                        <w:pPrDefault>
+                            <w:pPr>
+                                <w:spacing w:after="160" w:line="259" w:lineRule="auto"/>
+                            </w:pPr>
+                        </w:pPrDefault>
+                        </w:docDefaults>
+
+                        <w:latentStyles w:defLockedState="1" w:defUIPriority="99">
+                        </w:latentStyles>
+
+                        <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+                            <w:name w:val="Normal"/>
+                            <w:qFormat/>
+                        </w:style>
+
+                        <w:style w:type="paragraph" w:styleId="Heading1">
+                            <w:name w:val="heading 1"/>
+                            <w:basedOn w:val="Normal"/>
+                            <w:pPr>
+                                <w:keepNext/>
+                                <w:keepLines/>
+
+                                <w:pBdr>
+                                    <w:bottom w:val="single" w:sz="4" w:space="1" w:color="auto"/>
+                            </w:pBdr>
+                            </w:pPr>
+                        </w:style>
+                    </w:styles>`,
+            });
+
+            expect(doc.Styles).to.not.be.undefined;
+        });
+
+        it("should merge external styles with default styles when both are provided", () => {
+            const doc = new File({
+                sections: [],
+                externalStyles: `
+                    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+                    <w:styles xmlns:mc="first" xmlns:r="second">
+                        <w:style w:type="paragraph" w:styleId="Heading1">
+                            <w:name w:val="heading 1"/>
+                        </w:style>
+                        <w:style w:type="paragraph" w:styleId="Title">
+                            <w:name w:val="Title"/>
+                        </w:style>
+                        <w:docDefaults><w:rPrDefault/></w:docDefaults>
+                    </w:styles>`,
+                styles: {
+                    default: {
+                        heading1: {
+                            run: {
+                                size: 28,
+                            },
+                        },
+                    },
+                },
+            });
+
+            const tree = new Formatter().format(doc.Styles)["w:styles"];
+            const names = tree.map((child: object) => Object.keys(child)[0]);
+            const ids = tree.map(
+                (child: { readonly "w:style"?: readonly { readonly _attr?: Record<string, string> }[] }) =>
+                    child["w:style"]?.find((part) => part._attr)?._attr?.["w:styleId"],
+            );
+
+            // The external document defaults take the place of docx's, and come first
+            expect(names.filter((name: string) => name === "w:docDefaults")).to.have.length(1);
+            expect(tree[1]).to.deep.equal({ "w:docDefaults": [{ "w:rPrDefault": {} }] });
+            // The external Title takes the place of docx's
+            expect(ids.filter((id: string) => id === "Title")).to.have.length(1);
+            expect(tree[ids.indexOf("Title")]).to.deep.equal({
+                "w:style": [{ _attr: { "w:type": "paragraph", "w:styleId": "Title" } }, { "w:name": { _attr: { "w:val": "Title" } } }],
+            });
+            // The Heading1 given in styles.default takes the place of the external one, and docx's styles fill in the rest
+            expect(ids.filter((id: string) => id === "Heading1")).to.have.length(1);
+            expect(tree[ids.indexOf("Heading1")]).to.deep.equal(
+                new Formatter().format(createDefaultStyles({ heading1: { run: { size: 28 } } }).heading1),
+            );
+            expect(ids).to.include("Heading2");
+        });
+
+        it("should keep the external styles in place of docx's default styles of the same id", () => {
+            const doc = new File({
+                sections: [],
+                externalStyles: `
+                    <w:styles xmlns:w="main">
+                        <w:docDefaults>
+                            <w:rPrDefault><w:rPr><w:sz w:val="24"/></w:rPr></w:rPrDefault>
+                            <w:pPrDefault/>
+                        </w:docDefaults>
+                        <w:style w:type="paragraph" w:styleId="Title">
+                            <w:name w:val="Title"/>
+                            <w:basedOn w:val="Heading1"/>
+                            <w:rPr><w:sz w:val="32"/></w:rPr>
+                        </w:style>
+                    </w:styles>`,
+            });
+
+            // A style id may be written only once, as may the document defaults. When docx's own Title or document
+            // defaults are written as well as the template's, Word can show docx's formatting instead of the template's,
+            // so only the external ones may be written
+            const tree = new Formatter().format(doc.Styles)["w:styles"];
+            const titles = tree.filter(
+                (child: { readonly "w:style"?: readonly { readonly _attr?: Record<string, string> }[] }) =>
+                    child["w:style"]?.find((part) => part._attr)?._attr?.["w:styleId"] === "Title",
+            );
+            expect(titles).to.deep.equal([
+                {
+                    "w:style": [
+                        { _attr: { "w:type": "paragraph", "w:styleId": "Title" } },
+                        { "w:name": { _attr: { "w:val": "Title" } } },
+                        { "w:basedOn": { _attr: { "w:val": "Heading1" } } },
+                        { "w:rPr": [{ "w:sz": { _attr: { "w:val": "32" } } }] },
+                    ],
+                },
+            ]);
+            expect(tree.filter((child: object) => "w:docDefaults" in child)).to.deep.equal([
+                {
+                    "w:docDefaults": [
+                        { "w:rPrDefault": [{ "w:rPr": [{ "w:sz": { _attr: { "w:val": "24" } } }] }] },
+                        { "w:pPrDefault": {} },
+                    ],
+                },
+            ]);
+        });
+
+        it("should keep the paragraph and character styles given with external styles, in place of those of the same id", () => {
+            const doc = new File({
+                sections: [],
+                externalStyles: `
+                    <w:styles xmlns:w="main">
+                        <w:style w:type="paragraph" w:styleId="Quote">
+                            <w:name w:val="Quote"/>
+                        </w:style>
+                    </w:styles>`,
+                styles: {
+                    paragraphStyles: [{ id: "Quote", name: "Quote", run: { italics: true } }],
+                    characterStyles: [{ id: "Highlight", name: "Highlight", run: { color: "FF0000" } }],
+                },
+            });
+
+            const tree = new Formatter().format(doc.Styles)["w:styles"];
+            const ids = tree.map(
+                (child: { readonly "w:style"?: readonly { readonly _attr?: Record<string, string> }[] }) =>
+                    child["w:style"]?.find((part) => part._attr)?._attr?.["w:styleId"],
+            );
+            // The paragraph style with the external style's id replaces it, rather than being dropped or written
+            // alongside it, and the character style with a new id is added next to the template's styles
+            expect(ids.filter((id: string) => id === "Quote")).to.have.length(1);
+            expect(tree[ids.indexOf("Quote")]).to.deep.equal(
+                new Formatter().format(new StyleForParagraph({ id: "Quote", name: "Quote", run: { italics: true } })),
+            );
+            expect(tree[ids.indexOf("Highlight")]).to.deep.equal(
+                new Formatter().format(new StyleForCharacter({ id: "Highlight", name: "Highlight", run: { color: "FF0000" } })),
+            );
+        });
+
+        it("should replace the external document defaults with those given in styles.default", () => {
+            const doc = new File({
+                sections: [],
+                externalStyles: `
+                    <w:styles xmlns:w="main">
+                        <w:docDefaults><w:rPrDefault/></w:docDefaults>
+                    </w:styles>`,
+                styles: { default: { document: { run: { font: "Arial" } } } },
+            });
+
+            const tree = new Formatter().format(doc.Styles)["w:styles"];
+            const defaults = tree.filter((child: object) => "w:docDefaults" in child);
+            expect(defaults).to.deep.equal([
+                new Formatter().format(createDefaultStyles({ document: { run: { font: "Arial" } } }).document),
+            ]);
+            expect(tree[1]).to.deep.equal(defaults[0]);
+        });
+    });
+
+    describe("#features", () => {
+        it("should work with updateFields", () => {
+            const doc = new File({
+                sections: [],
+                features: {
+                    updateFields: true,
+                },
+            });
+
+            expect(doc.Styles).to.not.be.undefined;
+        });
+
+        it("should work with trackRevisions", () => {
+            const doc = new File({
+                sections: [],
+                features: {
+                    trackRevisions: true,
+                },
+            });
+
+            expect(doc.Styles).to.not.be.undefined;
+        });
+    });
+
+    describe("#hyphenation", () => {
+        it("should work with autoHyphenation", () => {
+            const doc = new File({
+                sections: [],
+                hyphenation: {
+                    autoHyphenation: true,
+                },
+            });
+
+            expect(doc.Styles).to.not.be.undefined;
+        });
+    });
+});

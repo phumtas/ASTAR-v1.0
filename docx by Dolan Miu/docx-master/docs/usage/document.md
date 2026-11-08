@@ -1,0 +1,313 @@
+# Document
+
+> The `Document` object is the starting point of your `.docx` journey, this is the literal Word Document. You add all your content such as `Paragraphs` to this `Document`, and at the end export it however you like.
+
+To create a new document, it is very easy:
+
+```ts live
+import { Document, Paragraph } from "docx";
+
+const doc = new Document({
+    sections: [
+        {
+            children: [new Paragraph("Hello World")],
+        },
+    ],
+});
+```
+
+## Document Properties
+
+You can add metadata properties to the Word document:
+
+```ts live
+import { Document, Paragraph } from "docx";
+
+const doc = new Document({
+    creator: "Dolan Miu",
+    description: "My extremely interesting document",
+    title: "My Document",
+    subject: "Report",
+    keywords: "report, annual, finance",
+    sections: [
+        {
+            children: [new Paragraph("Hello World")],
+        },
+    ],
+});
+```
+
+These properties appear in Word's File > Info panel and in file properties. Word shows `keywords` as the document's tags and `description` as its comments. To set them on a document made from a template, see [Document Properties](usage/templates.md#document-properties) in Templates.
+
+## Options by Category
+
+### Metadata Properties
+
+| Property       | Type     | Description                   |
+| -------------- | -------- | ----------------------------- |
+| title          | `string` | Document title                |
+| subject        | `string` | Document subject              |
+| creator        | `string` | Author name                   |
+| keywords       | `string` | Keywords for searching        |
+| description    | `string` | Document description/comments |
+| lastModifiedBy | `string` | Last person to modify         |
+| revision       | `number` | Revision number               |
+
+### Content Options
+
+| Property  | Type                                        | Description       |
+| --------- | ------------------------------------------- | ----------------- |
+| sections  | `ISectionOptions[]`                         | Document sections |
+| comments  | `ICommentsOptions`                          | Document comments |
+| footnotes | `Record<string, { children: Paragraph[] }>` | Footnotes         |
+
+### Styling Options
+
+| Property       | Type                | Description                                                   |
+| -------------- | ------------------- | ------------------------------------------------------------- |
+| styles         | `IStylesOptions`    | Custom styles                                                 |
+| externalStyles | `string`            | External XML styles                                           |
+| numbering      | `INumberingOptions` | Numbering definitions                                         |
+| fonts          | `FontOptions[]`     | Embedded fonts                                                |
+| defaultTabStop | `number`            | Default tab stop (twips), 720 (half an inch) when not given   |
+| theme          | `IThemeOptions`     | The document's [theme](usage/themes.md): its colors and fonts |
+
+### Document Behavior
+
+| Property                   | Type                                                   | Description                                                                                                                                                   |
+| -------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| background                 | `IDocumentBackgroundOptions`                           | Document background                                                                                                                                           |
+| features                   | `{ trackRevisions?: boolean; updateFields?: boolean }` | Feature flags                                                                                                                                                 |
+| evenAndOddHeaderAndFooters | `boolean`                                              | Different odd/even headers                                                                                                                                    |
+| hyphenation                | `IHyphenationOptions`                                  | Hyphenation settings                                                                                                                                          |
+| protection                 | `IDocumentProtectionOptions`                           | What people can change in Word, and the password that turns that [protection](usage/document-protection.md) off                                               |
+| pageNumbers                | `PageNumberEstimator`                                  | Writes the page numbers of tables of contents and page references, and the numbers of pages, with `estimatePageNumbers` from [`docx/layout`](usage/layout.md) |
+
+### Compatibility
+
+| Property                 | Type                    | Description                |
+| ------------------------ | ----------------------- | -------------------------- |
+| compatibility            | `ICompatibilityOptions` | Compatibility settings     |
+| compatabilityModeVersion | `number`                | Word version compatibility |
+
+### Full list of options:
+
+| Property                   | Type                                                     | Notes    |
+| -------------------------- | -------------------------------------------------------- | -------- |
+| sections                   | `ISectionOptions[]`                                      | Optional |
+| title                      | `string`                                                 | Optional |
+| subject                    | `string`                                                 | Optional |
+| creator                    | `string`                                                 | Optional |
+| keywords                   | `string`                                                 | Optional |
+| description                | `string`                                                 | Optional |
+| lastModifiedBy             | `string`                                                 | Optional |
+| revision                   | `number`                                                 | Optional |
+| externalStyles             | `string`                                                 | Optional |
+| styles                     | `IStylesOptions`                                         | Optional |
+| numbering                  | `INumberingOptions`                                      | Optional |
+| comments                   | `ICommentsOptions`                                       | Optional |
+| footnotes                  | `Record<string, { children: Paragraph[] }>`              | Optional |
+| background                 | `IDocumentBackgroundOptions`                             | Optional |
+| features                   | `{ trackRevisions?: boolean;  updateFields?: boolean; }` | Optional |
+| compatabilityModeVersion   | `number`                                                 | Optional |
+| compatibility              | `ICompatibilityOptions`                                  | Optional |
+| customProperties           | ` ICustomPropertyOptions`[]                              | Optional |
+| evenAndOddHeaderAndFooters | `boolean`                                                | Optional |
+| defaultTabStop             | `number`                                                 | Optional |
+| fonts                      | ` FontOptions[]`                                         | Optional |
+| hyphenation                | `IHyphenationOptions`                                    | Optional |
+| theme                      | `IThemeOptions`                                          | Optional |
+| pageNumbers                | `PageNumberEstimator`                                    | Optional |
+| protection                 | `IDocumentProtectionOptions`                             | Optional |
+
+### Change background color of Document
+
+Set the hex value in the document like so:
+
+```ts live
+import { Document, Paragraph } from "docx";
+
+const doc = new Document({
+    background: {
+        color: "C45911",
+    },
+    sections: [
+        {
+            children: [new Paragraph("Hello World")],
+        },
+    ],
+});
+```
+
+Or use a color of the document's theme, lighter or darker if you like, so the page changes color with the theme. See [Themes](usage/themes.md#text-tables-and-borders-in-the-themes-colors):
+
+```ts live
+import { Document, Paragraph } from "docx";
+
+const doc = new Document({
+    background: {
+        color: { theme: "accent2", lighter: 80 },
+    },
+    sections: [
+        {
+            children: [new Paragraph("Hello World")],
+        },
+    ],
+});
+```
+
+`themeColor`, `themeTint` and `themeShade` are deprecated: give `color` a theme color instead.
+
+### Custom Properties
+
+Add custom metadata properties that appear in Word's document properties:
+
+```ts live
+import { Document, Paragraph } from "docx";
+
+const doc = new Document({
+    customProperties: [
+        {
+            name: "Department",
+            value: "Engineering",
+        },
+        {
+            name: "Project Code",
+            value: "PRJ-2024-001",
+        },
+        {
+            name: "Approved",
+            value: "true",
+        },
+        {
+            name: "Version",
+            value: "2.5",
+        },
+    ],
+    sections: [
+        {
+            children: [new Paragraph("Hello World")],
+        },
+    ],
+});
+```
+
+Custom property values are text (`string`), so write numbers and true/false values as text, as above.
+
+### Document Features
+
+Enable special features like track changes or field updating:
+
+```ts live
+import { Document, Paragraph } from "docx";
+
+const doc = new Document({
+    features: {
+        trackRevisions: true, // Enable track changes
+        updateFields: true, // Update fields (like TOC) when opened
+    },
+    sections: [
+        {
+            children: [new Paragraph("Hello World")],
+        },
+    ],
+});
+```
+
+?> Set `updateFields: true` when using Table of Contents so it updates automatically when the document is opened.
+
+### Units for positioning
+
+Various parts of the API require positioning arguments. The units are "20ths of a point" from the [OOXML](http://officeopenxml.com/index.php) specification.
+See [Lars Corneliussen's blog post](https://startbigthinksmall.wordpress.com/2010/01/04/points-inches-and-emus-measuring-units-in-office-open-xml/) for more information and how to convert units.
+
+## Compatibility
+
+Compatibility Settings are optional settings used to preserve visual fidelity of documents created in earlier word processing applications. Some of these settings provide ability for specific behaviors, described in detail below; and others simply instruct applications to mimic the behavior of an existing word processing application.
+
+```ts live
+import { Document, Paragraph } from "docx";
+
+const doc = new Document({
+    compatibility: {
+        version: 15,
+        doNotExpandShiftReturn: true,
+    },
+    sections: [
+        {
+            children: [new Paragraph("Hello World")],
+        },
+    ],
+});
+```
+
+### Compatibility Options
+
+| Property                            | Type      | Notes    | Possible Values              |
+| ----------------------------------- | --------- | -------- | ---------------------------- |
+| version                             | `number`  | Optional | `15`, `16`, `17`             |
+| useSingleBorderforContiguousCells   | `boolean` | Optional | `true`, `false`, `undefined` |
+| wordPerfectJustification            | `boolean` | Optional | `true`, `false`, `undefined` |
+| noTabStopForHangingIndent           | `boolean` | Optional | `true`, `false`, `undefined` |
+| noLeading                           | `boolean` | Optional | `true`, `false`, `undefined` |
+| spaceForUnderline                   | `boolean` | Optional | `true`, `false`, `undefined` |
+| noColumnBalance                     | `boolean` | Optional | `true`, `false`, `undefined` |
+| balanceSingleByteDoubleByteWidth    | `boolean` | Optional | `true`, `false`, `undefined` |
+| noExtraLineSpacing                  | `boolean` | Optional | `true`, `false`, `undefined` |
+| doNotLeaveBackslashAlone            | `boolean` | Optional | `true`, `false`, `undefined` |
+| underlineTrailingSpaces             | `boolean` | Optional | `true`, `false`, `undefined` |
+| doNotExpandShiftReturn              | `boolean` | Optional | `true`, `false`, `undefined` |
+| spacingInWholePoints                | `boolean` | Optional | `true`, `false`, `undefined` |
+| lineWrapLikeWord6                   | `boolean` | Optional | `true`, `false`, `undefined` |
+| printBodyTextBeforeHeader           | `boolean` | Optional | `true`, `false`, `undefined` |
+| printColorsBlack                    | `boolean` | Optional | `true`, `false`, `undefined` |
+| spaceWidth                          | `boolean` | Optional | `true`, `false`, `undefined` |
+| showBreaksInFrames                  | `boolean` | Optional | `true`, `false`, `undefined` |
+| subFontBySize                       | `boolean` | Optional | `true`, `false`, `undefined` |
+| suppressBottomSpacing               | `boolean` | Optional | `true`, `false`, `undefined` |
+| suppressTopSpacing                  | `boolean` | Optional | `true`, `false`, `undefined` |
+| suppressSpacingAtTopOfPage          | `boolean` | Optional | `true`, `false`, `undefined` |
+| suppressTopSpacingWP                | `boolean` | Optional | `true`, `false`, `undefined` |
+| suppressSpBfAfterPgBrk              | `boolean` | Optional | `true`, `false`, `undefined` |
+| swapBordersFacingPages              | `boolean` | Optional | `true`, `false`, `undefined` |
+| convertMailMergeEsc                 | `boolean` | Optional | `true`, `false`, `undefined` |
+| truncateFontHeightsLikeWP6          | `boolean` | Optional | `true`, `false`, `undefined` |
+| macWordSmallCaps                    | `boolean` | Optional | `true`, `false`, `undefined` |
+| usePrinterMetrics                   | `boolean` | Optional | `true`, `false`, `undefined` |
+| doNotSuppressParagraphBorders       | `boolean` | Optional | `true`, `false`, `undefined` |
+| wrapTrailSpaces                     | `boolean` | Optional | `true`, `false`, `undefined` |
+| footnoteLayoutLikeWW8               | `boolean` | Optional | `true`, `false`, `undefined` |
+| shapeLayoutLikeWW8                  | `boolean` | Optional | `true`, `false`, `undefined` |
+| alignTablesRowByRow                 | `boolean` | Optional | `true`, `false`, `undefined` |
+| forgetLastTabAlignment              | `boolean` | Optional | `true`, `false`, `undefined` |
+| adjustLineHeightInTable             | `boolean` | Optional | `true`, `false`, `undefined` |
+| autoSpaceLikeWord95                 | `boolean` | Optional | `true`, `false`, `undefined` |
+| noSpaceRaiseLower                   | `boolean` | Optional | `true`, `false`, `undefined` |
+| doNotUseHTMLParagraphAutoSpacing    | `boolean` | Optional | `true`, `false`, `undefined` |
+| layoutRawTableWidth                 | `boolean` | Optional | `true`, `false`, `undefined` |
+| layoutTableRowsApart                | `boolean` | Optional | `true`, `false`, `undefined` |
+| useWord97LineBreakRules             | `boolean` | Optional | `true`, `false`, `undefined` |
+| doNotBreakWrappedTables             | `boolean` | Optional | `true`, `false`, `undefined` |
+| doNotSnapToGridInCell               | `boolean` | Optional | `true`, `false`, `undefined` |
+| selectFieldWithFirstOrLastCharacter | `boolean` | Optional | `true`, `false`, `undefined` |
+| applyBreakingRules                  | `boolean` | Optional | `true`, `false`, `undefined` |
+| doNotWrapTextWithPunctuation        | `boolean` | Optional | `true`, `false`, `undefined` |
+| doNotUseEastAsianBreakRules         | `boolean` | Optional | `true`, `false`, `undefined` |
+| useWord2002TableStyleRules          | `boolean` | Optional | `true`, `false`, `undefined` |
+| growAutofit                         | `boolean` | Optional | `true`, `false`, `undefined` |
+| useFELayout                         | `boolean` | Optional | `true`, `false`, `undefined` |
+| useNormalStyleForList               | `boolean` | Optional | `true`, `false`, `undefined` |
+| doNotUseIndentAsNumberingTabStop    | `boolean` | Optional | `true`, `false`, `undefined` |
+| useAlternateEastAsianLineBreakRules | `boolean` | Optional | `true`, `false`, `undefined` |
+| allowSpaceOfSameStyleInTable        | `boolean` | Optional | `true`, `false`, `undefined` |
+| doNotSuppressIndentation            | `boolean` | Optional | `true`, `false`, `undefined` |
+| doNotAutofitConstrainedTables       | `boolean` | Optional | `true`, `false`, `undefined` |
+| autofitToFirstFixedWidthCell        | `boolean` | Optional | `true`, `false`, `undefined` |
+| underlineTabInNumberingList         | `boolean` | Optional | `true`, `false`, `undefined` |
+| displayHangulFixedWidth             | `boolean` | Optional | `true`, `false`, `undefined` |
+| splitPgBreakAndParaMark             | `boolean` | Optional | `true`, `false`, `undefined` |
+| doNotVerticallyAlignCellWithSp      | `boolean` | Optional | `true`, `false`, `undefined` |
+| doNotBreakConstrainedForcedTable    | `boolean` | Optional | `true`, `false`, `undefined` |
+| ignoreVerticalAlignmentInTextboxes  | `boolean` | Optional | `true`, `false`, `undefined` |
+| useAnsiKerningPairs                 | `boolean` | Optional | `true`, `false`, `undefined` |
+| cachedColumnBalance                 | `boolean` | Optional | `true`, `false`, `undefined` |

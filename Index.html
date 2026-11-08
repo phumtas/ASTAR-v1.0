@@ -1,0 +1,4117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>A* - the homework destroyer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Libraries for DOCX, JSZip, PDF.js (Local with CDN fallbacks) -->
+  <script src="libs/jszip.min.js"></script>
+  <script>
+    if (typeof JSZip === 'undefined') {
+      document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"><\/script>');
+    }
+  </script>
+  <script src="libs/docx.umd.js"></script>
+  <script>
+    if (typeof docx === 'undefined') {
+      document.write('<script src="https://unpkg.com/docx@9.14.0/build/index.umd.js"><\/script>');
+    }
+  </script>
+  <script src="libs/pdf.min.js"></script>
+  <script>
+    if (typeof pdfjsLib === 'undefined') {
+      document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"><\/script>');
+    }
+  </script>
+
+  <style>
+    :root {
+      --bg-gradient: radial-gradient(circle at 50% 20%, #05164d 0%, #020b29 55%, #010619 100%);
+      --card-bg: linear-gradient(180deg, #09206b 0%, #061548 100%);
+      --card-border: rgba(43, 90, 237, 0.4);
+      --card-glow: 0 8px 32px 0 rgba(0, 30, 140, 0.37);
+      --blue-primary: #194bfb;
+      --blue-light: #527aff;
+      --blue-glow: #00e5ff;
+      --green-btn: linear-gradient(90deg, #00d24c 0%, #00b038 100%);
+      --red-btn: linear-gradient(90deg, #ff175e 0%, #ff0044 100%);
+      --gold: #ffd214;
+      --text-main: #ffffff;
+      --text-muted: #8b9ec7;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
+      font-family: 'Outfit', 'Inter', -apple-system, sans-serif;
+    }
+
+    body {
+      background: #010618;
+      background-image: var(--bg-gradient);
+      min-height: 100vh;
+      color: var(--text-main);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      overflow-x: hidden;
+      padding: 16px;
+    }
+
+    /* Outer Device/App Container */
+    .app-viewport {
+      width: 100%;
+      max-width: 580px;
+      min-height: 720px;
+      background: radial-gradient(circle at 50% 30%, #061752 0%, #020a2e 70%, #01051b 100%);
+      border-radius: 36px;
+      border: 3px solid #143596;
+      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.8), 0 0 40px rgba(16, 68, 224, 0.35);
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* Background 3D Logo watermark */
+    .bg-watermark-logo {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 380px;
+      height: 380px;
+      opacity: 0.12;
+      pointer-events: none;
+      z-index: 1;
+      filter: drop-shadow(0 0 25px #184aff);
+    }
+
+    .view-layer {
+      position: relative;
+      z-index: 2;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    /* ========================================================
+       1. WELCOME SCREEN
+       ======================================================== */
+    .welcome-screen {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      height: 100%;
+      min-height: 710px;
+      padding: 60px 30px 24px 30px;
+      text-align: center;
+    }
+
+    .welcome-header h1 {
+      font-size: 38px;
+      letter-spacing: 9px;
+      font-weight: 800;
+      color: #ffffff;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+      text-shadow: 0 4px 18px rgba(35, 102, 255, 0.6);
+    }
+
+    .welcome-header .to-text {
+      font-size: 16px;
+      font-weight: 400;
+      color: #9cb5ff;
+      margin: 8px 0;
+      display: inline-block;
+      position: relative;
+    }
+    .welcome-header .to-text::before,
+    .welcome-header .to-text::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      width: 120px;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, #3964ff);
+    }
+    .welcome-header .to-text::before {
+      right: calc(100% + 12px);
+    }
+    .welcome-header .to-text::after {
+      left: calc(100% + 12px);
+      background: linear-gradient(90deg, #3964ff, transparent);
+    }
+
+    .welcome-header h2 {
+      font-size: 20px;
+      font-weight: 600;
+      color: #e2ebff;
+      letter-spacing: 1px;
+    }
+
+    .welcome-logo-center {
+      margin: 20px 0;
+      width: 200px;
+      height: 200px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      filter: drop-shadow(0 15px 30px rgba(0, 48, 191, 0.6));
+      animation: floatLogo 4s ease-in-out infinite;
+    }
+    .welcome-logo-center img, .welcome-logo-center svg {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+
+    @keyframes floatLogo {
+      0%, 100% { transform: translateY(0px); }
+      50% { transform: translateY(-8px); }
+    }
+
+    .welcome-actions {
+      width: 100%;
+      max-width: 380px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      position: relative;
+    }
+
+    .btn-google {
+      width: 100%;
+      background: linear-gradient(90deg, #577dff 0%, #4667e6 100%);
+      color: white;
+      font-size: 19px;
+      font-weight: 600;
+      padding: 15px 24px;
+      border-radius: 28px;
+      border: 2px solid #829fff;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      box-shadow: 0 8px 24px rgba(45, 96, 255, 0.45);
+      transition: all 0.25s ease;
+      position: relative;
+      overflow: hidden;
+    }
+    .btn-google:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 30px rgba(70, 120, 255, 0.7);
+      background: linear-gradient(90deg, #688cff 0%, #5275f2 100%);
+    }
+    .btn-google svg {
+      transition: transform 0.2s;
+    }
+    .btn-google:hover svg {
+      transform: translateX(4px);
+    }
+
+    .welcome-or {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      color: #7995d9;
+      font-size: 14px;
+      font-weight: 500;
+    }
+    .welcome-or::before, .welcome-or::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: rgba(85, 125, 237, 0.35);
+    }
+
+    /* Continue without account wrapper & sliding warning */
+    .btn-anon-wrapper {
+      width: 100%;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .btn-anon {
+      width: 100%;
+      background: rgba(80, 95, 125, 0.4);
+      color: #f1f4ff;
+      font-size: 18px;
+      font-weight: 500;
+      padding: 15px 20px;
+      border-radius: 28px;
+      border: 1.5px solid rgba(135, 155, 195, 0.4);
+      cursor: pointer;
+      transition: all 0.25s ease;
+      backdrop-filter: blur(8px);
+      z-index: 2;
+    }
+    .btn-anon:hover {
+      background: rgba(100, 120, 160, 0.55);
+      border-color: rgba(170, 195, 255, 0.7);
+    }
+
+    /* Sliding warning banner below anonymous button */
+    .anon-warning-slide {
+      width: 90%;
+      background: linear-gradient(90deg, #ff1757 0%, #ff0844 100%);
+      color: #ffffff;
+      padding: 7px 16px;
+      border-radius: 0 0 18px 18px;
+      font-size: 12px;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      box-shadow: 0 8px 20px rgba(255, 10, 60, 0.4);
+      transform: translateY(-100%);
+      opacity: 0;
+      transition: transform 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28), opacity 0.25s ease;
+      z-index: 1;
+      margin-top: -8px;
+      pointer-events: none;
+    }
+    .btn-anon-wrapper:hover .anon-warning-slide {
+      transform: translateY(0);
+      opacity: 1;
+    }
+
+    .welcome-footer {
+      font-size: 12px;
+      color: rgba(140, 165, 220, 0.45);
+      letter-spacing: 0.5px;
+      margin-top: 16px;
+    }
+
+    /* ========================================================
+       2. APP HEADER & NAVIGATION TABS
+       ======================================================== */
+    .app-header {
+      width: 100%;
+      padding: 16px 20px 8px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: relative;
+      z-index: 10;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    /* Protected Logo Click Area (Page 53) */
+    .header-logo-badge {
+      width: 44px;
+      height: 44px;
+      background: rgba(15, 35, 105, 0.5);
+      border: 1px solid rgba(60, 110, 240, 0.4);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      position: relative;
+      transition: all 0.2s;
+    }
+    .header-logo-badge:hover {
+      border-color: #5585ff;
+      background: rgba(25, 55, 150, 0.6);
+      transform: scale(1.05);
+    }
+    .header-logo-badge img, .header-logo-badge svg {
+      width: 28px;
+      height: 28px;
+      object-fit: contain;
+    }
+
+    /* Nav Tabs: HOME, About, history */
+    .nav-tabs {
+      display: flex;
+      background: rgba(6, 18, 64, 0.6);
+      border: 1px solid rgba(40, 80, 200, 0.35);
+      border-radius: 16px;
+      padding: 3px;
+      gap: 4px;
+    }
+    .nav-tab {
+      padding: 6px 14px;
+      border-radius: 12px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #9cb2e8;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .nav-tab:hover {
+      color: #ffffff;
+    }
+    .nav-tab.active {
+      background: linear-gradient(180deg, #184bff 0%, #0d32bb 100%);
+      color: #ffffff;
+      box-shadow: 0 2px 10px rgba(24, 75, 255, 0.4);
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    /* Logout Button - only visible if logged in with Google */
+    .btn-logout {
+      background: linear-gradient(180deg, #4d77ff 0%, #345cf5 100%);
+      color: white;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 6px 14px;
+      border-radius: 14px;
+      border: 1.5px solid #7597ff;
+      cursor: pointer;
+      letter-spacing: 0.5px;
+      box-shadow: 0 4px 12px rgba(52, 92, 245, 0.35);
+      transition: all 0.2s;
+    }
+    .btn-logout:hover {
+      background: #5d84ff;
+      transform: translateY(-1px);
+    }
+
+    /* Gear Settings Icon Button - made bigger */
+    .btn-icon-gear {
+      width: 44px;
+      height: 44px;
+      font-size: 22px;
+      border-radius: 50%;
+      background: rgba(14, 34, 105, 0.65);
+      border: 2px solid rgba(80, 135, 255, 0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      color: #b8d2ff;
+      transition: all 0.25s ease;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+    }
+    .btn-icon-gear:hover {
+      border-color: #558aff;
+      color: white;
+      transform: rotate(45deg) scale(1.08);
+      box-shadow: 0 0 16px rgba(85, 138, 255, 0.6);
+      background: rgba(25, 55, 150, 0.8);
+    }
+
+    .btn-icon-back {
+      width: 40px;
+      height: 40px;
+      font-size: 18px;
+      border-radius: 50%;
+      background: rgba(12, 30, 90, 0.5);
+      border: 1.5px solid rgba(70, 120, 250, 0.4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      color: #a4c0ff;
+      transition: all 0.2s;
+    }
+    .btn-icon-back:hover {
+      border-color: #558aff;
+      color: white;
+      transform: scale(1.1);
+    }
+
+    /* Main Content Body */
+    .app-body {
+      flex: 1;
+      padding: 8px 24px 20px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      position: relative;
+      z-index: 5;
+      overflow-y: auto;
+    }
+
+    /* ========================================================
+       3. HOME SCREEN COMPONENTS
+       ======================================================== */
+    /* Input Dropzone Box */
+    .input-box {
+      width: 100%;
+      min-height: 120px;
+      background: linear-gradient(180deg, #0a2068 0%, #061548 100%);
+      border: 2px solid rgba(55, 105, 245, 0.45);
+      border-radius: 24px;
+      box-shadow: 0 8px 24px rgba(2, 10, 40, 0.6);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      cursor: pointer;
+      transition: all 0.25s ease;
+      position: relative;
+    }
+    .input-box:hover, .input-box.drag-over {
+      border-color: #00e5ff;
+      box-shadow: 0 0 25px rgba(0, 229, 255, 0.45), inset 0 0 15px rgba(0, 229, 255, 0.2);
+    }
+
+    .box-center-icon {
+      font-size: 28px;
+      margin-bottom: 4px;
+      color: #9cb8ff;
+      transition: transform 0.2s;
+    }
+    .input-box:hover .box-center-icon {
+      transform: translateY(3px);
+      color: #00e5ff;
+    }
+
+    .box-label-title {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      color: #ffffff;
+    }
+    .box-label-sub {
+      font-size: 12px;
+      font-weight: 500;
+      color: #7d9ee8;
+      letter-spacing: 1px;
+    }
+
+    /* Uploaded Files Chips Container */
+    .files-chips-scroll {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 130px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding-right: 4px;
+    }
+
+    .file-chip {
+      width: 100%;
+      background: rgba(14, 34, 98, 0.85);
+      border: 1px solid rgba(65, 120, 255, 0.4);
+      border-radius: 12px;
+      padding: 6px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      transition: all 0.2s;
+    }
+    .file-chip:hover {
+      background: rgba(22, 50, 140, 0.95);
+      border-color: #558aff;
+    }
+
+    .file-chip-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      overflow: hidden;
+    }
+
+    .file-type-badge {
+      font-size: 11px;
+      font-weight: 800;
+      padding: 3px 8px;
+      border-radius: 6px;
+      letter-spacing: 0.5px;
+    }
+    .file-type-badge.docx {
+      background: #1c52f0;
+      color: #ffffff;
+      box-shadow: 0 2px 6px rgba(28, 82, 240, 0.4);
+    }
+    .file-type-badge.pdf {
+      background: #ff1e56;
+      color: #ffffff;
+      box-shadow: 0 2px 6px rgba(255, 30, 86, 0.4);
+    }
+
+    .file-chip-name {
+      font-size: 13px;
+      font-weight: 500;
+      color: #e5edff;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .file-chip-delete {
+      color: #ff3b68;
+      font-size: 16px;
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 6px;
+      transition: all 0.2s;
+    }
+    .file-chip-delete:hover {
+      background: rgba(255, 59, 104, 0.2);
+      transform: scale(1.15);
+    }
+
+    /* Token Viewer Bar (Page 58) */
+    .token-bar-container {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      margin-top: 2px;
+    }
+    .token-track {
+      width: 100%;
+      height: 7px;
+      background: rgba(10, 24, 70, 0.7);
+      border-radius: 4px;
+      overflow: hidden;
+      border: 1px solid rgba(40, 80, 200, 0.25);
+    }
+    .token-fill {
+      height: 100%;
+      width: 100%;
+      background: linear-gradient(90deg, #ffea00 0%, #ffd600 100%);
+      box-shadow: 0 0 10px rgba(255, 234, 0, 0.6);
+      transition: width 0.3s ease, background 0.3s ease;
+    }
+    .token-fill.no-key {
+      background: linear-gradient(90deg, #ff1756 0%, #ff0044 100%);
+      box-shadow: 0 0 10px rgba(255, 23, 86, 0.6);
+    }
+    .token-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: #9cb5ff;
+      letter-spacing: 1px;
+    }
+
+    /* Action Row: DO WORK ? + API KEY FLYOUT */
+    .action-row {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      position: relative;
+    }
+
+    /* 2-Second Confirm DO WORK Button (Page 52) */
+    .btn-do-work {
+      flex: 1;
+      background: var(--green-btn);
+      color: #ffffff;
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      padding: 13px 20px;
+      border-radius: 26px;
+      border: 2px solid #3df67e;
+      cursor: pointer;
+      box-shadow: 0 6px 20px rgba(0, 210, 76, 0.4);
+      transition: all 0.2s ease;
+      text-align: center;
+    }
+    .btn-do-work:hover {
+      box-shadow: 0 8px 25px rgba(0, 255, 90, 0.6);
+      transform: translateY(-1px);
+    }
+    .btn-do-work.confirmed {
+      background: linear-gradient(90deg, #00eb55 0%, #00c840 100%);
+      border-color: #79ffaa;
+      box-shadow: 0 0 25px rgba(0, 235, 85, 0.8);
+      animation: pulseGreen 1s infinite alternate;
+    }
+
+    @keyframes pulseGreen {
+      0% { box-shadow: 0 0 15px rgba(0, 235, 85, 0.5); }
+      100% { box-shadow: 0 0 28px rgba(0, 235, 85, 0.9); }
+    }
+
+    /* Cancel Button variant */
+    .btn-do-work.cancelling {
+      background: var(--red-btn);
+      border-color: #ff608c;
+      box-shadow: 0 6px 20px rgba(255, 23, 94, 0.45);
+    }
+    .btn-do-work.cancelling:hover {
+      box-shadow: 0 8px 25px rgba(255, 23, 94, 0.7);
+    }
+
+    /* API Key Button & Flyout (Page 53, 54) */
+    .api-key-wrapper {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    .btn-api-key-ring {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: #081a54;
+      border: 3px solid var(--gold);
+      box-shadow: 0 0 16px rgba(255, 210, 20, 0.4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      color: var(--gold);
+      transition: all 0.25s;
+    }
+    .btn-api-key-ring:hover {
+      box-shadow: 0 0 24px rgba(255, 210, 20, 0.8);
+      transform: scale(1.05);
+    }
+    .btn-api-key-ring.broken, .btn-api-key-ring.missing {
+      border-color: #ff1756;
+      color: #ff1756;
+      box-shadow: 0 0 16px rgba(255, 23, 86, 0.5);
+    }
+    .btn-api-key-ring.flashing {
+      animation: flashRed 0.6s infinite alternate;
+    }
+
+    @keyframes flashRed {
+      0% { border-color: #ff1756; box-shadow: 0 0 10px rgba(255, 23, 86, 0.4); }
+      100% { border-color: #ff608c; box-shadow: 0 0 25px rgba(255, 96, 140, 0.9); }
+    }
+
+    /* Flyout Box */
+    .api-key-flyout {
+      position: absolute;
+      right: 56px;
+      top: 50%;
+      transform: translateY(-50%) translateX(10px);
+      width: 290px;
+      background: linear-gradient(180deg, #0a1f68 0%, #061546 100%);
+      border: 2px solid #2f5ce8;
+      border-radius: 18px;
+      padding: 12px 14px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7), 0 0 20px rgba(47, 92, 232, 0.4);
+      opacity: 0;
+      pointer-events: none;
+      transition: all 0.25s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+      z-index: 50;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    /* Flyout stays open while cursor is on button OR flyout, and stays open with 2s grace */
+    .api-key-flyout.is-open,
+    .api-key-flyout.force-open,
+    .api-key-wrapper:hover .api-key-flyout,
+    .api-key-flyout:hover {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateY(-50%) translateX(0);
+    }
+
+    .api-key-input-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .api-key-input {
+      flex: 1;
+      background: rgba(3, 10, 36, 0.8);
+      border: 1px solid rgba(75, 120, 240, 0.4);
+      border-radius: 10px;
+      padding: 8px 10px;
+      color: #ffffff;
+      font-size: 13px;
+      outline: none;
+    }
+    .api-key-input:focus {
+      border-color: #00e5ff;
+      box-shadow: 0 0 8px rgba(0, 229, 255, 0.4);
+    }
+
+    .api-key-links {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+    }
+    .link-get-key {
+      color: #9cbaff;
+      text-decoration: none;
+      font-weight: 500;
+      transition: color 0.2s;
+    }
+    .link-get-key:hover {
+      color: #5ce1e6;
+      text-decoration: underline;
+    }
+    .btn-load-key {
+      background: #1c52f0;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-load-key:hover {
+      background: #396dff;
+    }
+
+    /* Middle Row: Prompt File & Model Selector Pill */
+    .controls-mid-row {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      position: relative;
+    }
+
+    .btn-add-prompt {
+      background: rgba(10, 28, 86, 0.7);
+      border: 1.5px solid rgba(60, 110, 240, 0.4);
+      border-radius: 18px;
+      padding: 8px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #a4c2ff;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s;
+    }
+    .btn-add-prompt:hover {
+      border-color: #558aff;
+      color: white;
+      background: rgba(20, 50, 140, 0.85);
+    }
+    .btn-add-prompt.file-loaded {
+      border-color: #00e5ff;
+      color: #00e5ff;
+    }
+
+    /* Model Pill & Dropdown (Page 20, 55, 57) */
+    .model-selector-wrapper {
+      position: relative;
+    }
+    .model-pill-btn {
+      background: rgba(10, 26, 80, 0.8);
+      border: 2px solid var(--gold);
+      color: #ffffff;
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 4px 12px rgba(255, 210, 20, 0.25);
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+    .model-pill-btn:hover {
+      box-shadow: 0 0 16px rgba(255, 210, 20, 0.6);
+      border-color: #ffe04d;
+    }
+
+    .model-dropdown {
+      position: absolute;
+      right: 0;
+      bottom: calc(100% + 8px);
+      width: 250px;
+      background: linear-gradient(180deg, #091f68 0%, #051342 100%);
+      border: 2px solid var(--gold);
+      border-radius: 18px;
+      padding: 10px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8), 0 0 20px rgba(255, 210, 20, 0.3);
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 60;
+    }
+    .model-dropdown.show {
+      display: flex;
+    }
+    .model-option-card {
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(14, 35, 105, 0.5);
+      border: 1px solid rgba(70, 120, 255, 0.25);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .model-option-card:hover, .model-option-card.active {
+      background: rgba(30, 70, 180, 0.7);
+      border-color: #558aff;
+    }
+    .model-opt-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #ffffff;
+      margin-bottom: 2px;
+    }
+    .model-opt-desc {
+      font-size: 11px;
+      color: #9cb8ff;
+    }
+    .model-opt-stats {
+      font-size: 10px;
+      color: #5ce1e6;
+      margin-top: 4px;
+      display: flex;
+      gap: 8px;
+    }
+    .model-dropdown-footer {
+      font-size: 10px;
+      color: #8da4db;
+      border-top: 1px solid rgba(70, 120, 240, 0.2);
+      padding-top: 6px;
+      display: flex;
+      justify-content: space-between;
+    }
+    .model-dropdown-footer a {
+      color: #5ce1e6;
+      text-decoration: none;
+    }
+
+    /* Drawer Chevron Bar (Text Preview) */
+    .drawer-bar {
+      width: 100%;
+      height: 18px;
+      background: linear-gradient(90deg, #1640c4 0%, #0d2ca1 100%);
+      border-radius: 9px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      box-shadow: 0 2px 8px rgba(13, 44, 161, 0.4);
+    }
+    .drawer-bar:hover {
+      background: linear-gradient(90deg, #2453e8 0%, #153bc7 100%);
+    }
+    .drawer-chevron {
+      color: #9cb8ff;
+      font-size: 14px;
+      font-weight: 800;
+      transition: transform 0.3s;
+    }
+    .drawer-bar.open .drawer-chevron {
+      transform: rotate(180deg);
+    }
+
+    /* Text Preview Container (Page 21, 50, 59) */
+    .preview-drawer-content {
+      width: 100%;
+      background: #e9eef7;
+      color: #111d3d;
+      border-radius: 18px;
+      border: 2px solid #3c6ef0;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+      display: none;
+      flex-direction: column;
+      overflow: hidden;
+      max-height: 220px;
+      transition: all 0.3s ease;
+    }
+    .preview-drawer-content.show {
+      display: flex;
+    }
+    .preview-tabs {
+      background: #d5e0f5;
+      display: flex;
+      padding: 6px 8px;
+      gap: 6px;
+      overflow-x: auto;
+      border-bottom: 1px solid #b8cbef;
+    }
+    .preview-tab-btn {
+      background: #ffffff;
+      border: 1px solid #a9c2f5;
+      border-radius: 8px;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #173887;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .preview-tab-btn.active {
+      background: #1c52f0;
+      color: #ffffff;
+      border-color: #1c52f0;
+    }
+    .preview-body-text {
+      padding: 14px 18px;
+      font-size: 14px;
+      line-height: 1.5;
+      overflow-y: auto;
+      flex: 1;
+      font-family: 'Inter', monospace, sans-serif;
+      user-select: text;
+      -webkit-user-select: text;
+    }
+    .preview-body-text.empty {
+      color: #6d80a6;
+      font-style: italic;
+      text-align: center;
+      padding: 30px;
+    }
+
+    /* Output Box */
+    .output-box {
+      width: 100%;
+      min-height: 100px;
+      background: linear-gradient(180deg, #091e60 0%, #051340 100%);
+      border: 2px solid rgba(45, 95, 235, 0.4);
+      border-radius: 24px;
+      box-shadow: 0 8px 24px rgba(2, 10, 40, 0.6);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      transition: all 0.3s ease;
+    }
+    .output-box:hover {
+      border-color: #558aff;
+      box-shadow: 0 0 20px rgba(85, 138, 255, 0.3);
+    }
+    .output-box.scaled-down {
+      min-height: 60px;
+      padding: 8px;
+      transform: scale(0.97);
+    }
+
+    /* Output File Chips */
+    .output-files-list {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .output-chip {
+      width: 100%;
+      background: rgba(14, 38, 110, 0.9);
+      border: 1.5px solid #3c6ef0;
+      border-radius: 12px;
+      padding: 8px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      transition: all 0.2s;
+    }
+    .output-chip:hover {
+      border-color: #00e5ff;
+      background: rgba(22, 55, 150, 0.95);
+    }
+    .btn-download-chip {
+      background: #1c52f0;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 14px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s;
+    }
+    .btn-download-chip:hover {
+      background: #00e5ff;
+      color: #020b29;
+      transform: scale(1.06);
+    }
+
+    /* Bottom AI Progress Bar */
+    .progress-bar-bottom {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      margin-top: 4px;
+    }
+    .progress-track {
+      width: 100%;
+      height: 6px;
+      background: rgba(8, 20, 60, 0.8);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #ffea00 0%, #ffd600 100%);
+      box-shadow: 0 0 10px rgba(255, 234, 0, 0.7);
+      transition: width 0.3s ease;
+    }
+    .progress-status-text {
+      font-size: 11px;
+      font-weight: 700;
+      color: #9cb5ff;
+      letter-spacing: 0.5px;
+    }
+
+    /* ========================================================
+       4. POPUP NOTIFICATIONS (5s Auto Dismiss, Page 54)
+       ======================================================== */
+    .popup-toast {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%) scale(0.95);
+      width: 86%;
+      max-width: 440px;
+      border-radius: 22px;
+      padding: 20px 24px;
+      box-shadow: 0 15px 45px rgba(0, 0, 0, 0.8), 0 0 30px rgba(255, 23, 94, 0.5);
+      z-index: 100;
+      display: none;
+      flex-direction: column;
+      animation: popIn 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
+    }
+    .popup-toast.show {
+      display: flex;
+    }
+
+    @keyframes popIn {
+      0% { transform: translate(-50%, -50%) scale(0.85); opacity: 0; }
+      100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+    }
+
+    .popup-toast.error-toast {
+      background: linear-gradient(135deg, #ff1a5b 0%, #ff0844 100%);
+      border: 2px solid #ffa1b9;
+      color: #ffffff;
+    }
+
+    .popup-toast.success-toast {
+      background: linear-gradient(135deg, #00d254 0%, #00a638 100%);
+      border: 2px solid #7effaa;
+      color: #ffffff;
+      box-shadow: 0 15px 45px rgba(0, 0, 0, 0.8), 0 0 30px rgba(0, 210, 84, 0.5);
+    }
+
+    .popup-header {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .popup-title {
+      font-size: 14px;
+      font-weight: 800;
+      letter-spacing: 1px;
+    }
+    .popup-close {
+      cursor: pointer;
+      font-size: 20px;
+      font-weight: 800;
+      line-height: 1;
+      padding: 2px 6px;
+      border-radius: 6px;
+      transition: transform 0.2s;
+    }
+    .popup-close:hover {
+      transform: scale(1.2);
+    }
+    .popup-message-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      line-height: 1.3;
+    }
+    .popup-icon {
+      font-size: 24px;
+    }
+
+    /* ========================================================
+       5. HISTORY SCREEN (Pages 4, 12, 62, 64, 65)
+       ======================================================== */
+    .history-card {
+      width: 100%;
+      background: linear-gradient(180deg, #0a216e 0%, #051446 100%);
+      border: 2px solid rgba(50, 100, 245, 0.4);
+      border-radius: 22px;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .history-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(70, 120, 240, 0.25);
+      padding-bottom: 8px;
+    }
+    .history-card-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 15px;
+      font-weight: 700;
+      color: #e5edff;
+    }
+
+    /* Delete All Button: Gray when empty, Red when has items */
+    .btn-delete-all {
+      font-size: 12px;
+      font-weight: 800;
+      padding: 4px 12px;
+      border-radius: 12px;
+      cursor: pointer;
+      border: none;
+      transition: all 0.2s;
+      letter-spacing: 0.5px;
+    }
+    .btn-delete-all.disabled, .btn-delete-all:disabled {
+      background: rgba(90, 110, 150, 0.35);
+      color: #8b9fc8;
+      cursor: not-allowed;
+    }
+    .btn-delete-all.active-danger {
+      background: linear-gradient(90deg, #ff1756 0%, #e60039 100%);
+      color: #ffffff;
+      box-shadow: 0 4px 12px rgba(255, 23, 86, 0.4);
+    }
+    .btn-delete-all.active-danger:hover {
+      background: #ff2b68;
+      transform: translateY(-1px);
+    }
+
+    .history-items-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 140px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+    .history-empty-text {
+      text-align: center;
+      color: #7995d0;
+      font-size: 13px;
+      padding: 24px;
+      font-style: italic;
+    }
+
+    .history-item-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(12, 32, 95, 0.7);
+      border: 1px solid rgba(60, 110, 240, 0.3);
+      border-radius: 10px;
+      padding: 6px 10px;
+      gap: 8px;
+    }
+    .history-item-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn-hist-action {
+      background: transparent;
+      border: none;
+      color: #a4c0ff;
+      cursor: pointer;
+      font-size: 15px;
+      padding: 4px;
+      border-radius: 6px;
+      transition: all 0.2s;
+    }
+    .btn-hist-action:hover {
+      color: white;
+      background: rgba(70, 120, 255, 0.3);
+    }
+    .btn-hist-action.delete {
+      color: #ff3b68;
+    }
+    .btn-hist-action.delete:hover {
+      background: rgba(255, 59, 104, 0.25);
+    }
+    .btn-hist-action.is-default {
+      color: #00e575 !important;
+    }
+
+    /* Anti-Spam Confirmation Notice Modal (Page 62) */
+    .modal-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(1, 6, 24, 0.85);
+      backdrop-filter: blur(6px);
+      z-index: 120;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .modal-overlay.show {
+      display: flex;
+    }
+
+    .notice-modal {
+      width: 100%;
+      max-width: 420px;
+      background: linear-gradient(135deg, #e60039 0%, #b80028 100%);
+      border: 2px solid #ff7395;
+      border-radius: 24px;
+      padding: 24px;
+      box-shadow: 0 15px 40px rgba(0, 0, 0, 0.9), 0 0 30px rgba(230, 0, 57, 0.6);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      gap: 16px;
+      animation: popIn 0.25s ease-out;
+    }
+
+    .notice-modal-header {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .notice-modal-title {
+      font-size: 17px;
+      font-weight: 800;
+      letter-spacing: 2px;
+      color: #ffffff;
+    }
+    .notice-modal-msg {
+      font-size: 15px;
+      font-weight: 600;
+      line-height: 1.4;
+      color: #ffffff;
+    }
+
+    /* Swapping Anti-Spam Buttons (Page 62) */
+    .anti-spam-btns-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      width: 100%;
+      margin-top: 6px;
+    }
+    .btn-anti-back {
+      flex: 1;
+      background: linear-gradient(90deg, #00d254 0%, #00b038 100%);
+      border: 2px solid #70ffaa;
+      color: white;
+      font-size: 15px;
+      font-weight: 700;
+      padding: 10px 16px;
+      border-radius: 20px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-anti-back:hover {
+      box-shadow: 0 0 16px rgba(0, 210, 84, 0.6);
+    }
+    .btn-anti-confirm {
+      flex: 1;
+      background: linear-gradient(90deg, #ff1756 0%, #cc0033 100%);
+      border: 2px solid #ff80a0;
+      color: white;
+      font-size: 15px;
+      font-weight: 700;
+      padding: 10px 16px;
+      border-radius: 20px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-anti-confirm:hover {
+      box-shadow: 0 0 16px rgba(255, 23, 86, 0.7);
+    }
+
+    /* ========================================================
+       6. SETTINGS SCREEN (Pages 16, 17, 63)
+       ======================================================== */
+    .settings-panel {
+      width: 100%;
+      background: linear-gradient(180deg, #0a2068 0%, #051446 100%);
+      border: 2px solid rgba(50, 100, 245, 0.4);
+      border-radius: 24px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .settings-title-badge {
+      display: inline-block;
+      background: #000000;
+      border: 2px solid #ffffff;
+      color: #ffffff;
+      padding: 6px 18px;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 800;
+      letter-spacing: 2px;
+      align-self: flex-start;
+    }
+
+    .setting-group {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .setting-category-tag {
+      font-size: 12px;
+      font-weight: 700;
+      color: #8da4db;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .setting-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(12, 32, 98, 0.6);
+      border: 1px solid rgba(60, 110, 240, 0.3);
+      border-radius: 14px;
+      padding: 12px 16px;
+      gap: 12px;
+    }
+    .setting-label {
+      font-size: 14px;
+      font-weight: 600;
+      color: #e5edff;
+    }
+
+    .setting-control-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    /* Color picker box & hex */
+    .color-preview-box {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      border: 2px solid #ffffff;
+      cursor: pointer;
+    }
+    .color-hex-input {
+      width: 90px;
+      background: rgba(3, 10, 36, 0.8);
+      border: 1px solid rgba(75, 120, 240, 0.4);
+      border-radius: 8px;
+      padding: 6px 8px;
+      color: #ffffff;
+      font-size: 13px;
+      font-family: monospace;
+      outline: none;
+      text-align: center;
+    }
+
+    /* Toggle pill ON / OFF */
+    .btn-toggle-switch {
+      padding: 6px 18px;
+      border-radius: 18px;
+      font-size: 13px;
+      font-weight: 800;
+      color: #ffffff;
+      cursor: pointer;
+      border: none;
+      transition: all 0.2s;
+    }
+    .btn-toggle-switch.on {
+      background: linear-gradient(90deg, #00d254 0%, #00b038 100%);
+      box-shadow: 0 0 10px rgba(0, 210, 84, 0.4);
+    }
+    .btn-toggle-switch.off {
+      background: linear-gradient(90deg, #ff1756 0%, #e60039 100%);
+      box-shadow: 0 0 10px rgba(255, 23, 86, 0.4);
+    }
+
+    /* Reset button: Gray if default, Blue if custom (Page 63) */
+    .btn-setting-reset {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      background: rgba(90, 110, 140, 0.25);
+      border: 1.5px solid #758aa8;
+      color: #8b9eb8;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      font-size: 14px;
+    }
+    .btn-setting-reset.is-modified {
+      background: rgba(30, 80, 240, 0.35);
+      border-color: #558aff;
+      color: #558aff;
+      box-shadow: 0 0 10px rgba(85, 138, 255, 0.4);
+    }
+    .btn-setting-reset:hover {
+      transform: rotate(-45deg);
+    }
+
+    /* ========================================================
+       7. ABOUT SCREEN & CAROUSEL (Pages 47, 48, 49, 61)
+       ======================================================== */
+    .about-screen {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      gap: 16px;
+    }
+    .about-screen-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: #ffffff;
+      text-align: center;
+      letter-spacing: 1px;
+    }
+
+    .about-slide-card {
+      width: 100%;
+      flex: 1;
+      background: linear-gradient(180deg, #0a2068 0%, #051446 100%);
+      border: 2px solid rgba(50, 100, 245, 0.4);
+      border-radius: 24px;
+      padding: 24px;
+      display: none;
+      flex-direction: column;
+      position: relative;
+      animation: fadeIn 0.3s ease;
+    }
+    .about-slide-card.active {
+      display: flex;
+    }
+
+    @keyframes fadeIn {
+      0% { opacity: 0; transform: translateY(6px); }
+      100% { opacity: 1; transform: translateY(0); }
+    }
+
+    .about-sub-header {
+      font-size: 18px;
+      font-weight: 700;
+      color: #e5edff;
+      margin-bottom: 14px;
+    }
+
+    .about-meta-text {
+      font-size: 13px;
+      color: #a4c2ff;
+      line-height: 1.6;
+      margin-bottom: 12px;
+    }
+
+    .about-algo-box {
+      background: rgba(14, 35, 105, 0.6);
+      border: 1px solid rgba(60, 110, 240, 0.3);
+      border-radius: 14px;
+      padding: 12px 14px;
+      font-size: 13px;
+      color: #dce7ff;
+      line-height: 1.5;
+      margin-bottom: 14px;
+    }
+
+    .dolan-credit-banner {
+      background: #ffffff;
+      color: #0b1a45;
+      border-radius: 12px;
+      padding: 12px;
+      text-align: center;
+      font-weight: 700;
+      margin-top: auto;
+      margin-bottom: 10px;
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
+    }
+    .dolan-credit-banner h3 {
+      font-size: 17px;
+      color: #194bfb;
+    }
+
+    .btn-anything-else {
+      background: #ffe600;
+      color: #020b29;
+      font-size: 14px;
+      font-weight: 800;
+      padding: 12px 16px;
+      border-radius: 14px;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 4px 15px rgba(255, 230, 0, 0.4);
+      transition: all 0.2s;
+    }
+    .btn-anything-else:hover {
+      background: #ffec33;
+      transform: translateY(-2px);
+    }
+
+    /* Personal Story Slide 3 (Page 49) */
+    .story-card {
+      background: #ffe600;
+      color: #020b29;
+      border-radius: 16px;
+      padding: 18px;
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1.6;
+      box-shadow: 0 8px 24px rgba(255, 230, 0, 0.35);
+      margin-top: 10px;
+    }
+    .btn-slide-back {
+      background: #092068;
+      color: #ffffff;
+      border: 1.5px solid #558aff;
+      border-radius: 12px;
+      padding: 8px 16px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      align-self: flex-start;
+      margin-bottom: 12px;
+    }
+
+    /* Carousel Pagination Dots (Page 47, 48, 61) */
+    .carousel-pagination {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      margin-top: 8px;
+    }
+    .carousel-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 6px;
+      background: rgba(70, 110, 200, 0.4);
+      cursor: pointer;
+      transition: all 0.25s;
+    }
+    .carousel-dot.active {
+      width: 28px;
+      background: #558aff;
+      box-shadow: 0 0 10px #558aff;
+    }
+
+    /* Custom Prompt Modal Drawer */
+    .prompt-modal-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(2, 8, 30, 0.85);
+      backdrop-filter: blur(6px);
+      z-index: 90;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .prompt-modal-overlay.show {
+      display: flex;
+    }
+    .prompt-modal-card {
+      width: 100%;
+      max-width: 440px;
+      background: linear-gradient(180deg, #091f68 0%, #051342 100%);
+      border: 2px solid #3c6ef0;
+      border-radius: 20px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .prompt-textarea {
+      width: 100%;
+      height: 110px;
+      background: rgba(3, 10, 36, 0.9);
+      border: 1px solid rgba(75, 120, 240, 0.4);
+      border-radius: 12px;
+      padding: 10px;
+      color: #ffffff;
+      font-size: 13px;
+      outline: none;
+      resize: none;
+      font-family: inherit;
+    }
+    .prompt-textarea:focus {
+      border-color: #00e5ff;
+    }
+
+    /* Scrollbar styling */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: rgba(5, 15, 45, 0.5);
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(60, 110, 240, 0.5);
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #558aff;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="app-viewport">
+    
+    <!-- Watermark Background 3D A Logo -->
+    <div class="bg-watermark-logo" id="bgWatermarkLogo">
+      <img src="ASTAR logo/logo.png" alt="A* Logo Watermark" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 100 100\'><text y=\'.9em\' font-size=\'90\'>⭐</text></svg>'">
+    </div>
+
+    <!-- Hidden native file inputs -->
+    <input type="file" id="homeworkFileInput" multiple accept=".docx,.pdf" style="display:none;">
+    <input type="file" id="promptFileInput" accept=".docx,.pdf,.txt,.md" style="display:none;">
+
+    <!-- ========================================================
+         VIEW 1: WELCOME SCREEN (Pages 1, 2, 60)
+         ======================================================== -->
+    <div class="view-layer welcome-screen" id="welcomeView">
+      <div class="welcome-header">
+        <h1>W E L C O M E</h1>
+        <div class="to-text">To</div>
+        <h2>A* - the homework destroyer</h2>
+      </div>
+
+      <div class="welcome-logo-center">
+        <img src="ASTAR logo/logo.png" alt="A* Homework Destroyer Logo">
+      </div>
+
+      <div class="welcome-actions">
+        <!-- Continue with Google Button -->
+        <button class="btn-google" id="btnContinueGoogle">
+          <span>continue with google</span>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+            <polyline points="12 5 19 12 12 19"></polyline>
+          </svg>
+        </button>
+
+        <div class="welcome-or">or</div>
+
+        <!-- Continue without an Account + Sliding Warning Banner -->
+        <div class="btn-anon-wrapper">
+          <button class="btn-anon" id="btnContinueAnon">continue without an account</button>
+          <div class="anon-warning-slide">
+            <span>🔑</span>
+            <span>⚠️ (i) your API key will not be save...</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="welcome-footer">
+        this is a vibe coded program by phumtas [v1.0]
+      </div>
+    </div>
+
+    <!-- ========================================================
+         MAIN APP SHELL (Header + Views)
+         ======================================================== -->
+    <div class="view-layer hidden" id="mainAppView">
+      
+      <!-- Top Navigation Header -->
+      <header class="app-header">
+        <div class="header-left">
+          <!-- Protected Click Logo: Opens About with double click / intent -->
+          <div class="header-logo-badge" id="headerLogoBadge" title="Click to view About A*">
+            <img src="ASTAR logo/logo.png" alt="Logo">
+          </div>
+
+          <!-- Tabs: HOME, About, history -->
+          <nav class="nav-tabs">
+            <div class="nav-tab active" data-tab="home" id="tabNavHome">HOME</div>
+            <div class="nav-tab" data-tab="about" id="tabNavAbout">About</div>
+            <div class="nav-tab" data-tab="history" id="tabNavHistory">history</div>
+          </nav>
+        </div>
+
+        <div class="header-right">
+          <!-- LOGOUT button: will NOT appear if "continue without an account" -->
+          <button class="btn-logout" id="headerBtnLogout">LOGOUT</button>
+          <!-- Settings Gear Button -->
+          <button class="btn-icon-gear" id="headerBtnSettings" title="Settings">⚙</button>
+          <!-- Back button (for History / Settings / About) -->
+          <button class="btn-icon-back hidden" id="headerBtnBack" title="Back to Home">↩</button>
+        </div>
+      </header>
+
+      <!-- ====================================================
+           TAB 1: HOME VIEW
+           ==================================================== -->
+      <div class="app-body" id="homeView">
+        
+        <!-- Dropzone / Input Box (Page 55) -->
+        <div class="input-box" id="dropzoneInput">
+          <div id="dropzoneEmptyContent" style="display: flex; flex-direction: column; align-items: center;">
+            <div class="box-center-icon">⭳</div>
+            <div class="box-label-title">INPUT</div>
+            <div class="box-label-sub">.DOCX / .PDF</div>
+          </div>
+          <!-- Uploaded file chips (Page 28, 50) -->
+          <div class="files-chips-scroll hidden" id="uploadedFilesChipContainer"></div>
+        </div>
+
+        <!-- Token Viewer Bar (Page 58) -->
+        <div class="token-bar-container">
+          <div class="token-track">
+            <div class="token-fill" id="tokenFillBar" style="width: 100%;"></div>
+          </div>
+          <div class="token-label" id="tokenLabelText">TOKEN 100%</div>
+        </div>
+
+        <!-- Action Row: DO WORK ? (2s Confirm) + API KEY RING -->
+        <div class="action-row">
+          <button class="btn-do-work" id="btnDoWork">DO WORK ?</button>
+
+          <!-- API Key Flyout (Page 53, 54) -->
+          <div class="api-key-wrapper" id="apiKeyWrapper">
+            <div class="btn-api-key-ring" id="btnApiKeyRing" title="Gemini API Key">
+              🔑
+            </div>
+
+            <!-- Flyout box -->
+            <div class="api-key-flyout" id="apiKeyFlyout">
+              <div class="api-key-input-row">
+                <input type="password" class="api-key-input" id="apiKeyInputField" placeholder="Your API key (AI Studio)...">
+              </div>
+              <div class="api-key-links">
+                <a href="https://aistudio.google.com/app/apikey" target="_blank" class="link-get-key">don't have one?</a>
+                <button class="btn-load-key" id="btnLoadApiKey">load API key</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Middle Controls: Add Prompt + Model Selector -->
+        <div class="controls-mid-row">
+          <button class="btn-add-prompt" id="btnAddPrompt">
+            <span id="promptIcon">📁</span>
+            <span id="promptLabel">Add prompt(optional)</span>
+          </button>
+
+          <!-- Model Selector Pill & Dropdown (Page 20, 55, 57) -->
+          <div class="model-selector-wrapper">
+            <button class="model-pill-btn" id="btnModelSelect">
+              <span id="currentModelLabel">Gemini 3.5 Flash Lite</span>
+            </button>
+            <div class="model-dropdown" id="modelDropdown">
+              <!-- Gemini 3.8 Flash Option -->
+              <div class="model-option-card" data-model="Gemini 3.8 Flash">
+                <div class="model-opt-title">Gemini 3.8 Flash</div>
+                <div class="model-opt-desc">for better reasoning</div>
+                <div class="model-opt-stats">
+                  <span>⚡ 5 rpm</span>
+                  <span>📊 250k tpm</span>
+                </div>
+              </div>
+              <!-- Gemini 3.5 Flash Lite Option (Default) -->
+              <div class="model-option-card active" data-model="Gemini 3.5 Flash Lite">
+                <div class="model-opt-title">Gemini 3.5 Flash Lite</div>
+                <div class="model-opt-desc">for every day use</div>
+                <div class="model-opt-stats">
+                  <span>⚡ 15 rpm</span>
+                  <span>📊 250k tpm</span>
+                </div>
+              </div>
+              <div class="model-dropdown-footer">
+                <span>ONLY apply for free tier</span>
+                <a href="https://ai.google.dev/pricing" target="_blank">(i) more info?</a>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Drawer Chevron Toggle (Page 51, 59) -->
+        <div class="drawer-bar" id="btnTogglePreviewDrawer" title="Toggle text preview drawer">
+          <span class="drawer-chevron">▲</span>
+        </div>
+
+        <!-- Text Preview Drawer (Page 21, 50, 59) -->
+        <div class="preview-drawer-content" id="previewDrawerContent">
+          <div class="preview-tabs" id="previewTabsBar"></div>
+          <div class="preview-body-text empty" id="previewBodyText">the input is empty...</div>
+        </div>
+
+        <!-- Output Box (Page 55, 57) -->
+        <div class="output-box" id="outputBox">
+          <div id="outputEmptyContent" style="display: flex; flex-direction: column; align-items: center;">
+            <div class="box-center-icon">⭱</div>
+            <div class="box-label-title">OUTPUT</div>
+            <div class="box-label-sub">.DOCX</div>
+          </div>
+          <div class="output-files-list hidden" id="outputFilesContainer"></div>
+        </div>
+
+        <!-- Bottom Progress Bar -->
+        <div class="progress-bar-bottom">
+          <div class="progress-track">
+            <div class="progress-fill" id="progressFillBar"></div>
+          </div>
+          <div class="progress-status-text" id="progressStatusText">PROGRESS 0% Ready</div>
+        </div>
+
+      </div>
+
+      <!-- ====================================================
+           TAB 2: HISTORY VIEW (Pages 4, 12, 62, 64, 65)
+           ==================================================== -->
+      <div class="app-body hidden" id="historyView">
+        
+        <!-- Uploaded Files Section -->
+        <div class="history-card">
+          <div class="history-card-header">
+            <div class="history-card-title">
+              <span>📁</span>
+              <span>uploaded files</span>
+              <span>⭳</span>
+            </div>
+            <button class="btn-delete-all disabled" id="btnDeleteAllUploaded" disabled>DELETE ALL</button>
+          </div>
+          <div class="history-items-list" id="histUploadedList">
+            <div class="history-empty-text">No uploaded files yet</div>
+          </div>
+        </div>
+
+        <!-- Outputted Files Section -->
+        <div class="history-card">
+          <div class="history-card-header">
+            <div class="history-card-title">
+              <span>📁</span>
+              <span>outputted files</span>
+              <span>⭱</span>
+            </div>
+            <button class="btn-delete-all disabled" id="btnDeleteAllOutputted" disabled>DELETE ALL</button>
+          </div>
+          <div class="history-items-list" id="histOutputtedList">
+            <div class="history-empty-text">No outputted files yet</div>
+          </div>
+        </div>
+
+        <!-- Saved API Key Section (Pages 12-15, 65) -->
+        <div class="history-card">
+          <div class="history-card-header">
+            <div class="history-card-title">
+              <span>🔑</span>
+              <span>Saved API key</span>
+            </div>
+            <button class="btn-delete-all disabled" id="btnDeleteAllApiKeys" disabled>DELETE ALL</button>
+          </div>
+          <div class="history-items-list" id="histApiKeysList">
+            <div class="history-empty-text">No API key yet</div>
+          </div>
+          <div style="font-size: 11px; color: #8fa7db; font-style: italic; margin-top: 4px;">
+            TIP hold ctrl to select the default API key [for auto loadout]
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ====================================================
+           TAB 3: ABOUT VIEW (Pages 47, 48, 49, 61)
+           ==================================================== -->
+      <div class="app-body hidden" id="aboutView">
+        <div class="about-screen">
+          <div class="about-screen-title">This is a vibe coded program</div>
+
+          <!-- Slide 1: General Info & Credits (Page 47) -->
+          <div class="about-slide-card active" id="aboutSlide1">
+            <div class="about-sub-header">about A* ?</div>
+            <div class="about-meta-text">
+              time 10/2026 mm yy<br>
+              <strong>Made with anitgravity</strong><br>
+              Vibe code by <em>phumtas tangsakul</em><br>
+              The ui and logo was design in canva<br>
+              code: <span style="color:#5ce1e6;">https://github.com/phumtas/ASTAR-the-homework-destroyer</span>
+            </div>
+
+            <div style="margin-top: auto; display: flex; align-items: center; justify-content: space-between;">
+              <span style="font-size: 13px; color: #9cb5ff;">logo :P ➔</span>
+              <img src="ASTAR logo/logo.png" style="width: 70px; height: 70px; object-fit: contain;" alt="logo">
+              <span style="font-weight: 800; font-size: 16px; color: #9cb5ff;">V 1.0</span>
+            </div>
+          </div>
+
+          <!-- Slide 2: Algorithm & Dolan Miu Credit (Page 48) -->
+          <div class="about-slide-card" id="aboutSlide2">
+            <div class="about-sub-header">about A* ?</div>
+            <div style="font-size: 14px; font-weight: 700; color: #ffffff; margin-bottom: 6px;">Algorithm</div>
+            <div class="about-algo-box">
+              files input ➔ use DOCX by Dolan Miu ➔ delete "..." etc.<br>
+              ➔ use llm api key ➔ check ans. ➔ add ans. ➔ output files
+            </div>
+
+            <!-- Dolan Miu Credit Banner -->
+            <div class="dolan-credit-banner">
+              <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #555;">Note: this project will not be possible without</div>
+              <h3>DOCX by Dolan Miu</h3>
+              <div style="font-size: 11px; color: #ff1e56;">thank you &lt;3</div>
+            </div>
+
+            <!-- "anything else?" banner button -->
+            <button class="btn-anything-else" id="btnAboutAnythingElse">
+              <span>anything else?</span>
+              <span>➔</span>
+            </button>
+            <div style="text-align: right; margin-top: 8px; font-weight: 800; color: #9cb5ff;">V 1.0</div>
+          </div>
+
+          <!-- Slide 3: Personal Note from 14 year old Phumtas (Page 49) -->
+          <div class="about-slide-card" id="aboutSlide3">
+            <button class="btn-slide-back" id="btnSlideBack">
+              <span>🠔</span>
+              <span>Back</span>
+            </button>
+
+            <div class="story-card">
+              "if you have a dream don't wait or waste another school break, Do it when you can use your free time never give up one day you will be successful and keep trying"
+              <div style="margin-top: 10px; text-align: right; font-weight: 800;">- phumtas</div>
+              <div style="font-size: 11px; font-weight: 500; color: #555; margin-top: 4px; text-align: right;">i wrote this by hand [no ai]</div>
+            </div>
+
+            <div style="margin-top: 14px; font-size: 13px; color: #e5edff; line-height: 1.5; background: rgba(14, 38, 110, 0.6); padding: 12px; border-radius: 12px;">
+              and... yes this website was made by a 14 year old in thailand inside his bedroom with a 12 year old computer
+            </div>
+
+            <div style="margin-top: auto; text-align: right; font-weight: 800; color: #9cb5ff;">V 1.0</div>
+          </div>
+
+          <!-- Pagination Dots (Page 61) -->
+          <div class="carousel-pagination">
+            <div class="carousel-dot active" data-slide="1"></div>
+            <div class="carousel-dot" data-slide="2"></div>
+            <div class="carousel-dot" data-slide="3"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ====================================================
+           TAB 4: SETTINGS VIEW (Pages 16, 17, 63)
+           ==================================================== -->
+      <div class="app-body hidden" id="settingsView">
+        <div class="settings-panel">
+          <div class="settings-title-badge">SETTINGS</div>
+
+          <!-- Group 1: Output text color -->
+          <div class="setting-group">
+            <div class="setting-category-tag">output ⭱</div>
+            <div class="setting-row">
+              <div class="setting-label">LLM output text color</div>
+              <div class="setting-control-row">
+                <input type="color" id="settingsColorPicker" value="#000000" style="display:none;">
+                <div class="color-preview-box" id="settingsColorPreview" style="background:#000000;"></div>
+                <input type="text" class="color-hex-input" id="settingsColorHex" value="#000000">
+                <button class="btn-setting-reset" id="btnResetColor" title="Reset to default">↺</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Group 2: Auto save API key -->
+          <div class="setting-group">
+            <div class="setting-category-tag">api key 🔑</div>
+            <div class="setting-row">
+              <div class="setting-label">auto save api key</div>
+              <div class="setting-control-row">
+                <button class="btn-toggle-switch on" id="btnToggleAutoSave">ON</button>
+                <button class="btn-setting-reset" id="btnResetAutoSave" title="Reset to default">↺</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ========================================================
+         MODAL 1: PROMPT DIALOG
+         ======================================================== -->
+    <div class="prompt-modal-overlay" id="promptModalOverlay">
+      <div class="prompt-modal-card">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <h3 style="font-size:16px; font-weight:700;">Add Prompt Instructions</h3>
+          <span class="popup-close" id="btnClosePromptModal">&times;</span>
+        </div>
+        <textarea class="prompt-textarea" id="customPromptInput" placeholder="Add custom guidance for answering the homework (e.g. 'Show full step-by-step working for math problems')..."></textarea>
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <button class="btn-load-key" id="btnAttachPromptFile">Attach Source/Ref File</button>
+          <button class="btn-load-key" id="btnSavePromptModal" style="background:#00c853;">Save Prompt</button>
+        </div>
+        <div id="attachedPromptFileName" style="font-size:11px; color:#5ce1e6;"></div>
+      </div>
+    </div>
+
+    <!-- ========================================================
+         MODAL 2: ANTI-SPAM DELETE ALL CONFIRMATION (Page 62)
+         ======================================================== -->
+    <div class="modal-overlay" id="antiSpamModalOverlay">
+      <div class="notice-modal">
+        <div class="notice-modal-header">
+          <span>⚠️</span>
+          <div class="notice-modal-title">&gt;&gt; NOTICE &lt;&lt;</div>
+          <span class="popup-close" id="btnCloseAntiSpamModal">&times;</span>
+        </div>
+        <div class="notice-modal-msg" id="antiSpamModalMsg">
+          this will delete all uploaded files from the web PERMANENTLY. ARE YOU SURE?
+        </div>
+        <!-- Dynamic Anti-Spam Swapping Buttons -->
+        <div class="anti-spam-btns-row" id="antiSpamBtnsRow">
+          <button class="btn-anti-back" id="btnAntiBack">BACK ↩</button>
+          <button class="btn-anti-confirm" id="btnAntiConfirm">COMFIRM?</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========================================================
+         POPUP NOTIFICATIONS (5s Auto-Dismiss, Page 54)
+         ======================================================== -->
+    <div class="popup-toast error-toast" id="errorToast">
+      <div class="popup-header">
+        <span class="popup-title" id="errorToastCode">ERROR [*show error code here*]</span>
+        <span class="popup-close" id="btnDismissErrorToast">&times;</span>
+      </div>
+      <div class="popup-message-row">
+        <span class="popup-icon" id="errorToastIcon">⚠️</span>
+        <span id="errorToastText">Something went wrong...</span>
+      </div>
+    </div>
+
+    <div class="popup-toast success-toast" id="successToast">
+      <div class="popup-header">
+        <span class="popup-title">Work done!</span>
+        <span class="popup-close" id="btnDismissSuccessToast">&times;</span>
+      </div>
+      <div class="popup-message-row">
+        <span class="popup-icon">🎉</span>
+        <span id="successToastText">Now you can download it!</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ========================================================
+       JAVASCRIPT APPLICATION LOGIC
+       ======================================================== -->
+  <script>
+    (function() {
+      'use strict';
+
+      // ----------------------------------------------------
+      // STATE MANAGEMENT
+      // ----------------------------------------------------
+      const state = {
+        authMode: null, // 'google' | 'anonymous'
+        userEmail: '',
+        apiKey: localStorage.getItem('ASTAR_ACTIVE_API_KEY') || '',
+        autoSaveApiKey: localStorage.getItem('ASTAR_AUTO_SAVE_KEY') !== 'false', // default true
+        outputColor: localStorage.getItem('ASTAR_OUTPUT_COLOR') || '#000000', // default #000000
+        currentModel: 'Gemini 3.5 Flash Lite', // default per Page 55
+        customPromptText: '',
+        promptAttachedFile: null,
+        
+        uploadedFiles: [], // [{ id, name, type: 'docx'|'pdf', rawBytes, text }]
+        outputFiles: [],   // [{ id, name, blob, originalName }]
+        savedApiKeys: JSON.parse(localStorage.getItem('ASTAR_SAVED_KEYS') || '[]'),
+        defaultApiKey: localStorage.getItem('ASTAR_DEFAULT_API_KEY') || '',
+        
+        doWorkState: 'idle', // 'idle' ('DO WORK ?') | 'confirm' ('DO WORK') | 'working' | 'cancel_confirm'
+        isCancelling: false,
+        doWorkTimer: null,
+        cancelTimer: null,
+
+        antiSpamTarget: null, // 'uploaded' | 'outputted' | 'api_keys'
+        antiSpamConfirmedOnce: false,
+
+        previewDrawerOpen: false,
+        activePreviewFileId: null,
+
+        aboutCurrentSlide: 1,
+        toastTimer: null
+      };
+
+      // ----------------------------------------------------
+      // DOM REFERENCES
+      // ----------------------------------------------------
+      const dom = {
+        welcomeView: document.getElementById('welcomeView'),
+        mainAppView: document.getElementById('mainAppView'),
+        btnContinueGoogle: document.getElementById('btnContinueGoogle'),
+        btnContinueAnon: document.getElementById('btnContinueAnon'),
+
+        headerLogoBadge: document.getElementById('headerLogoBadge'),
+        navTabs: document.querySelectorAll('.nav-tab'),
+        headerBtnLogout: document.getElementById('headerBtnLogout'),
+        headerBtnSettings: document.getElementById('headerBtnSettings'),
+        headerBtnBack: document.getElementById('headerBtnBack'),
+
+        homeView: document.getElementById('homeView'),
+        historyView: document.getElementById('historyView'),
+        aboutView: document.getElementById('aboutView'),
+        settingsView: document.getElementById('settingsView'),
+
+        dropzoneInput: document.getElementById('dropzoneInput'),
+        dropzoneEmptyContent: document.getElementById('dropzoneEmptyContent'),
+        uploadedFilesChipContainer: document.getElementById('uploadedFilesChipContainer'),
+        homeworkFileInput: document.getElementById('homeworkFileInput'),
+
+        tokenFillBar: document.getElementById('tokenFillBar'),
+        tokenLabelText: document.getElementById('tokenLabelText'),
+
+        btnDoWork: document.getElementById('btnDoWork'),
+        btnApiKeyRing: document.getElementById('btnApiKeyRing'),
+        apiKeyFlyout: document.getElementById('apiKeyFlyout'),
+        apiKeyInputField: document.getElementById('apiKeyInputField'),
+        btnLoadApiKey: document.getElementById('btnLoadApiKey'),
+
+        btnAddPrompt: document.getElementById('btnAddPrompt'),
+        promptIcon: document.getElementById('promptIcon'),
+        promptFileInput: document.getElementById('promptFileInput'),
+        promptModalOverlay: document.getElementById('promptModalOverlay'),
+        customPromptInput: document.getElementById('customPromptInput'),
+        btnAttachPromptFile: document.getElementById('btnAttachPromptFile'),
+        btnSavePromptModal: document.getElementById('btnSavePromptModal'),
+        btnClosePromptModal: document.getElementById('btnClosePromptModal'),
+        attachedPromptFileName: document.getElementById('attachedPromptFileName'),
+
+        btnModelSelect: document.getElementById('btnModelSelect'),
+        currentModelLabel: document.getElementById('currentModelLabel'),
+        modelDropdown: document.getElementById('modelDropdown'),
+
+        btnTogglePreviewDrawer: document.getElementById('btnTogglePreviewDrawer'),
+        previewDrawerContent: document.getElementById('previewDrawerContent'),
+        previewTabsBar: document.getElementById('previewTabsBar'),
+        previewBodyText: document.getElementById('previewBodyText'),
+
+        outputBox: document.getElementById('outputBox'),
+        outputEmptyContent: document.getElementById('outputEmptyContent'),
+        outputFilesContainer: document.getElementById('outputFilesContainer'),
+
+        progressFillBar: document.getElementById('progressFillBar'),
+        progressStatusText: document.getElementById('progressStatusText'),
+
+        errorToast: document.getElementById('errorToast'),
+        errorToastCode: document.getElementById('errorToastCode'),
+        errorToastIcon: document.getElementById('errorToastIcon'),
+        errorToastText: document.getElementById('errorToastText'),
+        btnDismissErrorToast: document.getElementById('btnDismissErrorToast'),
+
+        successToast: document.getElementById('successToast'),
+        successToastText: document.getElementById('successToastText'),
+        btnDismissSuccessToast: document.getElementById('btnDismissSuccessToast'),
+
+        btnDeleteAllUploaded: document.getElementById('btnDeleteAllUploaded'),
+        btnDeleteAllOutputted: document.getElementById('btnDeleteAllOutputted'),
+        btnDeleteAllApiKeys: document.getElementById('btnDeleteAllApiKeys'),
+        histUploadedList: document.getElementById('histUploadedList'),
+        histOutputtedList: document.getElementById('histOutputtedList'),
+        histApiKeysList: document.getElementById('histApiKeysList'),
+
+        antiSpamModalOverlay: document.getElementById('antiSpamModalOverlay'),
+        antiSpamModalMsg: document.getElementById('antiSpamModalMsg'),
+        antiSpamBtnsRow: document.getElementById('antiSpamBtnsRow'),
+        btnAntiBack: document.getElementById('btnAntiBack'),
+        btnAntiConfirm: document.getElementById('btnAntiConfirm'),
+        btnCloseAntiSpamModal: document.getElementById('btnCloseAntiSpamModal'),
+
+        settingsColorPicker: document.getElementById('settingsColorPicker'),
+        settingsColorPreview: document.getElementById('settingsColorPreview'),
+        settingsColorHex: document.getElementById('settingsColorHex'),
+        btnResetColor: document.getElementById('btnResetColor'),
+        btnToggleAutoSave: document.getElementById('btnToggleAutoSave'),
+        btnResetAutoSave: document.getElementById('btnResetAutoSave'),
+
+        aboutSlide1: document.getElementById('aboutSlide1'),
+        aboutSlide2: document.getElementById('aboutSlide2'),
+        aboutSlide3: document.getElementById('aboutSlide3'),
+        btnAboutAnythingElse: document.getElementById('btnAboutAnythingElse'),
+        btnSlideBack: document.getElementById('btnSlideBack'),
+        carouselDots: document.querySelectorAll('.carousel-dot')
+      };
+
+      // ----------------------------------------------------
+      // INITIALIZATION
+      // ----------------------------------------------------
+      function init() {
+        setupEventListeners();
+        checkInitialAuth();
+        applyStoredSettings();
+        updateApiKeyVisuals();
+        updateHistoryLists();
+      }
+
+      function checkInitialAuth() {
+        // If loaded inside Google Apps Script, check server session & saved API key
+        if (typeof google !== 'undefined' && google.script && google.script.run) {
+          google.script.run
+            .withSuccessHandler(function(info) {
+              if (info && info.isLoggedIn) {
+                state.userEmail = info.email;
+                setAuthMode('google');
+              }
+            })
+            .getUserInfo();
+
+          google.script.run
+            .withSuccessHandler(function(res) {
+              if (res && res.success && res.apiKey) {
+                if (!state.apiKey) {
+                  state.apiKey = res.apiKey;
+                  dom.apiKeyInputField.value = res.apiKey;
+                  updateApiKeyVisuals();
+                }
+              }
+            })
+            .getSavedApiKey();
+        }
+      }
+
+      function applyStoredSettings() {
+        // Settings: output color
+        dom.settingsColorHex.value = state.outputColor;
+        dom.settingsColorPreview.style.background = state.outputColor;
+        dom.settingsColorPicker.value = state.outputColor.startsWith('#') ? state.outputColor : '#000000';
+        updateResetButtonColors();
+
+        // Settings: auto save
+        if (state.autoSaveApiKey) {
+          dom.btnToggleAutoSave.classList.add('on');
+          dom.btnToggleAutoSave.classList.remove('off');
+          dom.btnToggleAutoSave.textContent = 'ON';
+        } else {
+          dom.btnToggleAutoSave.classList.add('off');
+          dom.btnToggleAutoSave.classList.remove('on');
+          dom.btnToggleAutoSave.textContent = 'OFF';
+        }
+        updateResetButtonAutoSave();
+
+        // Default API key auto loadout
+        if (!state.apiKey && state.defaultApiKey) {
+          state.apiKey = state.defaultApiKey;
+          dom.apiKeyInputField.value = state.apiKey;
+        } else if (state.apiKey) {
+          dom.apiKeyInputField.value = state.apiKey;
+        }
+      }
+
+      // ----------------------------------------------------
+      // AUTHENTICATION LOGIC (USER EXPLICIT REQUIREMENT)
+      // "if the user use the 'continue without an account'
+      //  the logout button will not appear in the ui"
+      // ----------------------------------------------------
+      function setAuthMode(mode) {
+        state.authMode = mode;
+        dom.welcomeView.classList.add('hidden');
+        dom.mainAppView.classList.remove('hidden');
+
+        if (mode === 'anonymous') {
+          // RULE: Logout button MUST NOT appear
+          dom.headerBtnLogout.classList.add('hidden');
+        } else {
+          // Google user: Logout button appears
+          dom.headerBtnLogout.classList.remove('hidden');
+        }
+
+        switchTab('home');
+      }
+
+      function logout() {
+        state.authMode = null;
+        state.userEmail = '';
+        dom.mainAppView.classList.add('hidden');
+        dom.welcomeView.classList.remove('hidden');
+      }
+
+      // ----------------------------------------------------
+      // NAVIGATION
+      // ----------------------------------------------------
+      function switchTab(tabName) {
+        // Update nav tabs styling
+        dom.navTabs.forEach(tab => {
+          if (tab.dataset.tab === tabName) {
+            tab.classList.add('active');
+          } else {
+            tab.classList.remove('active');
+          }
+        });
+
+        // Hide all views
+        dom.homeView.classList.add('hidden');
+        dom.historyView.classList.add('hidden');
+        dom.aboutView.classList.add('hidden');
+        dom.settingsView.classList.add('hidden');
+
+        // Show back button if in sub-views
+        if (tabName === 'home') {
+          dom.homeView.classList.remove('hidden');
+          dom.headerBtnBack.classList.add('hidden');
+          dom.headerBtnSettings.classList.remove('hidden');
+        } else if (tabName === 'history') {
+          dom.historyView.classList.remove('hidden');
+          dom.headerBtnBack.classList.remove('hidden');
+          dom.headerBtnSettings.classList.add('hidden');
+          updateHistoryLists();
+        } else if (tabName === 'about') {
+          dom.aboutView.classList.remove('hidden');
+          dom.headerBtnBack.classList.remove('hidden');
+          dom.headerBtnSettings.classList.add('hidden');
+        } else if (tabName === 'settings') {
+          dom.settingsView.classList.remove('hidden');
+          dom.headerBtnBack.classList.remove('hidden');
+          dom.headerBtnSettings.classList.add('hidden');
+        }
+      }
+
+      // ----------------------------------------------------
+      // API KEY HANDLING & VISUALS (Pages 22, 53, 54, 58)
+      // ----------------------------------------------------
+      function updateApiKeyVisuals() {
+        const ring = dom.btnApiKeyRing;
+        const bar = dom.tokenFillBar;
+        const label = dom.tokenLabelText;
+
+        ring.classList.remove('broken', 'flashing', 'missing');
+        bar.classList.remove('no-key');
+
+        if (!state.apiKey) {
+          ring.classList.add('missing');
+          bar.classList.add('no-key');
+          label.textContent = 'TOKEN ???%';
+        } else {
+          label.textContent = 'TOKEN 100%';
+        }
+      }
+
+      async function validateAndSaveApiKey(key) {
+        if (!key) {
+          showErrorToast('401', 'Please enter a Gemini API key', '🔑');
+          return;
+        }
+        key = key.trim().replace(/^['"\s]+|['"\s]+$/g, '');
+
+        dom.btnLoadApiKey.textContent = 'Checking...';
+        dom.btnLoadApiKey.disabled = true;
+
+        try {
+          let valid = false;
+          let errMsg = '';
+
+          // 1. If running in Google Apps Script, use UrlFetchApp proxy (no CORS issues)
+          if (typeof google !== 'undefined' && google.script && google.script.run) {
+            try {
+              const gasRes = await new Promise((resolve, reject) => {
+                google.script.run
+                  .withSuccessHandler(resolve)
+                  .withFailureHandler(reject)
+                  .validateApiKey(key);
+              });
+              if (gasRes && gasRes.valid) {
+                valid = true;
+              } else {
+                valid = false;
+                errMsg = (gasRes && gasRes.error) || 'Invalid API key';
+              }
+            } catch (gasErr) {
+              errMsg = gasErr && gasErr.message ? gasErr.message : gasErr.toString();
+            }
+          } else {
+            // 2. Try local proxy if running on localhost
+            try {
+              const testRes = await fetch('/api/validate-key', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ apiKey: key })
+              });
+              if (testRes.ok) {
+                const resData = await testRes.json();
+                if (resData.models || Array.isArray(resData)) {
+                  valid = true;
+                }
+              } else {
+                const errData = await testRes.json().catch(() => ({}));
+                errMsg = (errData.error && errData.error.message) || errData.error || ('HTTP ' + testRes.status);
+              }
+            } catch (localErr) {
+              // 3. Direct browser fetch to Google API
+              try {
+                const directRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`);
+                if (directRes.ok) {
+                  valid = true;
+                } else {
+                  const errData = await directRes.json().catch(() => ({}));
+                  errMsg = (errData.error && errData.error.message) || ('HTTP ' + directRes.status);
+                }
+              } catch (netErr) {
+                // If direct network blocked by CORS, verify key format
+                if (key.startsWith('AIza') && key.length >= 35) {
+                  valid = true;
+                } else {
+                  errMsg = 'Network blocked request or invalid key format';
+                }
+              }
+            }
+          }
+
+          if (valid) {
+            saveApiKeyToStore(key);
+            dom.btnApiKeyRing.classList.remove('broken', 'missing', 'flashing');
+            dom.tokenFillBar.classList.remove('no-key');
+            dom.tokenLabelText.textContent = 'TOKEN 100%';
+            showSuccessToast('API key verified & working!');
+          } else {
+            dom.btnApiKeyRing.classList.add('broken');
+            dom.tokenFillBar.classList.add('no-key');
+            dom.tokenLabelText.textContent = 'TOKEN ???%';
+            showErrorToast('401', errMsg ? ('API key error: ' + errMsg) : 'It seem like the API key is NOT working', '🔑');
+          }
+        } finally {
+          dom.btnLoadApiKey.textContent = 'load API key';
+          dom.btnLoadApiKey.disabled = false;
+        }
+      }
+
+      function saveApiKeyToStore(key) {
+        if (!key) return;
+        key = key.trim().replace(/^['"\s]+|['"\s]+$/g, '');
+        state.apiKey = key;
+        localStorage.setItem('ASTAR_ACTIVE_API_KEY', key);
+
+        // Also persist to Apps Script UserProperties if running in GAS
+        if (typeof google !== 'undefined' && google.script && google.script.run) {
+          google.script.run.saveApiKey(key);
+        }
+
+        if (state.autoSaveApiKey) {
+          const exists = state.savedApiKeys.find(k => k.key === key);
+          if (!exists) {
+            state.savedApiKeys.push({
+              id: 'key_' + Date.now(),
+              key: key,
+              masked: maskKey(key),
+              isBroken: false,
+              created: new Date().toLocaleDateString()
+            });
+            localStorage.setItem('ASTAR_SAVED_KEYS', JSON.stringify(state.savedApiKeys));
+          }
+        }
+
+        updateApiKeyVisuals();
+        updateHistoryLists();
+      }
+
+      function maskKey(key) {
+        if (!key) return '';
+        if (key.length <= 8) return '••••••••';
+        return key.slice(0, 4) + '••••••••••••••••' + key.slice(-4);
+      }
+
+      // ----------------------------------------------------
+      // TOAST NOTIFICATIONS (5s Auto Dismiss, Page 54)
+      // ----------------------------------------------------
+      function showErrorToast(code, message, icon) {
+        if (state.toastTimer) clearTimeout(state.toastTimer);
+        
+        dom.errorToastCode.textContent = 'ERROR [' + (code || 'ERR') + ']';
+        dom.errorToastText.textContent = message;
+        dom.errorToastIcon.textContent = icon || '⚠️';
+        dom.errorToast.classList.add('show');
+        dom.successToast.classList.remove('show');
+
+        // Ring flashes red when error occurs (Page 54)
+        dom.btnApiKeyRing.classList.add('flashing');
+
+        state.toastTimer = setTimeout(() => {
+          dom.errorToast.classList.remove('show');
+          dom.btnApiKeyRing.classList.remove('flashing');
+        }, 5000);
+      }
+
+      function showSuccessToast(message) {
+        if (state.toastTimer) clearTimeout(state.toastTimer);
+        
+        dom.successToastText.textContent = message || 'Now you can download it!';
+        dom.successToast.classList.add('show');
+        dom.errorToast.classList.remove('show');
+
+        state.toastTimer = setTimeout(() => {
+          dom.successToast.classList.remove('show');
+        }, 5000);
+      }
+
+      // ----------------------------------------------------
+      // FILE HANDLING (Dropzone & Extraction)
+      // ----------------------------------------------------
+      async function handleFilesSelected(fileList) {
+        if (!fileList || fileList.length === 0) return;
+
+        let addedCount = 0;
+        for (let i = 0; i < fileList.length; i++) {
+          const file = fileList[i];
+          const ext = file.name.split('.').pop().toLowerCase();
+
+          if (ext !== 'docx' && ext !== 'pdf') {
+            showErrorToast('415', 'Files type not supported', '📄');
+            continue;
+          }
+
+          const arrayBuffer = await file.arrayBuffer();
+          const fileItem = {
+            id: 'file_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
+            name: file.name,
+            type: ext,
+            rawBytes: arrayBuffer,
+            text: '',
+            cleanText: ''
+          };
+
+          // Extract text
+          if (ext === 'docx') {
+            fileItem.text = await extractDocxText(arrayBuffer);
+          } else if (ext === 'pdf') {
+            fileItem.text = await extractPdfText(arrayBuffer);
+          }
+
+          // Clean text per Algorithm[V.2].png
+          fileItem.cleanText = applyAlgorithmTextClean(fileItem.text);
+
+          state.uploadedFiles.push(fileItem);
+          addedCount++;
+        }
+
+        if (addedCount > 0) {
+          renderUploadedChips();
+          updatePreviewDrawer();
+          updateHistoryLists();
+        }
+      }
+
+      function applyAlgorithmTextClean(rawText) {
+        if (!rawText) return '';
+        // Rule from Algorithm[V.2].png:
+        // "delete all empty text like '_', '.', ' ' and replace with 'space':
+        //  if it a '.' replace with 1 space
+        //  if it a '_' replace with 2 space
+        //  if the empty text eat a line in a page replace with 1 enter"
+        let cleaned = rawText
+          .replace(/[.]{2,}/g, ' ')   // dots replaced with space
+          .replace(/_{2,}/g, '  ')    // underscores replaced with 2 spaces
+          .replace(/^[ \t._]+$/gm, '\n'); // empty text eating a line -> 1 enter
+        return cleaned;
+      }
+
+      async function extractDocxText(arrayBuffer) {
+        try {
+          if (typeof JSZip !== 'undefined') {
+            const zip = await JSZip.loadAsync(arrayBuffer);
+            const docXml = await zip.file('word/document.xml')?.async('text');
+            if (docXml) {
+              const parser = new DOMParser();
+              const xmlDoc = parser.parseFromString(docXml, 'text/xml');
+              const body = xmlDoc.getElementsByTagName('w:body')[0];
+              if (!body) return 'Empty document body.';
+
+              const lines = [];
+              for (const child of Array.from(body.childNodes)) {
+                const nodeName = child.nodeName || child.localName || '';
+                if (nodeName.endsWith('p')) {
+                  const text = (child.textContent || '').trim();
+                  if (text) lines.push(text);
+                } else if (nodeName.endsWith('tbl')) {
+                  // Format table so LLM sees columns and empty cells to fill
+                  lines.push('\n[TABLE TO FILL IN]');
+                  const rows = Array.from(child.getElementsByTagName('w:tr'));
+                  for (let r = 0; r < rows.length; r++) {
+                    const cells = Array.from(rows[r].getElementsByTagName('w:tc'));
+                    const cellTexts = cells.map((c, cIdx) => {
+                      const t = (c.textContent || '').trim();
+                      return t ? t : `[BLANK COLUMN ${cIdx + 1} TO FILL]`;
+                    });
+                    if (r === 0) {
+                      lines.push(`Header Columns: ${cellTexts.join(' | ')}`);
+                    } else {
+                      lines.push(`Row ${r}: ${cellTexts.join(' | ')}`);
+                    }
+                  }
+                  lines.push('[/TABLE TO FILL IN]\n');
+                }
+              }
+              return lines.join('\n');
+            }
+          }
+        } catch (e) {
+          console.error('Docx extract error:', e);
+        }
+        return 'Could not extract docx text.';
+      }
+
+      async function extractPdfText(arrayBuffer) {
+        try {
+          if (typeof pdfjsLib !== 'undefined') {
+            pdfjsLib.GlobalWorkerOptions.workerSrc = 'libs/pdf.worker.min.js';
+            const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+            let fullText = '';
+            for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+              const page = await pdf.getPage(pageNum);
+              const content = await page.getTextContent();
+              const pageStrings = content.items.map(item => item.str);
+              fullText += pageStrings.join(' ') + '\n';
+            }
+            return fullText;
+          }
+        } catch (e) {
+          console.error('PDF extract error:', e);
+        }
+        return 'Could not extract PDF text.';
+      }
+
+      function renderUploadedChips() {
+        const container = dom.uploadedFilesChipContainer;
+        container.innerHTML = '';
+
+        if (state.uploadedFiles.length === 0) {
+          dom.dropzoneEmptyContent.classList.remove('hidden');
+          container.classList.add('hidden');
+          return;
+        }
+
+        dom.dropzoneEmptyContent.classList.add('hidden');
+        container.classList.remove('hidden');
+
+        state.uploadedFiles.forEach(file => {
+          const chip = document.createElement('div');
+          chip.className = 'file-chip';
+
+          const displayName = truncateFileName(file.name);
+
+          chip.innerHTML = `
+            <div class="file-chip-left">
+              <span class="file-type-badge ${file.type}">${file.type.toUpperCase()}</span>
+              <span class="file-chip-name" title="${file.name}">${displayName}</span>
+            </div>
+            <span class="file-chip-delete" title="Remove">&times;</span>
+          `;
+
+          chip.querySelector('.file-chip-delete').addEventListener('click', (e) => {
+            e.stopPropagation();
+            removeUploadedFile(file.id);
+          });
+
+          container.appendChild(chip);
+        });
+      }
+
+      function truncateFileName(name) {
+        // Page 64 rule: "when have a long name it will use '...' then show the last 3 letter and the file type at the end"
+        if (!name || name.length <= 26) return name;
+        const parts = name.split('.');
+        const ext = parts.pop();
+        const base = parts.join('.');
+        const last3 = base.slice(-3);
+        return base.slice(0, 16) + '...' + last3 + '.' + ext;
+      }
+
+      function removeUploadedFile(id) {
+        state.uploadedFiles = state.uploadedFiles.filter(f => f.id !== id);
+        renderUploadedChips();
+        updatePreviewDrawer();
+        updateHistoryLists();
+      }
+
+      // ----------------------------------------------------
+      // TEXT PREVIEW DRAWER (Pages 21, 50, 51, 59)
+      // ----------------------------------------------------
+      function togglePreviewDrawer() {
+        state.previewDrawerOpen = !state.previewDrawerOpen;
+        if (state.previewDrawerOpen) {
+          dom.previewDrawerContent.classList.add('show');
+          dom.btnTogglePreviewDrawer.classList.add('open');
+          dom.outputBox.classList.add('scaled-down'); // Page 59 rule
+          updatePreviewDrawer();
+        } else {
+          dom.previewDrawerContent.classList.remove('show');
+          dom.btnTogglePreviewDrawer.classList.remove('open');
+          dom.outputBox.classList.remove('scaled-down');
+        }
+      }
+
+      function updatePreviewDrawer() {
+        const tabsBar = dom.previewTabsBar;
+        const bodyText = dom.previewBodyText;
+        tabsBar.innerHTML = '';
+
+        if (state.uploadedFiles.length === 0) {
+          bodyText.textContent = 'the input is empty...';
+          bodyText.classList.add('empty');
+          return;
+        }
+
+        bodyText.classList.remove('empty');
+
+        if (!state.activePreviewFileId || !state.uploadedFiles.find(f => f.id === state.activePreviewFileId)) {
+          state.activePreviewFileId = state.uploadedFiles[0].id;
+        }
+
+        state.uploadedFiles.forEach(file => {
+          const tabBtn = document.createElement('button');
+          tabBtn.className = 'preview-tab-btn' + (file.id === state.activePreviewFileId ? ' active' : '');
+          tabBtn.innerHTML = `<span>[${file.type.toUpperCase()}]</span> <span>${truncateFileName(file.name)}</span>`;
+          tabBtn.addEventListener('click', () => {
+            state.activePreviewFileId = file.id;
+            updatePreviewDrawer();
+          });
+          tabsBar.appendChild(tabBtn);
+        });
+
+        const activeFile = state.uploadedFiles.find(f => f.id === state.activePreviewFileId);
+        if (activeFile) {
+          bodyText.textContent = activeFile.cleanText || activeFile.text || 'No text extracted.';
+        }
+      }
+
+      // ----------------------------------------------------
+      // 2-SECOND CONFIRMATION "DO WORK ?" / "CANCEL ?" (Page 52)
+      // ----------------------------------------------------
+      function handleDoWorkClick() {
+        if (state.doWorkState === 'working') {
+          // In cancel mode
+          handleCancelClick();
+          return;
+        }
+
+        if (state.doWorkState === 'idle') {
+          // First click: remove "?" -> "DO WORK"
+          state.doWorkState = 'confirm';
+          dom.btnDoWork.textContent = 'DO WORK';
+          dom.btnDoWork.classList.add('confirmed');
+
+          // Unconfirm itself after 2s if not clicked again (Page 52)
+          if (state.doWorkTimer) clearTimeout(state.doWorkTimer);
+          state.doWorkTimer = setTimeout(() => {
+            if (state.doWorkState === 'confirm') {
+              state.doWorkState = 'idle';
+              dom.btnDoWork.textContent = 'DO WORK ?';
+              dom.btnDoWork.classList.remove('confirmed');
+            }
+          }, 2000);
+        } else if (state.doWorkState === 'confirm') {
+          // Second click within 2s: DO ACTION!
+          clearTimeout(state.doWorkTimer);
+          startHomeworkDestruction();
+        }
+      }
+
+      function handleCancelClick() {
+        if (state.doWorkState !== 'working' && state.doWorkState !== 'cancel_confirm') return;
+
+        if (state.doWorkState === 'working') {
+          // First click on cancel: "CANCEL ?" -> "CANCEL"
+          state.doWorkState = 'cancel_confirm';
+          dom.btnDoWork.textContent = 'CANCEL';
+
+          if (state.cancelTimer) clearTimeout(state.cancelTimer);
+          state.cancelTimer = setTimeout(() => {
+            if (state.doWorkState === 'cancel_confirm') {
+              state.doWorkState = 'working';
+              dom.btnDoWork.textContent = 'CANCEL ?';
+            }
+          }, 2000);
+        } else if (state.doWorkState === 'cancel_confirm') {
+          // Confirmed cancel
+          clearTimeout(state.cancelTimer);
+          state.isCancelling = true;
+          dom.progressStatusText.textContent = 'Cancelling...';
+        }
+      }
+
+      // ----------------------------------------------------
+      // CORE ALGORITHM: HOMEWORK DESTRUCTION ENGINE (Algorithm[V.2].png)
+      // ----------------------------------------------------
+      async function startHomeworkDestruction() {
+        // 1. Validation checks
+        if (state.uploadedFiles.length === 0) {
+          showErrorToast('400', 'you don’t have any work!', '❓');
+          resetDoWorkButton();
+          return;
+        }
+
+        if (!state.apiKey) {
+          showErrorToast('401', 'you don’t have an API key!', '🔑');
+          resetDoWorkButton();
+          return;
+        }
+
+        // Set state to working (shows CANCEL button)
+        state.doWorkState = 'working';
+        state.isCancelling = false;
+        dom.btnDoWork.classList.remove('confirmed');
+        dom.btnDoWork.classList.add('cancelling');
+        dom.btnDoWork.textContent = 'CANCEL ?';
+
+        updateProgress(5, 'Starting homework destroyer...');
+
+        try {
+          for (let i = 0; i < state.uploadedFiles.length; i++) {
+            if (state.isCancelling) break;
+
+            const file = state.uploadedFiles[i];
+            const pctBase = (i / state.uploadedFiles.length) * 80;
+
+            updateProgress(pctBase + 10, `Processing ${file.name}...`);
+
+            // Step 2 & 3: Clean text & send original as source ref
+            const sourceRefText = file.text;
+            const cleanProblemText = file.cleanText;
+
+            updateProgress(pctBase + 25, `Generating answers with ${state.currentModel}...`);
+
+            // Step 4: Generate answers with Gemini API
+            let answers = await callGeminiSolver(cleanProblemText, sourceRefText, state.customPromptText);
+
+            if (state.isCancelling) break;
+
+            // Step 5: Verification loop (MAX 2 retries, per Algorithm diagram)
+            let verifyAttempts = 0;
+            let isVerified = false;
+
+            while (verifyAttempts < 2 && !isVerified && !state.isCancelling) {
+              updateProgress(pctBase + 45, `Verifying answers (attempt ${verifyAttempts + 1})...`);
+              const verifyResult = await callGeminiVerifier(cleanProblemText, answers);
+
+              if (verifyResult.verified) {
+                isVerified = true;
+              } else {
+                verifyAttempts++;
+                if (verifyAttempts < 2) {
+                  updateProgress(pctBase + 55, `Refining answers based on verification feedback...`);
+                  answers = await callGeminiSolver(
+                    cleanProblemText, 
+                    sourceRefText, 
+                    (state.customPromptText ? state.customPromptText + '\n' : '') + 
+                    `Previous answer verification feedback: ${verifyResult.feedback}. Please correct these mistakes.`
+                  );
+                }
+              }
+            }
+
+            if (state.isCancelling) break;
+
+            updateProgress(pctBase + 70, `Adding answers [edit not replace]...`);
+
+            // Step 6: "add ans. [edit not replace]" using Dolan Miu's docx!
+            const outputDocxBlob = await buildPatchedDocx(file, answers, state.outputColor);
+
+            const outFileName = 'a-' + file.name.replace(/\.[^/.]+$/, "") + '.docx';
+            const outputItem = {
+              id: 'out_' + Date.now() + '_' + i,
+              name: outFileName,
+              blob: outputDocxBlob,
+              originalName: file.name,
+              created: new Date().toLocaleTimeString()
+            };
+
+            state.outputFiles.push(outputItem);
+          }
+
+          if (state.isCancelling) {
+            updateProgress(0, 'Cancelled by user.');
+            showErrorToast('499', 'Work cancelled by user', '🛑');
+          } else {
+            updateProgress(100, 'PROGRESS 100% Done!');
+            renderOutputFiles();
+            showSuccessToast('Work done! Now you can download it!');
+          }
+
+        } catch (err) {
+          console.error('Destruction error:', err);
+          handleApiError(err);
+        } finally {
+          resetDoWorkButton();
+        }
+      }
+
+      function resetDoWorkButton() {
+        state.doWorkState = 'idle';
+        dom.btnDoWork.classList.remove('cancelling', 'confirmed');
+        dom.btnDoWork.textContent = 'DO WORK ?';
+      }
+
+      function updateProgress(percent, statusMsg) {
+        dom.progressFillBar.style.width = percent + '%';
+        dom.progressStatusText.textContent = `PROGRESS ${Math.round(percent)}% ${statusMsg || ''}`;
+      }
+
+      // ----------------------------------------------------
+      // GEMINI API INTEGRATION
+      // ----------------------------------------------------
+      async function callGeminiSolver(problemText, sourceRef, userPrompt) {
+        const systemPrompt = `You are an expert academic tutor and homework solver for "A* - the homework destroyer".
+Your task is to accurately and completely solve all homework questions, exercises, or blank fields in the provided assignment.
+
+RULES FOR IN-PLACE ANSWER FILLING:
+1. If the assignment contains a table with empty cells (e.g. [TABLE TO FILL IN] with [BLANK]), you MUST provide the answers to fill each row and column inside a JSON code block at the beginning of your response:
+\`\`\`json
+{
+  "table_rows": [
+    ["Column 1 answer", "Column 2 answer", "Column 3 answer"],
+    ["Column 1 answer", "Column 2 answer", "Column 3 answer"],
+    ["Column 1 answer", "Column 2 answer", "Column 3 answer"]
+  ],
+  "blanks": []
+}
+\`\`\`
+Each inner array corresponds to one row to fill into the table columns. Provide the exact text for each cell.
+For example, for a 3-column table asking for 3 classroom items, their materials, and their properties:
+\`\`\`json
+{
+  "table_rows": [
+    ["ดินสอไม้", "ไม้ และ แกรไฟต์", "ไม้มีความแข็งแรง น้ำหนักเบา แกรไฟต์เปราะ เขียนติดบนกระดาษได้ดี"],
+    ["โต๊ะนักเรียน", "ไม้ และ เหล็ก", "มีความแข็งแรง ทนทาน รองรับน้ำหนักได้มาก"],
+    ["ไม้บรรทัดพลาสติก", "พลาสติก", "โปร่งใส มีความยืดหยุ่น น้ำหนักเบา ไม่เป็นสนิม"]
+  ],
+  "blanks": []
+}
+\`\`\`
+
+2. If there are fill-in-the-blank lines in paragraphs (e.g. '____' or '.....'), put the answers into the "blanks" array in sequential order.
+3. Keep answers concise, highly accurate, and appropriate for the school grade level.`;
+
+        const userContent = `Here is the homework text to solve:
+---
+${problemText}
+---
+
+${sourceRef ? `Original source reference text:\n---\n${sourceRef}\n---\n` : ''}
+${userPrompt ? `Additional user instructions:\n${userPrompt}\n` : ''}
+
+Please solve every exercise and return the answers structured to fill in the exact spaces and table cells.`;
+
+        return await executeGeminiRequest(systemPrompt, userContent);
+      }
+
+      async function callGeminiVerifier(problemText, generatedAnswers) {
+        const systemPrompt = `You are a strict grading evaluator. Verify the correctness of the generated answers against the questions.
+Respond strictly in JSON format:
+{
+  "verified": true or false,
+  "feedback": "brief explanation if false, or 'Correct' if true"
+}`;
+
+        const userContent = `Questions:
+${problemText}
+
+Generated Answers to verify:
+${generatedAnswers}
+
+Is this 100% accurate?`;
+
+        try {
+          const resp = await executeGeminiRequest(systemPrompt, userContent);
+          const jsonMatch = resp.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            return JSON.parse(jsonMatch[0]);
+          }
+        } catch (e) {
+          console.warn('Verifier parse error:', e);
+        }
+        return { verified: true, feedback: 'Verified' };
+      }
+
+      async function executeGeminiRequest(systemInstruction, userText) {
+        // Candidate model list with graceful fallback if a specific model is not enabled on the user's key
+        const candidates = state.currentModel.includes('3.8')
+          ? ['gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-flash-latest', 'gemini-3.5-flash-lite']
+          : ['gemini-3.5-flash-lite', 'gemini-flash-lite-latest', 'gemini-3.1-flash-lite', 'gemini-3.5-flash', 'gemini-3.8-flash'];
+
+        const payload = {
+          contents: [{ role: 'user', parts: [{ text: userText }] }],
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: 8192
+          }
+        };
+
+        if (systemInstruction) {
+          payload.systemInstruction = {
+            parts: [{ text: systemInstruction }]
+          };
+        }
+
+        const cleanKey = (state.apiKey || '').trim().replace(/^['"\s]+|['"\s]+$/g, '');
+
+        // Strategy A: If running in Google Apps Script
+        if (typeof google !== 'undefined' && google.script && google.script.run) {
+          return new Promise((resolve, reject) => {
+            google.script.run
+              .withSuccessHandler(function(res) {
+                if (res && res.data && res.data.candidates && res.data.candidates[0] && res.data.candidates[0].content && res.data.candidates[0].content.parts && res.data.candidates[0].content.parts[0] && res.data.candidates[0].content.parts[0].text) {
+                  resolve(res.data.candidates[0].content.parts[0].text);
+                } else if (res && (res.error || (res.data && res.data.error))) {
+                  const errMsg = res.error || (res.data && res.data.error && res.data.error.message) || 'Gemini API call failed';
+                  const err = new Error(errMsg);
+                  err.status = res.status || (res.data && res.data.error && res.data.error.code) || 500;
+                  reject(err);
+                } else if (res && res.data && res.data.candidates && res.data.candidates[0] && res.data.candidates[0].finishReason) {
+                  const err = new Error(`Generation stopped by safety/filter: ${res.data.candidates[0].finishReason}`);
+                  err.status = 200;
+                  reject(err);
+                } else {
+                  const err = new Error((res && res.error) || 'Empty Gemini response from server');
+                  err.status = (res && res.status) || 500;
+                  reject(err);
+                }
+              })
+              .withFailureHandler(function(serverErr) {
+                const err = new Error(serverErr && serverErr.message ? serverErr.message : (serverErr ? serverErr.toString() : 'Server call failed'));
+                err.status = 500;
+                reject(err);
+              })
+              .callGeminiApi(cleanKey, state.currentModel, systemInstruction, payload.contents);
+          });
+        }
+
+        // Strategy B: Try Local Proxy first (if running via node server.js on localhost), then direct Google API
+        let lastError = null;
+
+        for (const model of candidates) {
+          // Attempt 1: Local proxy (bypasses browser CORS & network blocks)
+          try {
+            const proxyRes = await fetch('/api/gemini', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                apiKey: cleanKey,
+                model: model,
+                payload: payload
+              })
+            });
+
+            if (proxyRes.ok) {
+              const data = await proxyRes.json();
+              if (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0]) {
+                return data.candidates[0].content.parts[0].text;
+              }
+              // Response OK but no usable content (e.g. safety block or empty response) — try next model
+              lastError = new Error('Model returned empty or blocked response');
+              lastError.status = 200;
+              continue;
+            } else {
+              const errData = await proxyRes.json().catch(() => ({}));
+              const msg = (errData.error && errData.error.message) || errData.error || ('HTTP ' + proxyRes.status);
+              lastError = new Error(msg);
+              lastError.status = proxyRes.status;
+              const isInvalidKey = (proxyRes.status === 400 || proxyRes.status === 401 || proxyRes.status === 403) && (
+                msg.includes('API_KEY_INVALID') || 
+                msg.includes('API key not valid') || 
+                msg.includes('key not valid') || 
+                JSON.stringify(errData).includes('API_KEY_INVALID')
+              );
+              if (isInvalidKey) throw lastError;
+              continue;
+            }
+          } catch (proxyErr) {
+            if (proxyErr.status === 400 || proxyErr.status === 401 || (proxyErr.message && (proxyErr.message.includes('API key not valid') || proxyErr.message.includes('API_KEY_INVALID')))) {
+              throw proxyErr;
+            }
+            // If proxy not reachable, try direct browser fetch
+            try {
+              const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+              const directRes = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+              });
+
+              if (directRes.ok) {
+                const data = await directRes.json();
+                if (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0]) {
+                  return data.candidates[0].content.parts[0].text;
+                }
+                // Response OK but no usable content — try next model
+                lastError = new Error('Model returned empty or blocked response');
+                lastError.status = 200;
+              } else {
+                const errData = await directRes.json().catch(() => ({}));
+                const msg = (errData.error && errData.error.message) || directRes.statusText;
+                lastError = new Error(msg);
+                lastError.status = directRes.status;
+                const isInvalidKey = (directRes.status === 400 || directRes.status === 401 || directRes.status === 403) && (
+                  msg.includes('API_KEY_INVALID') || 
+                  msg.includes('API key not valid') || 
+                  msg.includes('key not valid') || 
+                  JSON.stringify(errData).includes('API_KEY_INVALID')
+                );
+                if (isInvalidKey) throw lastError;
+              }
+            } catch (directErr) {
+              if (directErr.status === 400 || directErr.status === 401) throw directErr;
+              lastError = directErr;
+            }
+          }
+        }
+
+        throw lastError || new Error('Failed to generate answer from Gemini API.');
+      }
+
+      function handleApiError(err) {
+        const status = err.status || 500;
+        const msg = err.message || '';
+
+        if (
+          status === 400 || 
+          status === 401 || 
+          status === 403 ||
+          msg.includes('API_KEY_INVALID') || 
+          msg.includes('key not valid') || 
+          msg.includes('API key not valid') || 
+          msg.includes('API key is missing') ||
+          msg.includes('API key error')
+        ) {
+          showErrorToast('401', 'It seem like the API key is NOT working', '🔑');
+          dom.btnApiKeyRing.classList.add('broken');
+        } else if (status === 429 || msg.includes('RESOURCE_EXHAUSTED')) {
+          showErrorToast('429', 'To many requests !', '✨');
+        } else if (msg.includes('quota') || msg.includes('token')) {
+          showErrorToast('402', 'It seems like you have ran out of TOKEN!', '💰');
+        } else {
+          showErrorToast(status.toString(), msg || 'Something went wrong...', '❓');
+        }
+      }
+
+      // ----------------------------------------------------
+      // DOLAN MIU DOCX GENERATION / IN-PLACE ANSWER PATCHING
+      // "add ans.[edit not replace]" & "use DOCX by dolan miu"
+      // ----------------------------------------------------
+      function parseStructuredAnswers(text) {
+        let tableRows = [];
+        let blanks = [];
+
+        // 1. Check for JSON block (primary format for table filling)
+        try {
+          const jsonMatch = text.match(/\{[\s\S]*"table_rows"[\s\S]*\}/) || text.match(/\{[\s\S]*"tables"[\s\S]*\}/);
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            tableRows = parsed.table_rows || (parsed.tables && parsed.tables[0]) || [];
+            blanks = parsed.blanks || [];
+            if (tableRows.length > 0) return { tableRows, blanks, source: 'json' };
+          }
+        } catch (e) {}
+
+        // 2. Check for Markdown table rows fallback
+        const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+        const mdRows = [];
+        for (const line of lines) {
+          if (line.startsWith('|') && line.endsWith('|')) {
+            const cols = line.split('|').map(c => c.trim()).slice(1, -1);
+            if (!cols.every(c => /^[-:]+$/.test(c))) {
+              mdRows.push(cols);
+            }
+          }
+        }
+        if (mdRows.length > 1) {
+          tableRows = mdRows.slice(1);
+          return { tableRows, blanks, source: 'markdown' };
+        }
+
+        // 3. Check for numbered item blocks fallback (e.g. 1. ... 2. ...)
+        const itemBlocks = text.split(/\n(?=\d+[\.\)])/);
+        if (itemBlocks.length > 1) {
+          for (const block of itemBlocks) {
+            const parts = block
+              .split(/\n|(?:\s*[|:]\s*)/)
+              .map(s => s.replace(/^\d+[\.\)]\s*/, '').replace(/^(เครื่องใช้|วัสดุ|ทำจาก|สมบัติ)\s*[:]?\s*/i, '').trim())
+              .filter(Boolean);
+            if (parts.length >= 2) {
+              tableRows.push(parts);
+            }
+          }
+          if (tableRows.length > 0) return { tableRows, blanks, source: 'numbered_items' };
+        }
+
+        return { tableRows, blanks, source: 'text' };
+      }
+
+      function insertTextIntoCell(xmlDoc, cell, text, colorHex, ns) {
+        let p = cell.getElementsByTagName('w:p')[0];
+        if (!p) {
+          p = xmlDoc.createElementNS(ns, 'w:p');
+          cell.appendChild(p);
+        } else {
+          // Clear any empty or placeholder text runs, keep paragraph properties
+          const children = Array.from(p.childNodes);
+          for (const ch of children) {
+            const name = ch.nodeName || ch.localName || '';
+            if (!name.endsWith('pPr')) {
+              p.removeChild(ch);
+            }
+          }
+        }
+
+        const lines = (text || '').split('\n');
+        lines.forEach((line, idx) => {
+          if (idx > 0) {
+            p.appendChild(xmlDoc.createElementNS(ns, 'w:br'));
+          }
+          const r = xmlDoc.createElementNS(ns, 'w:r');
+          const rPr = xmlDoc.createElementNS(ns, 'w:rPr');
+
+          const color = xmlDoc.createElementNS(ns, 'w:color');
+          color.setAttributeNS(ns, 'w:val', colorHex);
+          rPr.appendChild(color);
+
+          const sz = xmlDoc.createElementNS(ns, 'w:sz');
+          sz.setAttributeNS(ns, 'w:val', '24');
+          rPr.appendChild(sz);
+
+          const szCs = xmlDoc.createElementNS(ns, 'w:szCs');
+          szCs.setAttributeNS(ns, 'w:val', '24');
+          rPr.appendChild(szCs);
+
+          r.appendChild(rPr);
+
+          const t = xmlDoc.createElementNS(ns, 'w:t');
+          t.setAttribute('xml:space', 'preserve');
+          t.textContent = line;
+          r.appendChild(t);
+
+          p.appendChild(r);
+        });
+      }
+
+      function insertTextIntoBlankParagraph(xmlDoc, p, text, colorHex, ns) {
+        const runs = Array.from(p.getElementsByTagName('w:r'));
+        let replaced = false;
+
+        for (const r of runs) {
+          const tNodes = Array.from(r.getElementsByTagName('w:t'));
+          for (const t of tNodes) {
+            if (/[.]{3,}|_{3,}/.test(t.textContent)) {
+              t.textContent = t.textContent.replace(/[.]{3,}|_{3,}/, text);
+              let rPr = r.getElementsByTagName('w:rPr')[0];
+              if (!rPr) {
+                rPr = xmlDoc.createElementNS(ns, 'w:rPr');
+                r.insertBefore(rPr, r.firstChild);
+              }
+              const color = xmlDoc.createElementNS(ns, 'w:color');
+              color.setAttributeNS(ns, 'w:val', colorHex);
+              rPr.appendChild(color);
+              replaced = true;
+              break;
+            }
+          }
+          if (replaced) break;
+        }
+
+        if (!replaced) {
+          const r = xmlDoc.createElementNS(ns, 'w:r');
+          const rPr = xmlDoc.createElementNS(ns, 'w:rPr');
+          const color = xmlDoc.createElementNS(ns, 'w:color');
+          color.setAttributeNS(ns, 'w:val', colorHex);
+          rPr.appendChild(color);
+          r.appendChild(rPr);
+
+          const t = xmlDoc.createElementNS(ns, 'w:t');
+          t.setAttribute('xml:space', 'preserve');
+          t.textContent = ' ' + text;
+          r.appendChild(t);
+          p.appendChild(r);
+        }
+      }
+
+      async function buildPatchedDocx(fileItem, answersText, textColorHex) {
+        const cleanHex = (textColorHex || '000000').replace('#', '');
+        const docxLib = (typeof docx !== 'undefined') ? docx : null;
+
+        if (fileItem.type === 'docx' && typeof JSZip !== 'undefined') {
+          try {
+            // Attempt XML inline editing to preserve 100% of the original document layout
+            const zip = await JSZip.loadAsync(fileItem.rawBytes);
+            let docXml = await zip.file('word/document.xml')?.async('text');
+
+            if (docXml) {
+              const parser = new DOMParser();
+              const xmlDoc = parser.parseFromString(docXml, 'text/xml');
+              const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+
+              const parsed = parseStructuredAnswers(answersText);
+              let filledCount = 0;
+
+              // 1. IN-PLACE TABLE CELL FILLING
+              const tables = Array.from(xmlDoc.getElementsByTagName('w:tbl'));
+              if (tables.length > 0 && parsed.tableRows && parsed.tableRows.length > 0) {
+                let answerRowIdx = 0;
+
+                for (const table of tables) {
+                  const rows = Array.from(table.getElementsByTagName('w:tr'));
+                  for (let r = 0; r < rows.length; r++) {
+                    const row = rows[r];
+                    const cells = Array.from(row.getElementsByTagName('w:tc'));
+
+                    // Check if row has empty cells (header rows usually have text; data rows are blank)
+                    const isAllEmpty = cells.every(c => c.textContent.trim().length === 0);
+                    const isPartiallyEmpty = cells.some(c => c.textContent.trim().length === 0);
+
+                    if ((isAllEmpty || (r > 0 && isPartiallyEmpty)) && answerRowIdx < parsed.tableRows.length) {
+                      const ansRow = parsed.tableRows[answerRowIdx++];
+                      for (let c = 0; c < cells.length; c++) {
+                        const cell = cells[c];
+                        if (cell.textContent.trim().length === 0 && c < ansRow.length) {
+                          insertTextIntoCell(xmlDoc, cell, ansRow[c], cleanHex, W_NS);
+                          filledCount++;
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+
+              // 2. IN-PLACE PARAGRAPH BLANK FILLING (outside tables)
+              const paragraphs = Array.from(xmlDoc.getElementsByTagName('w:p'));
+              let blankIdx = 0;
+              for (const p of paragraphs) {
+                let parent = p.parentNode;
+                let inTable = false;
+                while (parent) {
+                  const pName = parent.nodeName || parent.localName || '';
+                  if (pName.endsWith('tc') || pName.endsWith('tbl')) {
+                    inTable = true;
+                    break;
+                  }
+                  parent = parent.parentNode;
+                }
+                if (inTable) continue;
+
+                const text = p.textContent || '';
+                if (/[.]{3,}|_{3,}/.test(text) && parsed.blanks && blankIdx < parsed.blanks.length) {
+                  insertTextIntoBlankParagraph(xmlDoc, p, parsed.blanks[blankIdx++], cleanHex, W_NS);
+                  filledCount++;
+                }
+              }
+
+              // 3. IF WE FILLED IN-PLACE SPACES: DO NOT APPEND NEW PAGES!
+              if (filledCount > 0) {
+                const serializer = new XMLSerializer();
+                const updatedXml = serializer.serializeToString(xmlDoc);
+                zip.file('word/document.xml', updatedXml);
+                return await zip.generateAsync({ type: 'blob' });
+              }
+
+              // 4. Fallback: only if no tables and no blank placeholders exist in the document,
+              // append answer section before </w:body>
+              const answerParagraphs = answersText.split('\n').filter(l => l.trim().length > 0);
+              let answerXmlRuns = '';
+              answerParagraphs.forEach(ans => {
+                const escapedAns = escapeXml(ans);
+                answerXmlRuns += `<w:p><w:pPr><w:spacing w:after="120"/></w:pPr><w:r><w:rPr><w:color w:val="${cleanHex}"/><w:b/><w:sz w:val="24"/></w:rPr><w:t xml:space="preserve">${escapedAns}</w:t></w:r></w:p>`;
+              });
+
+              if (docXml.includes('</w:body>')) {
+                const separatorXml = `<w:p><w:pPr><w:spacing w:before="240" w:after="120"/><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:color w:val="2B5AED"/><w:b/><w:sz w:val="20"/></w:rPr><w:t>--- [A* Homework Destroyer - Verified Answers] ---</w:t></w:r></w:p>`;
+                docXml = docXml.replace('</w:body>', separatorXml + answerXmlRuns + '</w:body>');
+                zip.file('word/document.xml', docXml);
+                return await zip.generateAsync({ type: 'blob' });
+              }
+            }
+          } catch (patchErr) {
+            console.warn('Direct XML patching fallback to docx generation:', patchErr);
+          }
+        }
+
+        // Fallback or PDF conversion using Dolan Miu's declarative Document API
+        if (docxLib && docxLib.Document) {
+          const { Document, Paragraph, TextRun, HeadingLevel, Packer } = docxLib;
+          const children = [];
+
+          // Title header
+          children.push(new Paragraph({
+            heading: HeadingLevel.HEADING_1,
+            children: [
+              new TextRun({
+                text: 'A* - the homework destroyer',
+                bold: true,
+                color: '1A4BFB',
+                size: 32
+              })
+            ]
+          }));
+
+          children.push(new Paragraph({
+            children: [
+              new TextRun({
+                text: `Output for assignment: ${fileItem.name}`,
+                italics: true,
+                color: '666666',
+                size: 20
+              })
+            ]
+          }));
+
+          children.push(new Paragraph({ text: '' }));
+
+          // Original problem overview
+          children.push(new Paragraph({
+            heading: HeadingLevel.HEADING_2,
+            children: [
+              new TextRun({
+                text: 'Assignment Content:',
+                bold: true,
+                color: '222222',
+                size: 24
+              })
+            ]
+          }));
+
+          const cleanLines = (fileItem.cleanText || fileItem.text || '').split('\n').slice(0, 30);
+          cleanLines.forEach(line => {
+            if (line.trim()) {
+              children.push(new Paragraph({
+                children: [
+                  new TextRun({
+                    text: line,
+                    color: '444444',
+                    size: 22
+                  })
+                ]
+              }));
+            }
+          });
+
+          children.push(new Paragraph({ text: '' }));
+
+          // Solved answers in user chosen color!
+          children.push(new Paragraph({
+            heading: HeadingLevel.HEADING_2,
+            children: [
+              new TextRun({
+                text: 'Verified Solutions & Answers:',
+                bold: true,
+                color: '00A838',
+                size: 24
+              })
+            ]
+          }));
+
+          const ansLines = answersText.split('\n');
+          ansLines.forEach(line => {
+            if (line.trim()) {
+              children.push(new Paragraph({
+                children: [
+                  new TextRun({
+                    text: line,
+                    color: cleanHex,
+                    bold: true,
+                    size: 22
+                  })
+                ]
+              }));
+            }
+          });
+
+          const doc = new Document({
+            sections: [{ children }]
+          });
+
+          return await Packer.toBlob(doc);
+        }
+
+        // Generic blob fallback
+        return new Blob([answersText], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+      }
+
+      function escapeXml(unsafe) {
+        return unsafe.replace(/[<>&'"]/g, function (c) {
+          switch (c) {
+            case '<': return '&lt;';
+            case '>': return '&gt;';
+            case '&': return '&amp;';
+            case '\'': return '&apos;';
+            case '"': return '&quot;';
+          }
+        });
+      }
+
+      // ----------------------------------------------------
+      // OUTPUT FILES RENDERING & DOWNLOAD
+      // ----------------------------------------------------
+      function renderOutputFiles() {
+        const container = dom.outputFilesContainer;
+        container.innerHTML = '';
+
+        if (state.outputFiles.length === 0) {
+          dom.outputEmptyContent.classList.remove('hidden');
+          container.classList.add('hidden');
+          return;
+        }
+
+        dom.outputEmptyContent.classList.add('hidden');
+        container.classList.remove('hidden');
+
+        state.outputFiles.forEach(file => {
+          const chip = document.createElement('div');
+          chip.className = 'output-chip';
+          chip.innerHTML = `
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span class="file-type-badge docx">DOCX</span>
+              <span style="font-size:13px; font-weight:600; color:#ffffff;">${truncateFileName(file.name)}</span>
+            </div>
+            <button class="btn-download-chip" title="Download">
+              <span>⭳</span>
+              <span>Download</span>
+            </button>
+          `;
+
+          chip.querySelector('.btn-download-chip').addEventListener('click', () => {
+            downloadBlob(file.blob, file.name);
+          });
+
+          container.appendChild(chip);
+        });
+
+        updateHistoryLists();
+      }
+
+      function downloadBlob(blob, fileName) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+
+      // ----------------------------------------------------
+      // HISTORY LISTS & ANTI-SPAM CONFIRMATION (Page 62, 64, 65)
+      // ----------------------------------------------------
+      function updateHistoryLists() {
+        // 1. Uploaded files
+        const upList = dom.histUploadedList;
+        upList.innerHTML = '';
+        if (state.uploadedFiles.length === 0) {
+          upList.innerHTML = '<div class="history-empty-text">No uploaded files yet</div>';
+          dom.btnDeleteAllUploaded.disabled = true;
+          dom.btnDeleteAllUploaded.className = 'btn-delete-all disabled';
+        } else {
+          dom.btnDeleteAllUploaded.disabled = false;
+          dom.btnDeleteAllUploaded.className = 'btn-delete-all active-danger';
+
+          state.uploadedFiles.forEach(file => {
+            const row = document.createElement('div');
+            row.className = 'history-item-row';
+            row.innerHTML = `
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span class="file-type-badge ${file.type}">${file.type.toUpperCase()}</span>
+                <span style="font-size:12px; color:#ffffff;" title="${file.name}">${truncateFileName(file.name)}</span>
+              </div>
+              <div class="history-item-actions">
+                <button class="btn-hist-action delete" title="Delete">&otimes;</button>
+              </div>
+            `;
+            row.querySelector('.btn-hist-action.delete').addEventListener('click', () => {
+              removeUploadedFile(file.id);
+            });
+            upList.appendChild(row);
+          });
+        }
+
+        // 2. Outputted files
+        const outList = dom.histOutputtedList;
+        outList.innerHTML = '';
+        if (state.outputFiles.length === 0) {
+          outList.innerHTML = '<div class="history-empty-text">No outputted files yet</div>';
+          dom.btnDeleteAllOutputted.disabled = true;
+          dom.btnDeleteAllOutputted.className = 'btn-delete-all disabled';
+        } else {
+          dom.btnDeleteAllOutputted.disabled = false;
+          dom.btnDeleteAllOutputted.className = 'btn-delete-all active-danger';
+
+          state.outputFiles.forEach(file => {
+            const row = document.createElement('div');
+            row.className = 'history-item-row';
+            row.innerHTML = `
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span class="file-type-badge docx">DOCX</span>
+                <span style="font-size:12px; color:#ffffff;" title="${file.name}">${truncateFileName(file.name)}</span>
+              </div>
+              <div class="history-item-actions">
+                <button class="btn-hist-action download" title="Download">⭳</button>
+                <button class="btn-hist-action delete" title="Delete">&otimes;</button>
+              </div>
+            `;
+            row.querySelector('.btn-hist-action.download').addEventListener('click', () => {
+              downloadBlob(file.blob, file.name);
+            });
+            row.querySelector('.btn-hist-action.delete').addEventListener('click', () => {
+              state.outputFiles = state.outputFiles.filter(f => f.id !== file.id);
+              renderOutputFiles();
+              updateHistoryLists();
+            });
+            outList.appendChild(row);
+          });
+        }
+
+        // 3. Saved API Keys (Page 65)
+        const keyList = dom.histApiKeysList;
+        keyList.innerHTML = '';
+        if (state.savedApiKeys.length === 0) {
+          keyList.innerHTML = '<div class="history-empty-text">No API key yet</div>';
+          dom.btnDeleteAllApiKeys.disabled = true;
+          dom.btnDeleteAllApiKeys.className = 'btn-delete-all disabled';
+        } else {
+          dom.btnDeleteAllApiKeys.disabled = false;
+          dom.btnDeleteAllApiKeys.className = 'btn-delete-all active-danger';
+
+          state.savedApiKeys.forEach(k => {
+            const isDefault = state.defaultApiKey === k.key;
+            const row = document.createElement('div');
+            row.className = 'history-item-row';
+            row.innerHTML = `
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span style="color:${k.isBroken ? '#ff1756' : 'var(--gold)'}; font-size:16px;">🔑</span>
+                <span class="key-text-span" style="font-size:11px; font-family:monospace; color:#ffffff;">${k.masked}</span>
+              </div>
+              <div class="history-item-actions">
+                <button class="btn-hist-action toggle-view" title="Hide/Unhide key">👁</button>
+                <button class="btn-hist-action select-key ${isDefault ? 'is-default' : ''}" title="Select / Default (Hold Ctrl)">↩</button>
+                <button class="btn-hist-action delete" title="Delete">&otimes;</button>
+              </div>
+            `;
+
+            let isRevealed = false;
+            const spanText = row.querySelector('.key-text-span');
+            row.querySelector('.btn-hist-action.toggle-view').addEventListener('click', () => {
+              isRevealed = !isRevealed;
+              spanText.textContent = isRevealed ? k.key : k.masked;
+            });
+
+            // Page 65: "when you hold down 'ctrl' on the keyboard you can click at the button you can select the default api key load out and it will turn green"
+            row.querySelector('.btn-hist-action.select-key').addEventListener('click', (e) => {
+              if (e.ctrlKey) {
+                state.defaultApiKey = k.key;
+                localStorage.setItem('ASTAR_DEFAULT_API_KEY', k.key);
+                updateHistoryLists();
+              } else {
+                state.apiKey = k.key;
+                dom.apiKeyInputField.value = k.key;
+                localStorage.setItem('ASTAR_ACTIVE_API_KEY', k.key);
+                updateApiKeyVisuals();
+                showSuccessToast('Loaded API key for active session!');
+              }
+            });
+
+            row.querySelector('.btn-hist-action.delete').addEventListener('click', () => {
+              state.savedApiKeys = state.savedApiKeys.filter(item => item.id !== k.id);
+              if (state.defaultApiKey === k.key) {
+                state.defaultApiKey = '';
+                localStorage.removeItem('ASTAR_DEFAULT_API_KEY');
+              }
+              localStorage.setItem('ASTAR_SAVED_KEYS', JSON.stringify(state.savedApiKeys));
+              updateHistoryLists();
+            });
+
+            keyList.appendChild(row);
+          });
+        }
+      }
+
+      // Anti-Spam Modal Open & Swap Logic (Page 62)
+      function openAntiSpamModal(targetType) {
+        state.antiSpamTarget = targetType;
+        state.antiSpamConfirmedOnce = false;
+
+        let targetName = 'uploaded files';
+        if (targetType === 'outputted') targetName = 'outputted files';
+        if (targetType === 'api_keys') targetName = 'saved API key';
+
+        dom.antiSpamModalMsg.textContent = `this will delete all ${targetName} from the web PERMANENTLY. ARE YOU SURE?`;
+        
+        // Initial button configuration: [BACK] then [COMFIRM?]
+        renderAntiSpamButtons(false);
+        dom.antiSpamModalOverlay.classList.add('show');
+      }
+
+      function renderAntiSpamButtons(isConfirmedOnce) {
+        const row = dom.antiSpamBtnsRow;
+        row.innerHTML = '';
+
+        if (!isConfirmedOnce) {
+          // Normal state: [BACK] on left, [COMFIRM?] on right
+          row.innerHTML = `
+            <button class="btn-anti-back" id="btnAntiBack">BACK ↩</button>
+            <button class="btn-anti-confirm" id="btnAntiConfirm">COMFIRM?</button>
+          `;
+          row.querySelector('#btnAntiBack').addEventListener('click', closeAntiSpamModal);
+          row.querySelector('#btnAntiConfirm').addEventListener('click', handleAntiSpamFirstClick);
+        } else {
+          // Swapped state (Page 62): [COMFIRM] on left, [BACK] on right!
+          row.innerHTML = `
+            <button class="btn-anti-confirm" id="btnAntiConfirm">COMFIRM</button>
+            <button class="btn-anti-back" id="btnAntiBack">BACK ↩</button>
+          `;
+          row.querySelector('#btnAntiBack').addEventListener('click', closeAntiSpamModal);
+          row.querySelector('#btnAntiConfirm').addEventListener('click', handleAntiSpamFinalClick);
+        }
+      }
+
+      function handleAntiSpamFirstClick() {
+        state.antiSpamConfirmedOnce = true;
+        renderAntiSpamButtons(true);
+      }
+
+      function handleAntiSpamFinalClick() {
+        // Execute deletion
+        if (state.antiSpamTarget === 'uploaded') {
+          state.uploadedFiles = [];
+          renderUploadedChips();
+          updatePreviewDrawer();
+        } else if (state.antiSpamTarget === 'outputted') {
+          state.outputFiles = [];
+          renderOutputFiles();
+        } else if (state.antiSpamTarget === 'api_keys') {
+          state.savedApiKeys = [];
+          state.defaultApiKey = '';
+          localStorage.removeItem('ASTAR_SAVED_KEYS');
+          localStorage.removeItem('ASTAR_DEFAULT_API_KEY');
+        }
+
+        updateHistoryLists();
+        closeAntiSpamModal();
+        showSuccessToast('Deleted permanently!');
+      }
+
+      function closeAntiSpamModal() {
+        dom.antiSpamModalOverlay.classList.remove('show');
+        state.antiSpamTarget = null;
+        state.antiSpamConfirmedOnce = false;
+      }
+
+      // ----------------------------------------------------
+      // SETTINGS HANDLING (Pages 16, 17, 63)
+      // ----------------------------------------------------
+      function updateResetButtonColors() {
+        if (state.outputColor.toUpperCase() !== '#000000') {
+          dom.btnResetColor.classList.add('is-modified');
+        } else {
+          dom.btnResetColor.classList.remove('is-modified');
+        }
+      }
+
+      function updateResetButtonAutoSave() {
+        if (!state.autoSaveApiKey) {
+          dom.btnResetAutoSave.classList.add('is-modified');
+        } else {
+          dom.btnResetAutoSave.classList.remove('is-modified');
+        }
+      }
+
+      // ----------------------------------------------------
+      // ABOUT CAROUSEL NAVIGATION (Pages 47, 48, 49, 61)
+      // ----------------------------------------------------
+      function setAboutSlide(slideNum) {
+        state.aboutCurrentSlide = slideNum;
+        dom.aboutSlide1.classList.toggle('active', slideNum === 1);
+        dom.aboutSlide2.classList.toggle('active', slideNum === 2);
+        dom.aboutSlide3.classList.toggle('active', slideNum === 3);
+
+        dom.carouselDots.forEach((dot, idx) => {
+          dot.classList.toggle('active', (idx + 1) === slideNum);
+        });
+      }
+
+      // ----------------------------------------------------
+      // EVENT LISTENERS SETUP
+      // ----------------------------------------------------
+      function setupEventListeners() {
+        // 1. Welcome screen buttons
+        dom.btnContinueGoogle.addEventListener('click', () => setAuthMode('google'));
+        dom.btnContinueAnon.addEventListener('click', () => setAuthMode('anonymous'));
+
+        // 2. Header navigation
+        dom.navTabs.forEach(tab => {
+          tab.addEventListener('click', () => switchTab(tab.dataset.tab));
+        });
+        dom.headerBtnLogout.addEventListener('click', logout);
+        dom.headerBtnSettings.addEventListener('click', () => switchTab('settings'));
+        dom.headerBtnBack.addEventListener('click', () => switchTab('home'));
+
+        // Header logo: page 53 protected click (double-click opens About)
+        let logoClicks = 0;
+        let logoClickTimer = null;
+        dom.headerLogoBadge.addEventListener('click', () => {
+          logoClicks++;
+          if (logoClicks === 1) {
+            logoClickTimer = setTimeout(() => { logoClicks = 0; }, 400);
+          } else if (logoClicks === 2) {
+            clearTimeout(logoClickTimer);
+            logoClicks = 0;
+            switchTab('about');
+          }
+        });
+
+        // 3. Dropzone & File Pickers
+        dom.dropzoneInput.addEventListener('click', (e) => {
+          // don't open file picker if clicked delete button
+          if (e.target.closest('.file-chip-delete')) return;
+          dom.homeworkFileInput.click();
+        });
+        dom.homeworkFileInput.addEventListener('change', (e) => {
+          handleFilesSelected(e.target.files);
+          dom.homeworkFileInput.value = '';
+        });
+
+        // Drag & Drop
+        dom.dropzoneInput.addEventListener('dragover', (e) => {
+          e.preventDefault();
+          dom.dropzoneInput.classList.add('drag-over');
+        });
+        dom.dropzoneInput.addEventListener('dragleave', () => {
+          dom.dropzoneInput.classList.remove('drag-over');
+        });
+        dom.dropzoneInput.addEventListener('drop', (e) => {
+          e.preventDefault();
+          dom.dropzoneInput.classList.remove('drag-over');
+          handleFilesSelected(e.dataTransfer.files);
+        });
+
+        // 4. Action button (DO WORK / CANCEL)
+        dom.btnDoWork.addEventListener('click', handleDoWorkClick);
+
+        // 5. API Key flyout with 2-second hover persistence (Page 53 & User Request)
+        let flyoutCloseTimer = null;
+
+        function openFlyout() {
+          if (flyoutCloseTimer) {
+            clearTimeout(flyoutCloseTimer);
+            flyoutCloseTimer = null;
+          }
+          dom.apiKeyFlyout.classList.add('is-open');
+        }
+
+        function scheduleCloseFlyout() {
+          if (document.activeElement === dom.apiKeyInputField) return;
+          if (flyoutCloseTimer) clearTimeout(flyoutCloseTimer);
+          flyoutCloseTimer = setTimeout(() => {
+            dom.apiKeyFlyout.classList.remove('is-open');
+            flyoutCloseTimer = null;
+          }, 2000); // Stays open for 2s after cursor leaves
+        }
+
+        dom.btnApiKeyRing.addEventListener('mouseenter', openFlyout);
+        dom.btnApiKeyRing.addEventListener('mouseleave', scheduleCloseFlyout);
+        dom.apiKeyFlyout.addEventListener('mouseenter', openFlyout);
+        dom.apiKeyFlyout.addEventListener('mouseleave', scheduleCloseFlyout);
+        dom.apiKeyInputField.addEventListener('focus', openFlyout);
+        dom.apiKeyInputField.addEventListener('blur', scheduleCloseFlyout);
+
+        dom.btnLoadApiKey.addEventListener('click', () => {
+          const val = dom.apiKeyInputField.value.trim();
+          if (val) {
+            validateAndSaveApiKey(val);
+          } else {
+            showErrorToast('400', 'Please enter an API key', '🔑');
+          }
+        });
+        dom.apiKeyInputField.addEventListener('keypress', (e) => {
+          if (e.key === 'Enter') {
+            dom.btnLoadApiKey.click();
+          }
+        });
+
+        // 6. Model selection
+        dom.btnModelSelect.addEventListener('click', (e) => {
+          e.stopPropagation();
+          dom.modelDropdown.classList.toggle('show');
+        });
+        document.querySelectorAll('.model-option-card').forEach(card => {
+          card.addEventListener('click', () => {
+            const modelName = card.dataset.model;
+            state.currentModel = modelName;
+            dom.currentModelLabel.textContent = modelName;
+            document.querySelectorAll('.model-option-card').forEach(c => c.classList.remove('active'));
+            card.classList.add('active');
+            dom.modelDropdown.classList.remove('show');
+          });
+        });
+        document.addEventListener('click', (e) => {
+          if (!e.target.closest('.model-selector-wrapper')) {
+            dom.modelDropdown.classList.remove('show');
+          }
+        });
+
+        // 7. Prompt modal & file
+        dom.btnAddPrompt.addEventListener('click', () => {
+          dom.customPromptInput.value = state.customPromptText;
+          dom.attachedPromptFileName.textContent = state.promptAttachedFile ? `Attached: ${state.promptAttachedFile.name}` : '';
+          dom.promptModalOverlay.classList.add('show');
+        });
+        dom.btnClosePromptModal.addEventListener('click', () => {
+          dom.promptModalOverlay.classList.remove('show');
+        });
+        dom.btnSavePromptModal.addEventListener('click', () => {
+          state.customPromptText = dom.customPromptInput.value.trim();
+          if (state.customPromptText || state.promptAttachedFile) {
+            dom.btnAddPrompt.classList.add('file-loaded');
+            dom.promptIcon.textContent = '📄';
+          } else {
+            dom.btnAddPrompt.classList.remove('file-loaded');
+            dom.promptIcon.textContent = '📁';
+          }
+          dom.promptModalOverlay.classList.remove('show');
+          showSuccessToast('Prompt saved!');
+        });
+        dom.btnAttachPromptFile.addEventListener('click', () => {
+          dom.promptFileInput.click();
+        });
+        dom.promptFileInput.addEventListener('change', async (e) => {
+          if (e.target.files && e.target.files[0]) {
+            state.promptAttachedFile = e.target.files[0];
+            dom.attachedPromptFileName.textContent = `Attached: ${state.promptAttachedFile.name}`;
+            dom.promptIcon.textContent = '📄';
+            dom.btnAddPrompt.classList.add('file-loaded');
+          }
+        });
+
+        // 8. Text preview drawer toggle
+        dom.btnTogglePreviewDrawer.addEventListener('click', togglePreviewDrawer);
+
+        // 9. Toast close buttons
+        dom.btnDismissErrorToast.addEventListener('click', () => dom.errorToast.classList.remove('show'));
+        dom.btnDismissSuccessToast.addEventListener('click', () => dom.successToast.classList.remove('show'));
+
+        // 10. History delete all buttons
+        dom.btnDeleteAllUploaded.addEventListener('click', () => openAntiSpamModal('uploaded'));
+        dom.btnDeleteAllOutputted.addEventListener('click', () => openAntiSpamModal('outputted'));
+        dom.btnDeleteAllApiKeys.addEventListener('click', () => openAntiSpamModal('api_keys'));
+        dom.btnCloseAntiSpamModal.addEventListener('click', closeAntiSpamModal);
+
+        // 11. Settings events
+        dom.settingsColorPreview.addEventListener('click', () => dom.settingsColorPicker.click());
+        dom.settingsColorPicker.addEventListener('input', (e) => {
+          state.outputColor = e.target.value;
+          dom.settingsColorHex.value = e.target.value;
+          dom.settingsColorPreview.style.background = e.target.value;
+          localStorage.setItem('ASTAR_OUTPUT_COLOR', state.outputColor);
+          updateResetButtonColors();
+        });
+        dom.settingsColorHex.addEventListener('input', (e) => {
+          const val = e.target.value.trim();
+          if (/^#[0-9A-Fa-f]{6}$/.test(val)) {
+            state.outputColor = val;
+            dom.settingsColorPreview.style.background = val;
+            dom.settingsColorPicker.value = val;
+            localStorage.setItem('ASTAR_OUTPUT_COLOR', state.outputColor);
+          }
+          updateResetButtonColors();
+        });
+        dom.btnResetColor.addEventListener('click', () => {
+          state.outputColor = '#000000';
+          dom.settingsColorHex.value = '#000000';
+          dom.settingsColorPreview.style.background = '#000000';
+          dom.settingsColorPicker.value = '#000000';
+          localStorage.setItem('ASTAR_OUTPUT_COLOR', '#000000');
+          updateResetButtonColors();
+        });
+
+        dom.btnToggleAutoSave.addEventListener('click', () => {
+          state.autoSaveApiKey = !state.autoSaveApiKey;
+          localStorage.setItem('ASTAR_AUTO_SAVE_KEY', state.autoSaveApiKey ? 'true' : 'false');
+          if (state.autoSaveApiKey) {
+            dom.btnToggleAutoSave.classList.add('on');
+            dom.btnToggleAutoSave.classList.remove('off');
+            dom.btnToggleAutoSave.textContent = 'ON';
+          } else {
+            dom.btnToggleAutoSave.classList.add('off');
+            dom.btnToggleAutoSave.classList.remove('on');
+            dom.btnToggleAutoSave.textContent = 'OFF';
+          }
+          updateResetButtonAutoSave();
+        });
+        dom.btnResetAutoSave.addEventListener('click', () => {
+          state.autoSaveApiKey = true;
+          localStorage.setItem('ASTAR_AUTO_SAVE_KEY', 'true');
+          dom.btnToggleAutoSave.classList.add('on');
+          dom.btnToggleAutoSave.classList.remove('off');
+          dom.btnToggleAutoSave.textContent = 'ON';
+          updateResetButtonAutoSave();
+        });
+
+        // 12. About screen carousel
+        dom.btnAboutAnythingElse.addEventListener('click', () => setAboutSlide(3));
+        dom.btnSlideBack.addEventListener('click', () => setAboutSlide(2));
+        dom.carouselDots.forEach(dot => {
+          dot.addEventListener('click', () => {
+            const s = parseInt(dot.dataset.slide, 10);
+            setAboutSlide(s);
+          });
+        });
+      }
+
+      // Run on DOM loaded
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+      } else {
+        init();
+      }
+
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,177 @@
+/**
+ * Deleted text run module for track changes.
+ *
+ * Reference: http://officeopenxml.com/WPtrackChanges.php
+ *
+ * @module
+ */
+import { type BaseXmlComponent, XmlComponent } from "@file/xml-components";
+
+import { DeletedNumberOfPages, DeletedNumberOfPagesSection, DeletedPage } from "./deleted-page-number";
+import { DeletedText } from "./deleted-text";
+import { createBreak } from "../../paragraph/run/break";
+import { createBegin, createEnd, createSeparate } from "../../paragraph/run/field";
+import { RunProperties } from "../../paragraph/run/properties";
+import { type IRunOptions, PageNumber, Run } from "../../paragraph/run/run";
+import { ChangeAttributes, type IChangedAttributesProperties } from "../track-revision";
+
+/**
+ * Options for creating a deleted text run.
+ *
+ * Combines run formatting options with track change metadata.
+ *
+ * @property id - Unique identifier for this deletion
+ * @property author - Name of the author who deleted the text
+ * @property date - Date and time when the deletion was made (ISO 8601 format)
+ */
+type IDeletedRunOptions = IRunOptions & IChangedAttributesProperties;
+
+/** The parts of the deleted field a page number child shows, in order, or undefined when the child is text */
+const deletedPageNumberFieldOf = (child: string): readonly XmlComponent[] | undefined => {
+    switch (child) {
+        case PageNumber.CURRENT:
+            return [createBegin(), new DeletedPage(), createSeparate(), createEnd()];
+        case PageNumber.TOTAL_PAGES:
+            return [createBegin(), new DeletedNumberOfPages(), createSeparate(), createEnd()];
+        case PageNumber.TOTAL_PAGES_IN_SECTION:
+            return [createBegin(), new DeletedNumberOfPagesSection(), createSeparate(), createEnd()];
+        default:
+            return undefined;
+    }
+};
+
+/**
+ * Represents a deleted text run in a tracked changes document.
+ *
+ * A deletion marks text that has been removed from the document as part of
+ * revision tracking. It wraps a text run with metadata about who made the
+ * deletion and when. Deleted text is typically shown with strikethrough
+ * formatting in applications that support track changes.
+ *
+ * Reference: http://officeopenxml.com/WPtrackChanges.php
+ *
+ * @publicApi
+ *
+ * ## XSD Schema
+ * ```xml
+ * <xsd:element name="del" type="CT_RunTrackChange" minOccurs="0"/>
+ *
+ * <xsd:complexType name="CT_RunTrackChange">
+ *   <xsd:complexContent>
+ *     <xsd:extension base="CT_TrackChange">
+ *       <xsd:choice minOccurs="0" maxOccurs="unbounded">
+ *         <xsd:group ref="EG_ContentRunContent"/>
+ *         <xsd:group ref="m:EG_OMathMathElements"/>
+ *       </xsd:choice>
+ *     </xsd:extension>
+ *   </xsd:complexContent>
+ * </xsd:complexType>
+ * ```
+ *
+ * @example
+ * ```typescript
+ * // Create a deleted text run
+ * new DeletedTextRun({
+ *   id: 2,
+ *   author: "Jane Smith",
+ *   date: "2024-01-15T11:00:00Z",
+ *   text: "This text was removed",
+ *   italics: true
+ * });
+ *
+ * // Deleted run with page number field
+ * new DeletedTextRun({
+ *   id: 3,
+ *   author: "John Doe",
+ *   date: "2024-01-15T12:00:00Z",
+ *   children: [PageNumber.CURRENT]
+ * });
+ * ```
+ */
+export class DeletedTextRun extends XmlComponent {
+    protected readonly deletedTextRunWrapper: DeletedTextRunWrapper;
+
+    public constructor(options: IDeletedRunOptions) {
+        super("w:del");
+        this.root.push(
+            new ChangeAttributes({
+                id: options.id,
+                author: options.author,
+                date: options.date,
+            }),
+        );
+        this.deletedTextRunWrapper = new DeletedTextRunWrapper(options);
+        this.addChildElement(this.deletedTextRunWrapper);
+    }
+}
+
+/**
+ * Internal wrapper for the run element within a deletion.
+ *
+ * Wraps the actual run content (text, fields, etc.) within a w:r element
+ * that appears inside the w:del element. Handles special cases like page
+ * numbers and other field codes using deleted-specific element types.
+ *
+ * @internal
+ */
+class DeletedTextRunWrapper extends XmlComponent {
+    // A run given in the children, such as a FootnoteReferenceRun, or the runs of a page number field, then the run of
+    // the children after it
+    private readonly following: readonly XmlComponent[] = [];
+
+    public constructor(options: IRunOptions) {
+        super("w:r");
+        this.root.push(new RunProperties(options));
+
+        if (options.children) {
+            for (const [index, child] of options.children.entries()) {
+                if (child instanceof Run) {
+                    // A run can't be inside another, so this run ends before it, and the children after it go in a run
+                    // with this run's properties
+                    const rest = options.children.slice(index + 1);
+                    this.following = [
+                        child,
+                        ...(rest.length > 0 ? [new DeletedTextRunWrapper({ ...options, break: undefined, children: rest })] : []),
+                    ];
+                    break;
+                }
+
+                if (typeof child === "string") {
+                    const field = deletedPageNumberFieldOf(child);
+                    if (field) {
+                        // Each part of the field is written in a run of its own with this run's properties, as Word
+                        // writes fields, so LibreOffice formats it and the text after it by them (see Run)
+                        const rest = options.children.slice(index + 1);
+                        const runOf = (children: NonNullable<IRunOptions["children"]>): DeletedTextRunWrapper =>
+                            new DeletedTextRunWrapper({ ...options, break: undefined, children });
+                        const beginsHere = this.root.length === 1;
+                        if (beginsHere) {
+                            this.root.push(field[0]);
+                        }
+                        const parts = beginsHere ? field.slice(1) : field;
+                        this.following = [...parts.map((part) => runOf([part])), ...(rest.length > 0 ? [runOf(rest)] : [])];
+                        break;
+                    }
+
+                    this.root.push(new DeletedText(child));
+                    continue;
+                }
+
+                this.root.push(child);
+            }
+        } else if (options.text) {
+            this.root.push(new DeletedText(options.text));
+        }
+
+        if (options.break) {
+            for (let i = 0; i < options.break; i++) {
+                this.root.splice(1, 0, createBreak());
+            }
+        }
+    }
+
+    public get writtenAs(): readonly BaseXmlComponent[] | undefined {
+        // This run, then the ones after it, each written as it would be on its own
+        return this.following.length > 0 ? [this, ...this.following.flatMap((run) => run.writtenAs ?? run)] : undefined;
+    }
+}

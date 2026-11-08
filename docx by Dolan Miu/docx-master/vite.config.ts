@@ -1,0 +1,106 @@
+import { resolve } from "path";
+import dts from "vite-plugin-dts";
+import { nodePolyfills } from "vite-plugin-node-polyfills";
+import { configDefaults, defineConfig } from "vitest/config";
+import { copyFileSync } from "node:fs";
+
+export default defineConfig({
+    plugins: [
+        dts({
+            bundleTypes: {
+                // Keep every declaration. API Extractor's default output leaves out those whose JSDoc says @internal,
+                // which would remove exported names from the types
+                extractorConfig: {
+                    dtsRollup: { publicTrimmedFilePath: "", untrimmedFilePath: resolve(__dirname, "dist/index.d.ts") },
+                },
+                // API Extractor reads the declarations with the TypeScript it comes with, so it needs that version's
+                // lib files too. The plugin would point it at the project's TypeScript, which is a newer version whose
+                // lib files it can't follow symbols such as Readonly into
+                invokeOptions: { typescriptCompilerFolder: undefined },
+            },
+            // tsconfig.json removes comments, but the JSDoc in declarations is what users see in their editors
+            compilerOptions: { removeComments: false },
+            afterBuild: () => {
+                // https://github.com/dolanmiu/docx/pull/2883
+                // To pass publint - `npx publint@latest`
+                copyFileSync("dist/index.d.ts", "dist/index.d.cts");
+            },
+        }),
+        nodePolyfills({
+            exclude: [],
+            globals: {
+                Buffer: false,
+            },
+            protocolImports: true,
+        }),
+    ],
+    // Lets specs import Word documents with ?inline, such as the corpus src/util/xml reads
+    assetsInclude: ["**/*.docx", "**/*.dotx"],
+    resolve: {
+        tsconfigPaths: true,
+        alias: {
+            "@util/": `${resolve(__dirname, "src/util")}/`,
+            "@export/": `${resolve(__dirname, "src/export")}/`,
+            "@file/": `${resolve(__dirname, "src/file")}/`,
+            "@shared": `${resolve(__dirname, "src/shared")}`,
+        },
+    },
+    build: {
+        minify: false,
+        target: "es2015",
+        lib: {
+            entry: [resolve(__dirname, "src/index.ts")],
+            name: "docx",
+            fileName: (d) => {
+                if (d === "umd") {
+                    return "index.umd.cjs";
+                }
+
+                if (d === "cjs") {
+                    return "index.cjs";
+                }
+
+                if (d === "es") {
+                    return "index.mjs";
+                }
+
+                if (d === "iife") {
+                    return "index.iife.js";
+                }
+
+                return "unknown";
+            },
+            formats: ["iife", "es", "cjs", "umd"],
+        },
+        outDir: resolve(__dirname, "dist"),
+        commonjsOptions: {
+            include: [/node_modules/],
+        },
+    },
+    test: {
+        environment: "jsdom",
+        coverage: {
+            provider: "v8",
+            reporter: ["text", "json", "html"],
+            thresholds: {
+                statements: 100,
+                branches: 100,
+                functions: 100,
+                lines: 100,
+            },
+            exclude: [
+                ...configDefaults.exclude,
+                "**/dist/**",
+                "**/demo/**",
+                "**/docs/**",
+                "**/scripts/**",
+                "**/src/**/index.ts",
+                "**/src/**/types.ts",
+                "**/src/util/output-type.ts",
+                "**/*.spec.ts",
+            ],
+        },
+        include: ["**/src/**/*.spec.ts", "**/packages/**/*.spec.ts"],
+        exclude: [...configDefaults.exclude, "**/build/**", "**/demo/**", "**/docs/**", "**/scripts/**", ".claude/**"],
+    },
+});

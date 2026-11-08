@@ -1,0 +1,2289 @@
+/* eslint-disable @typescript-eslint/naming-convention -- The keys of objects here are paths of parts in a package, and the keys of patches */
+import { describe, expect, it, vi } from "vitest";
+
+import { Formatter } from "@export/formatter";
+import { Packer } from "@export/packer/packer";
+import { EndnoteReferenceRun } from "@file/endnotes";
+import { File } from "@file/file";
+import { FootnoteReferenceRun } from "@file/footnotes";
+import { Header } from "@file/header";
+import { LevelFormat } from "@file/numbering";
+import { PackagePart } from "@file/package-part";
+import { Bookmark, ExternalHyperlink, HeadingLevel, ImageRun, Paragraph, Run, TextRun } from "@file/paragraph";
+import { Table, TableCell, TableRow } from "@file/table";
+import { BuilderElement, type IContext, type IXmlableObject, XmlComponent } from "@file/xml-components";
+
+import { type IPatch, type PatchDocumentOptions, PatchType, type TableRowsPatch, patchDocument } from "./from-docx";
+import { traverse } from "./traverser";
+import { toJson } from "./util";
+import { textOf, unzip, zip } from "../tests/zip";
+
+const MOCK_XML = `
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas"
+    xmlns:cx="http://schemas.microsoft.com/office/drawing/2014/chartex"
+    xmlns:cx1="http://schemas.microsoft.com/office/drawing/2015/9/8/chartex"
+    xmlns:cx2="http://schemas.microsoft.com/office/drawing/2015/10/21/chartex"
+    xmlns:cx3="http://schemas.microsoft.com/office/drawing/2016/5/9/chartex"
+    xmlns:cx4="http://schemas.microsoft.com/office/drawing/2016/5/10/chartex"
+    xmlns:cx5="http://schemas.microsoft.com/office/drawing/2016/5/11/chartex"
+    xmlns:cx6="http://schemas.microsoft.com/office/drawing/2016/5/12/chartex"
+    xmlns:cx7="http://schemas.microsoft.com/office/drawing/2016/5/13/chartex"
+    xmlns:cx8="http://schemas.microsoft.com/office/drawing/2016/5/14/chartex"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:aink="http://schemas.microsoft.com/office/drawing/2016/ink"
+    xmlns:am3d="http://schemas.microsoft.com/office/drawing/2017/model3d"
+    xmlns:o="urn:schemas-microsoft-com:office:office"
+    xmlns:oel="http://schemas.microsoft.com/office/2019/extlst"
+    xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"
+    xmlns:v="urn:schemas-microsoft-com:vml"
+    xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing"
+    xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+    xmlns:w10="urn:schemas-microsoft-com:office:word"
+    xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"
+    xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml"
+    xmlns:w16cex="http://schemas.microsoft.com/office/word/2018/wordml/cex"
+    xmlns:w16cid="http://schemas.microsoft.com/office/word/2016/wordml/cid"
+    xmlns:w16="http://schemas.microsoft.com/office/word/2018/wordml"
+    xmlns:w16sdtdh="http://schemas.microsoft.com/office/word/2020/wordml/sdtdatahash"
+    xmlns:w16se="http://schemas.microsoft.com/office/word/2015/wordml/symex"
+    xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"
+    xmlns:wpi="http://schemas.microsoft.com/office/word/2010/wordprocessingInk"
+    xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml"
+    xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+    <w:body>
+        <w:p w14:paraId="2499FE9F" w14:textId="0A3D130F" w:rsidR="00B51233"
+            w:rsidRDefault="007B52ED" w:rsidP="007B52ED">
+            <w:pPr>
+                <w:pStyle w:val="Title" />
+            </w:pPr>
+            <w:r>
+                <w:t>Hello World</w:t>
+            </w:r>
+        </w:p>
+        <w:p w14:paraId="6410D9A0" w14:textId="7579AB49" w:rsidR="007B52ED"
+            w:rsidRDefault="007B52ED" />
+        <w:p w14:paraId="57ACF964" w14:textId="315D7A05" w:rsidR="007B52ED"
+            w:rsidRDefault="007B52ED">
+            <w:r>
+                <w:t>Hello {{name}},</w:t>
+            </w:r>
+            <w:r w:rsidR="008126CB">
+                <w:t xml:space="preserve"> how are you?</w:t>
+            </w:r>
+        </w:p>
+        <w:p w14:paraId="38C7DF4A" w14:textId="66CDEC9A" w:rsidR="007B52ED"
+            w:rsidRDefault="007B52ED" />
+        <w:p w14:paraId="04FABE2B" w14:textId="3DACA001" w:rsidR="007B52ED"
+            w:rsidRDefault="007B52ED">
+            <w:r>
+                <w:t>{{paragraph_replace}}</w:t>
+            </w:r>
+        </w:p>
+        <w:p w14:paraId="7AD7975D" w14:textId="77777777" w:rsidR="00EF161F"
+            w:rsidRDefault="00EF161F" />
+        <w:p w14:paraId="3BD6D75A" w14:textId="19AE3121" w:rsidR="00EF161F"
+            w:rsidRDefault="00EF161F">
+            <w:r>
+                <w:t>{{table}}</w:t>
+            </w:r>
+        </w:p>
+        <w:p w14:paraId="76023962" w14:textId="4E606AB9" w:rsidR="007B52ED"
+            w:rsidRDefault="007B52ED" />
+        <w:tbl>
+            <w:tblPr>
+                <w:tblStyle w:val="TableGrid" />
+                <w:tblW w:w="0" w:type="auto" />
+                <w:tblLook w:val="04A0" w:firstRow="1" w:lastRow="0" w:firstColumn="1"
+                    w:lastColumn="0" w:noHBand="0" w:noVBand="1" />
+            </w:tblPr>
+            <w:tblGrid>
+                <w:gridCol w:w="3003" />
+                <w:gridCol w:w="3003" />
+                <w:gridCol w:w="3004" />
+            </w:tblGrid>
+            <w:tr w:rsidR="00EF161F" w14:paraId="1DEC5955" w14:textId="77777777" w:rsidTr="00EF161F">
+                <w:tc>
+                    <w:tcPr>
+                        <w:tcW w:w="3003" w:type="dxa" />
+                    </w:tcPr>
+                    <w:p w14:paraId="54DA5587" w14:textId="625BAC60" w:rsidR="00EF161F"
+                        w:rsidRDefault="00EF161F">
+                        <w:r>
+                            <w:t>{{table_heading_1}}</w:t>
+                        </w:r>
+                    </w:p>
+                </w:tc>
+                <w:tc>
+                    <w:tcPr>
+                        <w:tcW w:w="3003" w:type="dxa" />
+                    </w:tcPr>
+                    <w:p w14:paraId="57100910" w14:textId="71FD5616" w:rsidR="00EF161F"
+                        w:rsidRDefault="00EF161F" />
+                </w:tc>
+                <w:tc>
+                    <w:tcPr>
+                        <w:tcW w:w="3004" w:type="dxa" />
+                    </w:tcPr>
+                    <w:p w14:paraId="1D388FAB" w14:textId="77777777" w:rsidR="00EF161F"
+                        w:rsidRDefault="00EF161F" />
+                </w:tc>
+            </w:tr>
+            <w:tr w:rsidR="00EF161F" w14:paraId="0F53D2DC" w14:textId="77777777" w:rsidTr="00EF161F">
+                <w:tc>
+                    <w:tcPr>
+                        <w:tcW w:w="3003" w:type="dxa" />
+                    </w:tcPr>
+                    <w:p w14:paraId="0F2BCCED" w14:textId="3C3B6706" w:rsidR="00EF161F"
+                        w:rsidRDefault="00EF161F">
+                        <w:r>
+                            <w:t>Item: {{item_1}}</w:t>
+                        </w:r>
+                    </w:p>
+                </w:tc>
+                <w:tc>
+                    <w:tcPr>
+                        <w:tcW w:w="3003" w:type="dxa" />
+                    </w:tcPr>
+                    <w:p w14:paraId="1E6158AC" w14:textId="77777777" w:rsidR="00EF161F"
+                        w:rsidRDefault="00EF161F" />
+                </w:tc>
+                <w:tc>
+                    <w:tcPr>
+                        <w:tcW w:w="3004" w:type="dxa" />
+                    </w:tcPr>
+                    <w:p w14:paraId="17937748" w14:textId="77777777" w:rsidR="00EF161F"
+                        w:rsidRDefault="00EF161F" />
+                </w:tc>
+            </w:tr>
+            <w:tr w:rsidR="00EF161F" w14:paraId="781DAC1A" w14:textId="77777777" w:rsidTr="00EF161F">
+                <w:tc>
+                    <w:tcPr>
+                        <w:tcW w:w="3003" w:type="dxa" />
+                    </w:tcPr>
+                    <w:p w14:paraId="1DCD0343" w14:textId="77777777" w:rsidR="00EF161F"
+                        w:rsidRDefault="00EF161F" />
+                </w:tc>
+                <w:tc>
+                    <w:tcPr>
+                        <w:tcW w:w="3003" w:type="dxa" />
+                    </w:tcPr>
+                    <w:p w14:paraId="5D02E3CD" w14:textId="77777777" w:rsidR="00EF161F"
+                        w:rsidRDefault="00EF161F" />
+                </w:tc>
+                <w:tc>
+                    <w:tcPr>
+                        <w:tcW w:w="3004" w:type="dxa" />
+                    </w:tcPr>
+                    <w:p w14:paraId="52EA0DBB" w14:textId="77777777" w:rsidR="00EF161F"
+                        w:rsidRDefault="00EF161F" />
+                </w:tc>
+            </w:tr>
+        </w:tbl>
+        <w:p w14:paraId="47CD1FBC" w14:textId="23474CBC" w:rsidR="007B52ED"
+            w:rsidRDefault="007B52ED" />
+        <w:p w14:paraId="0ACCEE90" w14:textId="67907499" w:rsidR="00EF161F"
+            w:rsidRDefault="0077578F">
+            <w:r>
+                <w:t>{{image_test}}</w:t>
+            </w:r>
+        </w:p>
+        <w:p w14:paraId="23FA9862" w14:textId="77777777" w:rsidR="0077578F"
+            w:rsidRDefault="0077578F" />
+        <w:p w14:paraId="01578F2F" w14:textId="3BDC6C85" w:rsidR="007B52ED"
+            w:rsidRDefault="007B52ED">
+            <w:r>
+                <w:t>Thank you</w:t>
+            </w:r>
+        </w:p>
+        <w:sectPr w:rsidR="007B52ED" w:rsidSect="0072043F">
+            <w:headerReference w:type="default" r:id="rId6" />
+            <w:footerReference w:type="default" r:id="rId7" />
+            <w:pgSz w:w="11900" w:h="16840" />
+            <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708"
+                w:footer="708" w:gutter="0" />
+            <w:cols w:space="708" />
+            <w:docGrid w:linePitch="360" />
+        </w:sectPr>
+    </w:body>
+</w:document>
+`;
+
+describe("from-docx", () => {
+    describe("patchDocument", () => {
+        describe("document.xml and [Content_Types].xml", () => {
+            const template = zip({
+                "word/document.xml": MOCK_XML,
+                "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`,
+            });
+
+            it("should patch the document", async () => {
+                const output = await patchDocument({
+                    outputType: "uint8array",
+                    data: template,
+                    patches: {
+                        name: {
+                            type: PatchType.PARAGRAPH,
+                            children: [new TextRun("Sir. "), new TextRun("John Doe"), new TextRun("(The Conqueror)")],
+                        },
+                        item_1: {
+                            type: PatchType.PARAGRAPH,
+                            children: [
+                                new TextRun("#657"),
+                                new ExternalHyperlink({
+                                    children: [
+                                        new TextRun({
+                                            text: "BBC News Link",
+                                        }),
+                                    ],
+                                    link: "https://www.bbc.co.uk/news",
+                                }),
+                            ],
+                        },
+                        paragraph_replace: {
+                            type: PatchType.DOCUMENT,
+                            children: [
+                                new Paragraph({
+                                    children: [
+                                        new TextRun("This is a "),
+                                        new ExternalHyperlink({
+                                            children: [
+                                                new TextRun({
+                                                    text: "Google Link",
+                                                }),
+                                            ],
+                                            link: "https://www.google.co.uk",
+                                        }),
+                                        new ImageRun({
+                                            type: "png",
+                                            data: Buffer.from(""),
+                                            transformation: { width: 100, height: 100 },
+                                        }),
+                                    ],
+                                }),
+                            ],
+                        },
+                        image_test: {
+                            type: PatchType.PARAGRAPH,
+                            children: [
+                                new ImageRun({
+                                    type: "png",
+                                    data: Buffer.from(""),
+                                    transformation: { width: 100, height: 100 },
+                                }),
+                            ],
+                        },
+                    },
+                });
+                expect(output).to.not.be.undefined;
+            });
+
+            it("should patch the document", async () => {
+                const output = await patchDocument({
+                    outputType: "uint8array",
+                    data: template,
+                    patches: {},
+                });
+                expect(output).to.not.be.undefined;
+            });
+
+            it("should patch in a bookmark whose start and end share one id", async () => {
+                // The patcher formats with a stand-in file, so a bookmark that
+                // looked its id up from the document threw here.
+                const output = await patchDocument({
+                    outputType: "uint8array",
+                    data: template,
+                    patches: {
+                        paragraph_replace: {
+                            type: PatchType.DOCUMENT,
+                            children: [new Paragraph({ children: [new Bookmark({ id: "anchor", children: [new TextRun("Anchor")] })] })],
+                        },
+                    },
+                });
+
+                const xml = textOf(unzip(output), "word/document.xml");
+                const start = xml?.match(/<w:bookmarkStart w:name="anchor" w:id="(\d+)"\/>/);
+                const end = xml?.match(/<w:bookmarkEnd w:id="(\d+)"\/>/);
+
+                expect(start?.[1]).to.be.a("string");
+                expect(end?.[1]).to.equal(start?.[1]);
+            });
+
+            it("should work with the raw JSZip type", async () => {
+                // A zip file opened with JSZip is read through its generateAsync
+                const output = await patchDocument({
+                    outputType: "uint8array",
+                    data: { generateAsync: () => Promise.resolve(template) },
+                    patches: {},
+                });
+                expect(output).to.not.be.undefined;
+            });
+
+            it("should skip UTF-16 types", async () => {
+                const utf16 = zip({ "word/document.xml": MOCK_XML, "[Content_Types].xml": Buffer.from([0xff, 0xfe]) });
+                const output = await patchDocument({
+                    outputType: "uint8array",
+                    data: { generateAsync: () => Promise.resolve(utf16) },
+                    patches: {},
+                });
+                expect(output).to.not.be.undefined;
+            });
+
+            it("should patch the document", async () => {
+                const output = await patchDocument({
+                    outputType: "uint8array",
+                    data: template,
+                    placeholderDelimiters: { start: "{{", end: "}}" },
+                    patches: {
+                        name: {
+                            type: PatchType.PARAGRAPH,
+                            children: [new TextRun("Sir. "), new TextRun("John Doe"), new TextRun("(The Conqueror)")],
+                        },
+                        item_1: {
+                            type: PatchType.PARAGRAPH,
+                            children: [
+                                new TextRun("#657"),
+                                new ExternalHyperlink({
+                                    children: [
+                                        new TextRun({
+                                            text: "BBC News Link",
+                                        }),
+                                    ],
+                                    link: "https://www.bbc.co.uk/news",
+                                }),
+                            ],
+                        },
+                        paragraph_replace: {
+                            type: PatchType.DOCUMENT,
+                            children: [
+                                new Paragraph({
+                                    children: [
+                                        new TextRun("This is a "),
+                                        new ExternalHyperlink({
+                                            children: [
+                                                new TextRun({
+                                                    text: "Google Link",
+                                                }),
+                                            ],
+                                            link: "https://www.google.co.uk",
+                                        }),
+                                        new ImageRun({
+                                            type: "png",
+                                            data: Buffer.from(""),
+                                            transformation: { width: 100, height: 100 },
+                                        }),
+                                    ],
+                                }),
+                            ],
+                        },
+                        image_test: {
+                            type: PatchType.PARAGRAPH,
+                            children: [
+                                new ImageRun({
+                                    type: "png",
+                                    data: Buffer.from(""),
+                                    transformation: { width: 100, height: 100 },
+                                }),
+                            ],
+                        },
+                    },
+                });
+                expect(output).to.not.be.undefined;
+            });
+
+            it("should patch the document", async () => {
+                const output = await patchDocument({
+                    outputType: "uint8array",
+                    data: template,
+                    patches: {},
+                });
+                expect(output).to.not.be.undefined;
+            });
+
+            it("throws error with empty delimiters", async () => {
+                await expect(() =>
+                    patchDocument({
+                        outputType: "uint8array",
+                        data: template,
+                        patches: {},
+                        placeholderDelimiters: { start: "", end: "" },
+                    }),
+                ).rejects.toThrow();
+            });
+
+            it("throws error with whitespace-only delimiters", async () => {
+                await expect(() =>
+                    patchDocument({
+                        outputType: "uint8array",
+                        data: template,
+                        patches: {},
+                        placeholderDelimiters: { start: " ", end: " " },
+                    }),
+                ).rejects.toThrowError();
+            });
+        });
+
+        describe("document.xml and [Content_Types].xml with relationships", () => {
+            const template = zip({
+                "word/document.xml": MOCK_XML,
+                "word/_rels/document.xml.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`,
+                "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`,
+            });
+
+            it("should use the relationships file rather than create one", async () => {
+                const output = await patchDocument({
+                    outputType: "uint8array",
+                    data: template,
+                    patches: {
+                        image_test: {
+                            type: PatchType.PARAGRAPH,
+                            children: [
+                                new ImageRun({
+                                    type: "png",
+                                    data: Buffer.from(""),
+                                    transformation: { width: 100, height: 100 },
+                                }),
+                                new ExternalHyperlink({
+                                    children: [
+                                        new TextRun({
+                                            text: "Google Link",
+                                        }),
+                                    ],
+                                    link: "https://www.google.co.uk",
+                                }),
+                            ],
+                        },
+                    },
+                });
+                expect(output).to.not.be.undefined;
+            });
+        });
+
+        describe("document.xml and [Content_Types].xml without relationships file", () => {
+            const template = zip({
+                "word/document.xml": MOCK_XML,
+                "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`,
+            });
+
+            it("should create a relationships file for hyperlink only patches", async () => {
+                const output = await patchDocument({
+                    outputType: "uint8array",
+                    data: template,
+                    patches: {
+                        image_test: {
+                            type: PatchType.PARAGRAPH,
+                            children: [
+                                new ExternalHyperlink({
+                                    children: [
+                                        new TextRun({
+                                            text: "Google Link",
+                                        }),
+                                    ],
+                                    link: "https://www.google.co.uk",
+                                }),
+                            ],
+                        },
+                    },
+                });
+                expect(output).to.not.be.undefined;
+            });
+        });
+
+        describe("document.xml without attributes on w:document", () => {
+            const MOCK_XML_NO_ATTRS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document>
+    <w:body>
+        <w:p>
+            <w:r>
+                <w:t>Hello {{name}}</w:t>
+            </w:r>
+        </w:p>
+    </w:body>
+</w:document>`;
+
+            const template = zip({
+                "word/document.xml": MOCK_XML_NO_ATTRS,
+                "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`,
+            });
+
+            it("should patch a document whose w:document element has no attributes", async () => {
+                const output = await patchDocument({
+                    outputType: "uint8array",
+                    data: template,
+                    patches: {
+                        name: {
+                            type: PatchType.PARAGRAPH,
+                            children: [new TextRun("World")],
+                        },
+                    },
+                });
+                expect(output).to.not.be.undefined;
+            });
+        });
+
+        describe("document.xml", () => {
+            const template = zip({ "word/document.xml": MOCK_XML });
+
+            it("should throw an error if the content types is not found", () =>
+                expect(
+                    patchDocument({
+                        outputType: "uint8array",
+                        data: template,
+                        patches: {
+                            image_test: {
+                                type: PatchType.PARAGRAPH,
+                                children: [
+                                    new ImageRun({
+                                        type: "png",
+                                        data: Buffer.from(""),
+                                        transformation: { width: 100, height: 100 },
+                                    }),
+                                ],
+                            },
+                        },
+                    }),
+                ).rejects.toThrowError());
+        });
+
+        describe("A document with a theme", () => {
+            // cspell:ignore srgbClr
+            const theme = (accent1: string): string =>
+                `<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:themeElements><a:clrScheme name="Office"><a:accent1><a:srgbClr val="${accent1}"/></a:accent1></a:clrScheme></a:themeElements></a:theme>`;
+
+            const createZip = (files: readonly (readonly [string, string])[]): Uint8Array =>
+                zip({
+                    "word/document.xml": MOCK_XML,
+                    "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`,
+                    ...Object.fromEntries(files),
+                });
+
+            const patchName = async (template: Uint8Array): Promise<string> => {
+                const output = await patchDocument({
+                    outputType: "uint8array",
+                    data: template,
+                    patches: {
+                        name: {
+                            type: PatchType.PARAGRAPH,
+                            children: [new TextRun({ text: "John Doe", color: { theme: "accent1", darker: 25 } })],
+                        },
+                    },
+                });
+                return textOf(unzip(output), "word/document.xml")!;
+            };
+
+            it("should write theme colors with the hex color they come to in the document's theme", async () => {
+                const document = await patchName(
+                    createZip([
+                        [
+                            "word/_rels/document.xml.rels",
+                            `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/></Relationships>`,
+                        ],
+                        // Office 2007's first accent color
+                        ["word/theme/theme1.xml", theme("4F81BD")],
+                    ]),
+                );
+                expect(document).to.include(`<w:color w:val="366091" w:themeColor="accent1" w:themeShade="BF"/>`);
+            });
+
+            it("should use Office's colors in a document without a theme", async () => {
+                const document = await patchName(createZip([]));
+                expect(document).to.include(`<w:color w:val="2F5496" w:themeColor="accent1" w:themeShade="BF"/>`);
+            });
+        });
+
+        describe("Images", () => {
+            const template = zip({ "word/document.xml": MOCK_XML, "word/document.bmp": "" });
+
+            it("should throw an error if the content types is not found", () =>
+                expect(
+                    patchDocument({
+                        outputType: "uint8array",
+                        data: template,
+                        patches: {
+                            image_test: {
+                                type: PatchType.PARAGRAPH,
+                                children: [
+                                    new ImageRun({
+                                        type: "png",
+                                        data: Buffer.from(""),
+                                        transformation: { width: 100, height: 100 },
+                                    }),
+                                ],
+                            },
+                        },
+                    }),
+                ).rejects.toThrowError());
+        });
+
+        describe("A placeholder that is in a paragraph twice", () => {
+            const patchName = async (patch: IPatch, recursive?: boolean): Promise<readonly string[]> => {
+                const output = await patchDocument({
+                    outputType: "uint8array",
+                    data: zip({
+                        "word/document.xml": `<w:document><w:body><w:p><w:r><w:t>{{name}} and {{name}}</w:t></w:r></w:p></w:body></w:document>`,
+                        "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`,
+                    }),
+                    patches: { name: patch },
+                    recursive,
+                });
+                return traverse(toJson(textOf(unzip(output), "word/document.xml")!)).map((p) => p.text);
+            };
+
+            it("should replace both, and not the placeholder in a paragraph patch's own content", async () => {
+                const texts = await patchName({ type: PatchType.PARAGRAPH, children: [new TextRun("[{{name}}]")] });
+                expect(texts).to.deep.equal(["[{{name}}] and [{{name}}]"]);
+            });
+
+            it("should replace the paragraph once, and not the placeholder in a document patch's own content", async () => {
+                const texts = await patchName({ type: PatchType.DOCUMENT, children: [new Paragraph("again {{name}}")] });
+                expect(texts).to.deep.equal(["again {{name}}"]);
+            });
+
+            it("should only replace the first if recursive is false", async () => {
+                const texts = await patchName({ type: PatchType.PARAGRAPH, children: [new TextRun("John")] }, false);
+                expect(texts).to.deep.equal(["John and {{name}}"]);
+            });
+        });
+
+        describe("Placeholders with spaces inside their delimiters", () => {
+            // Patches a template with this body, and a header with {{ name }}, and returns the texts of their paragraphs
+            const patchTexts = async (
+                body: string,
+                options: Omit<PatchDocumentOptions, "outputType" | "data">,
+            ): Promise<{ readonly body: readonly string[]; readonly header: readonly string[] }> => {
+                const template = zip({
+                    "word/document.xml": `<w:document><w:body>${body}</w:body></w:document>`,
+                    "word/header1.xml": `<w:hdr><w:p><w:r><w:t>{{ name }}</w:t></w:r></w:p></w:hdr>`,
+                    "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`,
+                });
+                const patched = unzip(await patchDocument({ outputType: "uint8array", data: template, ...options }));
+                const textsOf = (path: string): readonly string[] => traverse(toJson(textOf(patched, path)!)).map((p) => p.text);
+                return { body: textsOf("word/document.xml"), header: textsOf("word/header1.xml") };
+            };
+            const text = (value: string): IPatch => ({ type: PatchType.PARAGRAPH, children: [new TextRun(value)] });
+            // {{ name }} split across runs, as Word often saves it, with the first run bold
+            const SPLIT =
+                `<w:p><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">Dear {{ </w:t></w:r><w:r><w:t>name</w:t></w:r>` +
+                `<w:r><w:t xml:space="preserve"> }}, and {{name }}</w:t></w:r></w:p>`;
+
+            it("should patch them with trimPlaceholders, in every part, even when split across runs", async () => {
+                const texts = await patchTexts(SPLIT, { patches: { name: text("Ada") }, trimPlaceholders: true });
+
+                expect(texts).to.deep.equal({ body: ["Dear Ada, and Ada"], header: ["Ada"] });
+            });
+
+            it("should leave them without trimPlaceholders", async () => {
+                const texts = await patchTexts(SPLIT, { patches: { name: text("Ada") } });
+
+                expect(texts).to.deep.equal({ body: ["Dear {{ name }}, and {{name }}"], header: ["{{ name }}"] });
+            });
+
+            it("should keep patching the placeholder of a key with spaces at its ends exactly", async () => {
+                const texts = await patchTexts("<w:p/>", { patches: { " name ": text("Ada") }, trimPlaceholders: true });
+
+                expect(texts.header).to.deep.equal(["Ada"]);
+            });
+
+            it("should replace the paragraph of a document patch", async () => {
+                const texts = await patchTexts(SPLIT, {
+                    patches: { name: { type: PatchType.DOCUMENT, children: [new Paragraph("Replaced")] } },
+                    trimPlaceholders: true,
+                });
+
+                expect(texts.body).to.deep.equal(["Replaced"]);
+            });
+
+            it("should repeat the rows of a table whose fields have spaces inside their delimiters", async () => {
+                const cell = (value: string): string => `<w:tc><w:p><w:r><w:t xml:space="preserve">${value}</w:t></w:r></w:p></w:tc>`;
+                const texts = await patchTexts(`<w:tbl><w:tr>${cell("{{ items.name }}")}${cell("{{items.price }}")}</w:tr></w:tbl>`, {
+                    patches: {
+                        items: {
+                            type: PatchType.TABLE_ROWS,
+                            rows: [
+                                { name: text("Apples"), price: text("1.20") },
+                                { name: text("Pears"), price: undefined },
+                            ],
+                        },
+                    },
+                    trimPlaceholders: true,
+                });
+
+                expect(texts.body).to.deep.equal(["Apples", "1.20", "Pears", ""]);
+            });
+        });
+
+        describe("Hyperlinks", () => {
+            it.each([
+                ["255 literal characters", "a".repeat(255), true],
+                ["256 literal characters", "a".repeat(256), false],
+                ["255 characters including another hash", `${"a".repeat(127)}#${"b".repeat(127)}`, true],
+                ["256 characters including another hash", `${"a".repeat(127)}#${"b".repeat(128)}`, false],
+                ["255 characters of percent-encoded hashes", "%23".repeat(85), true],
+                ["256 characters of percent-encoded hashes", `${"%23".repeat(85)}x`, false],
+                ["255 UTF-16 units including astral characters", `${"😀".repeat(127)}a`, true],
+                ["256 UTF-16 units including astral characters", "😀".repeat(128), false],
+            ] as const)("should preserve the full URL in an inline patch with %s", async (_description, fragment, useAnchor) => {
+                const template = await Packer.toBuffer(new File({ sections: [{ children: [new Paragraph("{{link}}")] }] }));
+                const target = "https://example.com/?a=1&b=2";
+                const link = `${target}#${fragment}`;
+                const patched = unzip(
+                    await patchDocument({
+                        data: template,
+                        outputType: "nodebuffer",
+                        patches: {
+                            link: {
+                                type: PatchType.PARAGRAPH,
+                                children: [new ExternalHyperlink({ link, children: [new TextRun("Link")] })],
+                            },
+                        },
+                    }),
+                );
+                const xml = new DOMParser().parseFromString(textOf(patched, "word/document.xml")!, "text/xml");
+                const hyperlink = xml.getElementsByTagName("w:hyperlink")[0];
+                expect(hyperlink.hasAttribute("w:anchor")).to.equal(useAnchor);
+                if (useAnchor) {
+                    expect(hyperlink.getAttribute("w:anchor")).to.equal(fragment);
+                }
+                const relationships = new DOMParser().parseFromString(textOf(patched, "word/_rels/document.xml.rels")!, "text/xml");
+                const matches = [...relationships.getElementsByTagName("Relationship")].filter(
+                    (relationship) => relationship.getAttribute("Id") === hyperlink.getAttribute("r:id"),
+                );
+                expect(matches).to.have.length(1);
+                expect(matches[0].getAttribute("Target")).to.equal(useAnchor ? target : link);
+                expect(matches[0].getAttribute("TargetMode")).to.equal("External");
+            });
+
+            it("should add a hyperlink's relationship only to the parts that have its placeholder", async () => {
+                const template = zip({
+                    "word/document.xml": `<w:document><w:body><w:p><w:r><w:t>Body</w:t></w:r></w:p></w:body></w:document>`,
+                    "word/header1.xml": `<w:hdr><w:p><w:r><w:t>{{link}}</w:t></w:r></w:p></w:hdr>`,
+                    "word/styles.xml": `<w:styles/>`,
+                    "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`,
+                });
+
+                const output = await patchDocument({
+                    outputType: "uint8array",
+                    data: template,
+                    patches: {
+                        link: {
+                            type: PatchType.PARAGRAPH,
+                            children: [new ExternalHyperlink({ link: "https://example.com", children: [new TextRun("Example")] })],
+                        },
+                    },
+                });
+
+                const patched = unzip(output);
+                expect(textOf(patched, "word/_rels/header1.xml.rels")).to.contain('Target="https://example.com" TargetMode="External"');
+                expect(patched.has("word/_rels/document.xml.rels")).to.equal(false);
+                expect(patched.has("word/_rels/styles.xml.rels")).to.equal(false);
+            });
+
+            it.each([
+                [PatchType.PARAGRAPH, "document"],
+                [PatchType.PARAGRAPH, "header1"],
+                [PatchType.DOCUMENT, "document"],
+                [PatchType.DOCUMENT, "header1"],
+            ] as const)("should preserve external hyperlink fragments in a %s patch in %s", async (type, part) => {
+                const template = await Packer.toBuffer(
+                    new File({
+                        sections: [
+                            {
+                                children: [new Paragraph(part === "document" ? "{{link}}" : "Body")],
+                                headers: { default: new Header({ children: [new Paragraph(part === "header1" ? "{{link}}" : "Header")] }) },
+                            },
+                        ],
+                    }),
+                );
+                const hyperlink = new ExternalHyperlink({
+                    link: "https://example.com/?a=1&b=2#foo#bar",
+                    children: [new TextRun({ text: "Link", bold: true })],
+                });
+                const patched = unzip(
+                    await patchDocument({
+                        data: template,
+                        outputType: "nodebuffer",
+                        patches: {
+                            link:
+                                type === PatchType.PARAGRAPH
+                                    ? { type, children: [hyperlink] }
+                                    : { type, children: [new Paragraph({ children: [hyperlink] })] },
+                        },
+                    }),
+                );
+
+                const xml = textOf(patched, `word/${part}.xml`)!;
+                const [tag] = xml.match(/<w:hyperlink [^>]+>/)!;
+                expect(tag).to.contain('w:anchor="foo#bar"');
+                const [, id] = tag.match(/r:id="([^"]+)"/)!;
+                const relationships = textOf(patched, `word/_rels/${part}.xml.rels`)!;
+                expect(relationships).to.match(
+                    new RegExp(`Id="${id}"[^>]*Target="https://example.com/\\?a=1&amp;b=2" TargetMode="External"`),
+                );
+                expect(xml).to.contain("<w:b/>");
+            });
+
+            it("should link a picture in a patched hyperlink to the full address, as a picture's link has no anchor", async () => {
+                const template = await Packer.toBuffer(new File({ sections: [{ children: [new Paragraph("{{link}}")] }] }));
+                const patched = unzip(
+                    await patchDocument({
+                        data: template,
+                        outputType: "nodebuffer",
+                        patches: {
+                            link: {
+                                type: PatchType.PARAGRAPH,
+                                children: [
+                                    new ExternalHyperlink({
+                                        link: "https://example.com/page#section",
+                                        children: [
+                                            new ImageRun({ type: "png", data: Buffer.from(""), transformation: { width: 10, height: 10 } }),
+                                        ],
+                                    }),
+                                ],
+                            },
+                        },
+                    }),
+                );
+
+                const xml = textOf(patched, "word/document.xml")!;
+                const relationships = textOf(patched, "word/_rels/document.xml.rels")!;
+                const targetOf = (id: string): string | undefined =>
+                    relationships.match(new RegExp(`<Relationship Id="${id}"[^>]*Target="([^"]+)"`))?.[1];
+
+                const [, hyperlinkId] = xml.match(/<w:hyperlink [^>]*r:id="([^"]+)"/)!;
+                expect(targetOf(hyperlinkId)).to.equal("https://example.com/page");
+                const clickIds = [...xml.matchAll(/<a:hlinkClick [^>]*r:id="([^"]+)"/g)].map(([, id]) => id);
+                expect(clickIds).to.have.length(2);
+                for (const id of clickIds) {
+                    expect(targetOf(id)).to.equal("https://example.com/page#section");
+                }
+            });
+
+            // https://github.com/dolanmiu/docx/issues/3265
+            it("should link to the address, with the link's text formatted as the placeholder is", async () => {
+                const template = zip({
+                    "word/document.xml": `<w:document><w:body><w:p><w:r><w:rPr><w:sz w:val="56"/></w:rPr><w:t>{{link}}</w:t></w:r></w:p></w:body></w:document>`,
+                    "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`,
+                });
+
+                const output = await patchDocument({
+                    outputType: "uint8array",
+                    data: template,
+                    patches: {
+                        link: {
+                            type: PatchType.PARAGRAPH,
+                            children: [
+                                new ExternalHyperlink({
+                                    link: "https://example.com/projects/1",
+                                    children: [new TextRun({ text: "Project details", color: "0563C1", underline: {} })],
+                                }),
+                            ],
+                        },
+                    },
+                });
+
+                const patched = unzip(output);
+                const [, relationshipId] = textOf(patched, "word/document.xml")!.match(
+                    /<w:hyperlink [^>]*r:id="([^"]+)"><w:r><w:rPr><w:color w:val="0563C1"\/><w:sz w:val="56"\/><w:u w:val="single"\/><\/w:rPr>/,
+                )!;
+                expect(textOf(patched, "word/_rels/document.xml.rels")).to.match(
+                    new RegExp(`Id="${relationshipId}"[^>]*Target="https://example.com/projects/1" TargetMode="External"`),
+                );
+            });
+        });
+
+        describe("Text with an escaped ampersand", () => {
+            it("should keep a literal &amp; in the template's text and in a patch's", async () => {
+                const template = await Packer.toBuffer(
+                    new File({ sections: [{ children: [new Paragraph("Write &amp; for & in HTML"), new Paragraph("{{patch}}")] }] }),
+                );
+                const patched = unzip(
+                    await patchDocument({
+                        outputType: "nodebuffer",
+                        data: template,
+                        patches: { patch: { type: PatchType.PARAGRAPH, children: [new TextRun("R&amp;D & more")] } },
+                    }),
+                );
+                const document = textOf(patched, "word/document.xml") ?? "";
+
+                expect(document).to.contain("Write &amp;amp; for &amp; in HTML");
+                expect(document).to.contain("R&amp;amp;D &amp; more");
+            });
+
+            it("should keep a literal &amp; and &lt; in the template's attributes and in a patch's", async () => {
+                const template = await Packer.toBuffer(
+                    new File({
+                        sections: [
+                            {
+                                children: [
+                                    new Paragraph({ children: [new Bookmark({ id: "Q&amp;A &lt;1&gt;", children: [new TextRun("A")] })] }),
+                                    new Paragraph("{{patch}}"),
+                                ],
+                            },
+                        ],
+                    }),
+                );
+                const patched = unzip(
+                    await patchDocument({
+                        outputType: "nodebuffer",
+                        data: template,
+                        patches: {
+                            patch: {
+                                type: PatchType.PARAGRAPH,
+                                children: [new Bookmark({ id: "R&amp;D & <2>", children: [new TextRun("B")] })],
+                            },
+                        },
+                    }),
+                );
+                const document = textOf(patched, "word/document.xml") ?? "";
+
+                expect(document).to.contain('w:name="Q&amp;amp;A &amp;lt;1&amp;gt;"');
+                expect(document).to.contain('w:name="R&amp;amp;D &amp; &lt;2&gt;"');
+            });
+        });
+
+        describe("A part whose relationships part is empty", () => {
+            it("should add the relationships of its patches, such as an image's in a header", async () => {
+                // docx writes an empty <Relationships/> for a header that refers to nothing
+                const template = await Packer.toBuffer(
+                    new File({
+                        sections: [{ headers: { default: new Header({ children: [new Paragraph("{{image}}")] }) }, children: [] }],
+                    }),
+                );
+                const output = await patchDocument({
+                    outputType: "nodebuffer",
+                    data: template,
+                    patches: {
+                        image: {
+                            type: PatchType.PARAGRAPH,
+                            children: [new ImageRun({ type: "png", data: Buffer.from(""), transformation: { width: 100, height: 100 } })],
+                        },
+                    },
+                });
+                expect(textOf(unzip(output), "word/_rels/header1.xml.rels")).to.match(
+                    /<Relationship Id="rId1" Type="http:\/\/schemas.openxmlformats.org\/officeDocument\/2006\/relationships\/image" Target="media\/[^"]+\.png"\/>/,
+                );
+            });
+        });
+
+        describe("A patch that adds a part to the package", () => {
+            const CHART_TYPE = "application/vnd.openxmlformats-officedocument.drawingml.chart+xml";
+            const CHART_RELATIONSHIP = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart";
+            const PACKAGE_RELATIONSHIP = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/package";
+
+            // Refers to a part, and adds it to the package when it is written, as ChartRun from docx/charts does
+            class PartReference extends XmlComponent {
+                public constructor(
+                    name: string,
+                    private readonly part: PackagePart,
+                ) {
+                    super(name);
+                    this.root.push(part.relationshipId);
+                }
+
+                public prepForXml(context: IContext): IXmlableObject | undefined {
+                    this.part.addTo(context);
+                    return super.prepForXml(context);
+                }
+            }
+
+            // A chart, with its workbook
+            const createChart = (): { readonly chart: PackagePart; readonly workbook: PackagePart } => {
+                const workbook = new PackagePart({
+                    folder: "embeddings",
+                    name: "Microsoft_Excel_Worksheet",
+                    extension: "xlsx",
+                    contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    relationshipType: PACKAGE_RELATIONSHIP,
+                    content: new Uint8Array([1, 2, 3]),
+                });
+                const chart = new PackagePart({
+                    folder: "charts",
+                    name: "chart",
+                    extension: "xml",
+                    contentType: CHART_TYPE,
+                    relationshipType: CHART_RELATIONSHIP,
+                    content: new BuilderElement({ name: "c:chartSpace", children: [new PartReference("c:externalData", workbook)] }),
+                });
+                return { chart, workbook };
+            };
+
+            const runWith = (part: PackagePart): Run => {
+                const run = new Run({});
+                run.addChildElement(new PartReference("c:chart", part));
+                return run;
+            };
+
+            const patchWith = async (
+                template: Buffer,
+                patches: Readonly<Record<string, IPatch>>,
+            ): Promise<ReadonlyMap<string, Uint8Array>> =>
+                unzip(await patchDocument({ outputType: "nodebuffer", data: template, patches }));
+
+            const read = (files: ReadonlyMap<string, Uint8Array>, path: string): string | undefined => textOf(files, path);
+
+            it("should write the part, the parts it refers to, their content types and the relationships to them", async () => {
+                const template = await Packer.toBuffer(new File({ sections: [{ children: [new Paragraph("{{chart}}")] }] }));
+                const { chart, workbook } = createChart();
+                const files = await patchWith(template, { chart: { type: PatchType.PARAGRAPH, children: [runWith(chart)] } });
+
+                expect(read(files, "word/document.xml")).to.contain(`<c:chart>${chart.relationshipId}</c:chart>`);
+                expect(read(files, "word/_rels/document.xml.rels")).to.contain(
+                    `<Relationship Id="${chart.relationshipId}" Type="${CHART_RELATIONSHIP}" Target="charts/chart1.xml"/>`,
+                );
+                expect(read(files, "word/charts/chart1.xml")).to.equal(
+                    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><c:chartSpace><c:externalData>${workbook.relationshipId}</c:externalData></c:chartSpace>`,
+                );
+                expect(read(files, "word/charts/_rels/chart1.xml.rels")).to.equal(
+                    `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+                        `<Relationship Id="${workbook.relationshipId}" Type="${PACKAGE_RELATIONSHIP}" Target="../embeddings/Microsoft_Excel_Worksheet1.xlsx"/></Relationships>`,
+                );
+                expect(files.get("word/embeddings/Microsoft_Excel_Worksheet1.xlsx")).to.deep.equal(new Uint8Array([1, 2, 3]));
+
+                const contentTypes = read(files, "[Content_Types].xml");
+                expect(contentTypes).to.contain(`<Override ContentType="${CHART_TYPE}" PartName="/word/charts/chart1.xml"/>`);
+                expect(contentTypes).to.contain(
+                    '<Override ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" PartName="/word/embeddings/Microsoft_Excel_Worksheet1.xlsx"/>',
+                );
+            });
+
+            it("should number the parts after the template's own, and add a part once however often it is used", async () => {
+                const own = createChart();
+                const template = await Packer.toBuffer(
+                    new File({
+                        sections: [
+                            {
+                                headers: { default: new Header({ children: [new Paragraph("{{header}}")] }) },
+                                children: [
+                                    new Paragraph({ children: [runWith(own.chart)] }),
+                                    new Paragraph("{{chart}} and {{chart}}"),
+                                    new Paragraph("{{other}}"),
+                                ],
+                            },
+                        ],
+                    }),
+                );
+                const first = createChart();
+                const second = createChart();
+                const files = await patchWith(template, {
+                    chart: { type: PatchType.PARAGRAPH, children: [runWith(first.chart)] },
+                    other: { type: PatchType.DOCUMENT, children: [new Paragraph({ children: [runWith(second.chart)] })] },
+                    header: { type: PatchType.PARAGRAPH, children: [runWith(first.chart)] },
+                });
+
+                expect([...files.keys()].filter((path) => /^word\/(charts|embeddings)\/[^/]+$/.test(path))).to.include.members([
+                    "word/charts/chart1.xml",
+                    "word/charts/chart2.xml",
+                    "word/charts/chart3.xml",
+                    "word/embeddings/Microsoft_Excel_Worksheet1.xlsx",
+                    "word/embeddings/Microsoft_Excel_Worksheet2.xlsx",
+                    "word/embeddings/Microsoft_Excel_Worksheet3.xlsx",
+                ]);
+                expect(files.has("word/charts/chart4.xml")).to.equal(false);
+                expect(read(files, "word/charts/chart2.xml")).to.contain(first.workbook.relationshipId);
+                expect(read(files, "word/charts/chart3.xml")).to.contain(second.workbook.relationshipId);
+                expect(read(files, "word/charts/_rels/chart2.xml.rels")).to.contain(
+                    'Target="../embeddings/Microsoft_Excel_Worksheet2.xlsx"',
+                );
+
+                const relationships = read(files, "word/_rels/document.xml.rels");
+                expect(relationships?.split(first.chart.relationshipId)).to.have.length(2);
+                expect(relationships).to.contain(
+                    `Id="${first.chart.relationshipId}" Type="${CHART_RELATIONSHIP}" Target="charts/chart2.xml"`,
+                );
+                expect(relationships).to.contain(
+                    `Id="${second.chart.relationshipId}" Type="${CHART_RELATIONSHIP}" Target="charts/chart3.xml"`,
+                );
+                expect(read(files, "word/_rels/header1.xml.rels")).to.contain(
+                    `Id="${first.chart.relationshipId}" Type="${CHART_RELATIONSHIP}" Target="charts/chart2.xml"`,
+                );
+                expect(read(files, "[Content_Types].xml")?.split('PartName="/word/charts/chart2.xml"')).to.have.length(2);
+            });
+
+            it("should throw when the document has no content types", async () => {
+                const template = zip({
+                    "word/document.xml": `<w:document><w:body><w:p><w:r><w:t>{{chart}}</w:t></w:r></w:p></w:body></w:document>`,
+                });
+
+                await expect(
+                    patchDocument({
+                        outputType: "nodebuffer",
+                        data: template,
+                        patches: { chart: { type: PatchType.PARAGRAPH, children: [runWith(createChart().chart)] } },
+                    }),
+                ).rejects.toThrow("Could not find content types file");
+            });
+        });
+
+        describe("Bookmarks", () => {
+            // Patches a template with this body, and a header if there is one, and returns a reader for the patched parts
+            const patchTemplate = async (
+                { body, header }: { readonly body: string; readonly header?: string },
+                patches: Readonly<Record<string, IPatch>>,
+            ): Promise<(path: string) => Promise<string | undefined>> => {
+                const template = zip({
+                    "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`,
+                    "word/document.xml": `<w:document><w:body>${body}</w:body></w:document>`,
+                    ...(header ? { "word/header1.xml": `<w:hdr>${header}</w:hdr>` } : {}),
+                });
+
+                const patched = unzip(await patchDocument({ outputType: "uint8array", data: template, patches }));
+                return (path) => Promise.resolve(textOf(patched, path));
+            };
+
+            // The id the bookmark was given when it was created
+            const bookmarkIdOf = (bookmark: Bookmark): number => new Formatter().format(bookmark.start)["w:bookmarkStart"]._attr["w:id"];
+
+            it("should insert a bookmark in a paragraph patch as its start, its children and its end", async () => {
+                const read = await patchTemplate(
+                    { body: `<w:p><w:r><w:t>See {{anchor}} now</w:t></w:r></w:p>` },
+                    { anchor: { type: PatchType.PARAGRAPH, children: [new Bookmark({ id: "anchor", children: [new TextRun("here")] })] } },
+                );
+
+                const document = toJson((await read("word/document.xml"))!);
+                const paragraph = document.elements![0].elements![0].elements![0];
+                const [left, start, text, end, right] = paragraph.elements!;
+
+                expect(traverse(document).map((p) => p.text)).to.deep.equal(["See here now"]);
+                expect([left, start, text, end, right].map((e) => e.name)).to.deep.equal([
+                    "w:r",
+                    "w:bookmarkStart",
+                    "w:r",
+                    "w:bookmarkEnd",
+                    "w:r",
+                ]);
+                expect(start.attributes!["w:name"]).to.equal("anchor");
+                expect(end.attributes!["w:id"]).to.equal(start.attributes!["w:id"]);
+            });
+
+            it("should insert a bookmark in a bookmark in a paragraph patch", async () => {
+                const read = await patchTemplate(
+                    { body: `<w:p><w:r><w:t>{{anchor}}</w:t></w:r></w:p>` },
+                    {
+                        anchor: {
+                            type: PatchType.PARAGRAPH,
+                            children: [
+                                new Bookmark({
+                                    id: "outer",
+                                    children: [new TextRun("A"), new Bookmark({ id: "inner", children: [new TextRun("B")] })],
+                                }),
+                            ],
+                        },
+                    },
+                );
+
+                const document = (await read("word/document.xml"))!;
+                expect(document.match(/<w:bookmark(Start|End)[^>]*\/>/g)).to.have.length(4);
+                expect(document).to.match(
+                    /<w:bookmarkStart w:name="outer" w:id="(\d+)"\/><w:r>.*?A.*?<\/w:r><w:bookmarkStart w:name="inner" w:id="(\d+)"\/><w:r>.*?B.*?<\/w:r><w:bookmarkEnd w:id="\2"\/><w:bookmarkEnd w:id="\1"\/>/,
+                );
+            });
+
+            it("should add the relationship of a hyperlink in a bookmark in a paragraph patch", async () => {
+                const read = await patchTemplate(
+                    { body: `<w:p><w:r><w:t>{{link}}</w:t></w:r></w:p>` },
+                    {
+                        link: {
+                            type: PatchType.PARAGRAPH,
+                            children: [
+                                new Bookmark({
+                                    id: "link",
+                                    children: [new ExternalHyperlink({ link: "https://example.com", children: [new TextRun("Example")] })],
+                                }),
+                            ],
+                        },
+                    },
+                );
+
+                const [, relationshipId] = (await read("word/document.xml"))!.match(
+                    /<w:bookmarkStart [^>]*\/><w:hyperlink [^>]*r:id="([^"]+)"/,
+                )!;
+                expect(await read("word/_rels/document.xml.rels")).to.match(
+                    new RegExp(`Id="${relationshipId}"[^>]*Target="https://example.com" TargetMode="External"`),
+                );
+            });
+
+            it("should give an inserted bookmark a new id when the template already uses its id, in any part", async () => {
+                const bookmark = new Bookmark({ id: "inserted", children: [new TextRun("B")] });
+                const id = bookmarkIdOf(bookmark);
+                const read = await patchTemplate(
+                    {
+                        body:
+                            `<w:p><w:bookmarkStart w:id="${id}" w:name="existing"/><w:r><w:t>A</w:t></w:r><w:bookmarkEnd w:id="${id}"/></w:p>` +
+                            `<w:p><w:r><w:t>{{slot}}</w:t></w:r></w:p>`,
+                        header: `<w:p><w:bookmarkStart w:id="${id + 1}" w:name="header"/><w:bookmarkEnd w:id="${id + 1}"/></w:p>`,
+                    },
+                    { slot: { type: PatchType.DOCUMENT, children: [new Paragraph({ children: [bookmark] })] } },
+                );
+
+                const document = (await read("word/document.xml"))!;
+                expect(document).to.contain(`<w:bookmarkStart w:id="${id}" w:name="existing"/>`);
+                expect(document).to.contain(`<w:bookmarkStart w:name="inserted" w:id="${id + 2}"/>`);
+                expect(document.match(/<w:bookmarkEnd w:id="\d+"\/>/g)).to.deep.equal([
+                    `<w:bookmarkEnd w:id="${id}"/>`,
+                    `<w:bookmarkEnd w:id="${id + 2}"/>`,
+                ]);
+            });
+
+            it("should keep an inserted bookmark's id when the template does not use it", async () => {
+                const bookmark = new Bookmark({ id: "inserted", children: [new TextRun("B")] });
+                const id = bookmarkIdOf(bookmark);
+                const read = await patchTemplate(
+                    {
+                        body:
+                            `<w:p><w:bookmarkStart w:id="${id + 100}" w:name="existing"/><w:bookmarkEnd w:id="${id + 100}"/></w:p>` +
+                            `<w:p><w:r><w:t>{{slot}}</w:t></w:r></w:p>`,
+                    },
+                    { slot: { type: PatchType.DOCUMENT, children: [new Paragraph({ children: [bookmark] })] } },
+                );
+
+                expect(await read("word/document.xml")).to.contain(`<w:bookmarkStart w:name="inserted" w:id="${id}"/>`);
+            });
+        });
+
+        describe("Drawings", () => {
+            // Patches a template with this body, and a header if there is one, and returns a reader for the patched parts
+            const patchTemplate = async (
+                { body, header }: { readonly body: string; readonly header?: string },
+                options: Omit<PatchDocumentOptions, "outputType" | "data">,
+            ): Promise<(path: string) => Promise<string | undefined>> => {
+                const template = zip({
+                    "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types/>`,
+                    "word/document.xml": `<w:document><w:body>${body}</w:body></w:document>`,
+                    ...(header ? { "word/header1.xml": `<w:hdr>${header}</w:hdr>` } : {}),
+                });
+
+                const patched = unzip(await patchDocument({ outputType: "uint8array", data: template, ...options }));
+                return (path) => Promise.resolve(textOf(patched, path));
+            };
+
+            const drawing = (id: number): string =>
+                `<w:r><w:drawing><wp:inline><wp:docPr id="${id}" name="Template"/></wp:inline></w:drawing></w:r>`;
+            // An image whose drawing has the id 1, as the first drawing made after docx is loaded does
+            const image = (): ImageRun =>
+                new ImageRun({
+                    type: "png",
+                    data: Buffer.from(""),
+                    transformation: { width: 10, height: 10 },
+                    altText: { name: "Inserted", id: "1" },
+                });
+            const drawingIdsIn = (xml: string | undefined): readonly number[] =>
+                [...xml!.matchAll(/<wp:docPr id="(\d+)"/g)].map(([, id]) => Number(id));
+
+            it("should give an inserted drawing an id no drawing in the template has, in any part", async () => {
+                const read = await patchTemplate(
+                    {
+                        body: `<w:p>${drawing(1)}</w:p><w:p><w:r><w:t>{{image}}</w:t></w:r></w:p>`,
+                        header: `<w:p>${drawing(2)}<w:r><w:t>{{image}}</w:t></w:r></w:p>`,
+                    },
+                    { patches: { image: { type: PatchType.PARAGRAPH, children: [image()] } } },
+                );
+
+                expect(drawingIdsIn(await read("word/document.xml"))).to.deep.equal([1, 3]);
+                expect(drawingIdsIn(await read("word/header1.xml"))).to.deep.equal([2, 4]);
+            });
+
+            it("should keep an inserted drawing's id when no drawing in the template has it", async () => {
+                const read = await patchTemplate(
+                    { body: `<w:p>${drawing(5)}</w:p><w:p><w:r><w:t>{{image}}</w:t></w:r></w:p>` },
+                    { patches: { image: { type: PatchType.DOCUMENT, children: [new Paragraph({ children: [image()] })] } } },
+                );
+
+                expect(drawingIdsIn(await read("word/document.xml"))).to.deep.equal([5, 1]);
+            });
+
+            it("should give a drawing a new id for each occurrence of its placeholder", async () => {
+                const read = await patchTemplate(
+                    { body: `<w:p><w:r><w:t>{{image}} and {{image}}</w:t></w:r></w:p>` },
+                    { patches: { image: { type: PatchType.PARAGRAPH, children: [image()] } } },
+                );
+
+                expect(drawingIdsIn(await read("word/document.xml"))).to.deep.equal([1, 2]);
+            });
+
+            it("should give the drawings in each copy of a footnote ids of their own", async () => {
+                const read = await patchTemplate(
+                    { body: `<w:p>${drawing(1)}<w:r><w:t>{{note}} and {{note}}</w:t></w:r></w:p>` },
+                    {
+                        patches: { note: { type: PatchType.PARAGRAPH, children: [new FootnoteReferenceRun(1)] } },
+                        footnotes: { 1: { children: [new Paragraph({ children: [image()] })] } },
+                    },
+                );
+
+                expect(drawingIdsIn(await read("word/document.xml"))).to.deep.equal([1]);
+                expect(drawingIdsIn(await read("word/footnotes.xml"))).to.deep.equal([2, 3]);
+            });
+        });
+
+        describe("Table rows", () => {
+            // Patches a template with this body, and a header if there is one, and returns a reader for the patched parts
+            const patchTemplate = async (
+                { body, header }: { readonly body: string; readonly header?: string },
+                patches: PatchDocumentOptions["patches"],
+            ): Promise<(path: string) => Promise<string | undefined>> => {
+                const template = zip({
+                    "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`,
+                    "word/document.xml": `<w:document><w:body>${body}</w:body></w:document>`,
+                    ...(header ? { "word/header1.xml": `<w:hdr>${header}</w:hdr>` } : {}),
+                });
+
+                const patched = unzip(await patchDocument({ outputType: "uint8array", data: template, patches }));
+                return (path) => Promise.resolve(textOf(patched, path));
+            };
+
+            const text = (value: string): IPatch => ({ type: PatchType.PARAGRAPH, children: [new TextRun(value)] });
+            const cell = (value: string): string => `<w:tc><w:p><w:r><w:t>${value}</w:t></w:r></w:p></w:tc>`;
+            const TABLE = `<w:tbl><w:tblPr/><w:tblGrid/><w:tr>${cell("Name")}${cell("Price")}</w:tr><w:tr>${cell("{{items.name}}")}${cell("{{currency}}{{items.price}}")}</w:tr></w:tbl>`;
+            const textsOf = (xml: string | undefined): readonly string[] => traverse(toJson(xml!)).map((p) => p.text);
+
+            it("should repeat the rows, and then patch the other placeholders in every copy, whatever the order of the patches", async () => {
+                const read = await patchTemplate(
+                    { body: TABLE },
+                    {
+                        currency: text("£"),
+                        items: {
+                            type: PatchType.TABLE_ROWS,
+                            rows: [
+                                { name: text("Apples"), price: text("1.20") },
+                                { name: text("Pears"), price: undefined },
+                            ],
+                        },
+                    },
+                );
+
+                expect(textsOf(await read("word/document.xml"))).to.deep.equal(["Name", "Price", "Apples", "£1.20", "Pears", "£"]);
+            });
+
+            it("should repeat the rows of a table in a header", async () => {
+                const read = await patchTemplate(
+                    { body: "<w:p/>", header: TABLE },
+                    { items: { type: PatchType.TABLE_ROWS, rows: [{ name: text("Apples"), price: text("1.20") }] } },
+                );
+
+                expect(textsOf(await read("word/header1.xml"))).to.deep.equal(["Name", "Price", "Apples", "{{currency}}1.20"]);
+            });
+
+            it("should add a relationship for the hyperlink in each copy of a row", async () => {
+                const link = (url: string): IPatch => ({
+                    type: PatchType.PARAGRAPH,
+                    children: [new ExternalHyperlink({ link: url, children: [new TextRun(url)] })],
+                });
+                const read = await patchTemplate(
+                    { body: TABLE },
+                    {
+                        items: {
+                            type: PatchType.TABLE_ROWS,
+                            rows: [{ name: link("https://example.com/apples") }, { name: link("https://example.com/pears") }],
+                        },
+                    },
+                );
+
+                const relationshipIds = [...(await read("word/document.xml"))!.matchAll(/<w:hyperlink [^>]*r:id="([^"]+)"/g)].map(
+                    (m) => m[1],
+                );
+                const relationships = (await read("word/_rels/document.xml.rels"))!;
+                expect(relationshipIds).to.have.length(2);
+                expect(relationships).to.match(new RegExp(`Id="${relationshipIds[0]}"[^>]*Target="https://example.com/apples"`));
+                expect(relationships).to.match(new RegExp(`Id="${relationshipIds[1]}"[^>]*Target="https://example.com/pears"`));
+            });
+
+            it("should throw for a row's field that isn't a patch, naming the field", async () => {
+                await expect(
+                    patchTemplate(
+                        { body: TABLE },
+                        { items: { type: PatchType.TABLE_ROWS, rows: [{ name: "Apples" as unknown as IPatch }] } },
+                    ),
+                ).rejects.toThrow(
+                    'Invalid patch "items.name". Expected { type: PatchType.PARAGRAPH or PatchType.DOCUMENT, children: [...] }, or { type: PatchType.TABLE_ROWS, rows: [...] }',
+                );
+            });
+
+            it("should throw for a drawing patch for a row's field", async () => {
+                const drawing = { type: PatchType.DRAWING, patch: () => undefined } as unknown as IPatch;
+                await expect(
+                    patchTemplate({ body: TABLE }, { items: { type: PatchType.TABLE_ROWS, rows: [{ name: drawing }] } }),
+                ).rejects.toThrow('Invalid patch "items.name"');
+            });
+
+            it("should throw for rows that aren't objects, or a table rows patch without rows", async () => {
+                await expect(
+                    patchTemplate(
+                        { body: TABLE },
+                        { items: { type: PatchType.TABLE_ROWS, rows: [null as unknown as TableRowsPatch["rows"][number]] } },
+                    ),
+                ).rejects.toThrow('Invalid patch "items". Expected each of its rows to be an object of patches');
+                await expect(
+                    patchTemplate({ body: TABLE }, { items: { type: PatchType.TABLE_ROWS } as unknown as TableRowsPatch }),
+                ).rejects.toThrow('Invalid patch "items"');
+            });
+        });
+
+        describe("Footnotes and endnotes", () => {
+            const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+            const FOOTNOTES_RELATIONSHIP = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes";
+            const FOOTNOTE_MARK = `<w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteRef/></w:r>`;
+
+            // A template made in Word without footnotes or endnotes, which has no part for them
+            const templateWithoutNotes = ({
+                body,
+                relationships = true,
+                styles,
+            }: {
+                readonly body: string;
+                readonly relationships?: boolean;
+                readonly styles?: string;
+            }): Uint8Array =>
+                zip({
+                    "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>`,
+                    "word/document.xml": `<w:document xmlns:w="${W}"><w:body>${body}</w:body></w:document>`,
+                    ...(relationships
+                        ? {
+                              "word/_rels/document.xml.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>`,
+                          }
+                        : {}),
+                    ...(styles !== undefined ? { "word/styles.xml": `<w:styles xmlns:w="${W}">${styles}</w:styles>` } : {}),
+                });
+
+            const patchWith = async (
+                template: Buffer | Uint8Array,
+                options: Omit<Parameters<typeof patchDocument>[0], "outputType" | "data">,
+            ): Promise<(path: string) => Promise<string | undefined>> => {
+                const patched = unzip(await patchDocument({ outputType: "nodebuffer", data: template, ...options }));
+                return (path) => Promise.resolve(textOf(patched, path));
+            };
+
+            const noteWithText = (text: string): { readonly children: readonly Paragraph[] } => ({ children: [new Paragraph(text)] });
+
+            it("should write a footnote for a reference a patch inserts, with an id the template's footnotes don't have", async () => {
+                const template = await Packer.toBuffer(
+                    new File({
+                        sections: [
+                            {
+                                children: [
+                                    new Paragraph({ children: [new TextRun("Existing"), new FootnoteReferenceRun(1)] }),
+                                    new Paragraph("{{note}}"),
+                                ],
+                            },
+                        ],
+                        footnotes: { 1: noteWithText("Existing footnote") },
+                    }),
+                );
+                const read = await patchWith(template, {
+                    patches: { note: { type: PatchType.PARAGRAPH, children: [new TextRun("New"), new FootnoteReferenceRun(1)] } },
+                    footnotes: { 1: noteWithText("New footnote") },
+                });
+
+                const document = (await read("word/document.xml"))!;
+                expect(document.match(/<w:footnoteReference w:id="\d+"\/>/g)).to.deep.equal([
+                    '<w:footnoteReference w:id="1"/>',
+                    '<w:footnoteReference w:id="2"/>',
+                ]);
+                expect(document).to.match(
+                    /New<\/w:t><\/w:r><w:r><w:rPr><w:rStyle w:val="FootnoteReference"\/><\/w:rPr><w:footnoteReference w:id="2"\/>/,
+                );
+
+                const footnotes = (await read("word/footnotes.xml"))!;
+                expect(footnotes.match(/<w:footnote [^>]*>/g)).to.deep.equal([
+                    '<w:footnote w:type="separator" w:id="-1">',
+                    '<w:footnote w:type="continuationSeparator" w:id="0">',
+                    '<w:footnote w:id="1">',
+                    '<w:footnote w:id="2">',
+                ]);
+                expect(footnotes).to.contain("Existing footnote");
+                expect(footnotes).to.contain(
+                    `<w:footnote w:id="2"><w:p>${FOOTNOTE_MARK}<w:r><w:t xml:space="preserve">New footnote</w:t></w:r></w:p></w:footnote>`,
+                );
+
+                // The template already has the footnotes' part, and the footnote styles
+                expect((await read("word/_rels/document.xml.rels"))?.split(FOOTNOTES_RELATIONSHIP)).to.have.length(2);
+                expect((await read("[Content_Types].xml"))?.split('PartName="/word/footnotes.xml"')).to.have.length(2);
+                expect((await read("word/styles.xml"))?.split('w:styleId="FootnoteReference"')).to.have.length(2);
+            });
+
+            it("should add a part for the footnotes, its relationship, its content type and the missing footnote styles to a template without them", async () => {
+                const read = await patchWith(
+                    templateWithoutNotes({
+                        body: `<w:p><w:r><w:t>{{note}}</w:t></w:r></w:p>`,
+                        styles: `<w:style w:type="character" w:styleId="FootnoteReference"><w:name w:val="footnote reference"/><w:rPr><w:b/></w:rPr></w:style>`,
+                    }),
+                    {
+                        patches: { note: { type: PatchType.PARAGRAPH, children: [new FootnoteReferenceRun(1)] } },
+                        footnotes: { 1: noteWithText("A footnote") },
+                    },
+                );
+
+                expect(await read("word/document.xml")).to.contain('<w:footnoteReference w:id="1"/>');
+                const footnotes = (await read("word/footnotes.xml"))!;
+                expect(footnotes).to.match(/^<\?xml version="1.0" encoding="UTF-8" standalone="yes"\?><w:footnotes [^>]*xmlns:w="[^"]+"/);
+                expect(footnotes.match(/<w:footnote [^>]*>/g)).to.deep.equal([
+                    '<w:footnote w:type="separator" w:id="-1">',
+                    '<w:footnote w:type="continuationSeparator" w:id="0">',
+                    '<w:footnote w:id="1">',
+                ]);
+                expect(footnotes).to.contain("A footnote");
+
+                expect(await read("word/_rels/document.xml.rels")).to.match(
+                    /<Relationship Id="rId[^"]+" Type="http:\/\/schemas\.openxmlformats\.org\/officeDocument\/2006\/relationships\/footnotes" Target="footnotes\.xml"\/>/,
+                );
+                expect(await read("[Content_Types].xml")).to.contain(
+                    '<Override ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml" PartName="/word/footnotes.xml"/>',
+                );
+
+                // The template's own footnote reference style is kept
+                const styles = (await read("word/styles.xml"))!;
+                expect(styles.match(/w:styleId="[^"]+"/g)).to.deep.equal([
+                    'w:styleId="FootnoteReference"',
+                    'w:styleId="FootnoteText"',
+                    'w:styleId="FootnoteTextChar"',
+                ]);
+                expect(styles).to.contain("<w:b/>");
+            });
+
+            it("should write endnotes as footnotes, adding the relationships part to a template without one", async () => {
+                const read = await patchWith(
+                    templateWithoutNotes({ body: `<w:p><w:r><w:t>{{note}}</w:t></w:r></w:p>`, relationships: false, styles: "" }),
+                    {
+                        patches: { note: { type: PatchType.PARAGRAPH, children: [new TextRun("Text"), new EndnoteReferenceRun(3)] } },
+                        endnotes: { 3: noteWithText("An endnote") },
+                    },
+                );
+
+                expect(await read("word/document.xml")).to.contain('<w:endnoteReference w:id="1"/>');
+                const endnotes = (await read("word/endnotes.xml"))!;
+                expect(endnotes.match(/<w:endnote [^>]*>/g)).to.deep.equal([
+                    '<w:endnote w:type="separator" w:id="-1">',
+                    '<w:endnote w:type="continuationSeparator" w:id="0">',
+                    '<w:endnote w:id="1">',
+                ]);
+                expect(endnotes).to.contain(
+                    `<w:endnote w:id="1"><w:p><w:r><w:rPr><w:rStyle w:val="EndnoteReference"/></w:rPr><w:endnoteRef/></w:r><w:r><w:t xml:space="preserve">An endnote</w:t></w:r></w:p></w:endnote>`,
+                );
+                expect(await read("word/_rels/document.xml.rels")).to.match(
+                    /<Relationship Id="rId[^"]+" Type="http:\/\/schemas\.openxmlformats\.org\/officeDocument\/2006\/relationships\/endnotes" Target="endnotes\.xml"\/>/,
+                );
+                expect(await read("[Content_Types].xml")).to.contain('PartName="/word/endnotes.xml"');
+                expect((await read("word/styles.xml"))?.match(/w:styleId="[^"]+"/g)).to.deep.equal([
+                    'w:styleId="EndnoteText"',
+                    'w:styleId="EndnoteTextChar"',
+                    'w:styleId="EndnoteReference"',
+                ]);
+                expect(await read("word/footnotes.xml")).to.equal(undefined);
+            });
+
+            it("should give each reference a footnote of its own when a placeholder is patched more than once", async () => {
+                const read = await patchWith(
+                    templateWithoutNotes({
+                        body: `<w:p><w:r><w:t>{{note}} and {{note}}</w:t></w:r></w:p><w:p><w:r><w:t>{{block}}</w:t></w:r></w:p>`,
+                    }),
+                    {
+                        patches: {
+                            note: { type: PatchType.PARAGRAPH, children: [new FootnoteReferenceRun(1)] },
+                            block: {
+                                type: PatchType.DOCUMENT,
+                                children: [new Paragraph({ children: [new TextRun("Block"), new FootnoteReferenceRun(1)] })],
+                            },
+                        },
+                        footnotes: {
+                            1: {
+                                children: [
+                                    new Paragraph({
+                                        children: [
+                                            new ExternalHyperlink({ link: "https://example.com", children: [new TextRun("Source")] }),
+                                        ],
+                                    }),
+                                ],
+                            },
+                        },
+                    },
+                );
+
+                const ids = (await read("word/document.xml"))!.match(/<w:footnoteReference w:id="(\d+)"\/>/g);
+                expect(ids).to.have.length(3);
+                expect(new Set(ids).size).to.equal(3);
+
+                // The footnote's hyperlink is added once, and each copy of it refers to it
+                const footnotes = (await read("word/footnotes.xml"))!;
+                expect(footnotes.match(/<w:footnote w:id="\d+">/g)).to.deep.equal([
+                    '<w:footnote w:id="1">',
+                    '<w:footnote w:id="2">',
+                    '<w:footnote w:id="3">',
+                ]);
+                const [, relationshipId] = footnotes.match(/<w:hyperlink [^>]*r:id="([^"]+)"/)!;
+                expect(footnotes.split(`r:id="${relationshipId}"`)).to.have.length(4);
+                const relationships = (await read("word/_rels/footnotes.xml.rels"))!;
+                expect(relationships.match(/<Relationship /g)).to.have.length(1);
+                expect(relationships).to.contain(`Id="${relationshipId}"`);
+            });
+
+            it("should leave a reference to a footnote that isn't given as it is, and only write the footnotes that are referred to", async () => {
+                const template = await Packer.toBuffer(new File({ sections: [{ children: [new Paragraph("{{note}}")] }] }));
+                const read = await patchWith(template, {
+                    patches: { note: { type: PatchType.PARAGRAPH, children: [new FootnoteReferenceRun(5)] } },
+                    footnotes: { 1: noteWithText("Not referred to") },
+                    endnotes: { 1: noteWithText("Not referred to either") },
+                });
+
+                expect(await read("word/document.xml")).to.contain('<w:footnoteReference w:id="5"/>');
+                expect(await read("word/footnotes.xml")).not.to.contain("Not referred to");
+                expect(await read("word/endnotes.xml")).not.to.contain("Not referred to either");
+            });
+
+            it("should start a footnote with its number, after its first paragraph's properties", async () => {
+                const read = await patchWith(templateWithoutNotes({ body: `<w:p><w:r><w:t>{{note}}</w:t></w:r></w:p>` }), {
+                    patches: {
+                        note: { type: PatchType.PARAGRAPH, children: [new FootnoteReferenceRun(1), new FootnoteReferenceRun(2)] },
+                    },
+                    footnotes: {
+                        1: { children: [new Paragraph({ style: "FootnoteText", text: "First" }), new Paragraph("Second")] },
+                        2: { children: [new Paragraph({})] },
+                    },
+                });
+
+                const footnotes = (await read("word/footnotes.xml"))!;
+                expect(footnotes).to.contain(
+                    `<w:footnote w:id="1"><w:p><w:pPr><w:pStyle w:val="FootnoteText"/></w:pPr>${FOOTNOTE_MARK}<w:r><w:t xml:space="preserve">First</w:t></w:r></w:p>` +
+                        `<w:p><w:r><w:t xml:space="preserve">Second</w:t></w:r></w:p></w:footnote>`,
+                );
+                expect(footnotes).to.contain(`<w:footnote w:id="2"><w:p>${FOOTNOTE_MARK}</w:p></w:footnote>`);
+            });
+
+            it("should not change the footnotes' paragraphs, so they can be given to patchDocument again", async () => {
+                const footnotes = { 1: noteWithText("Reused") };
+                const patchOnce = async (): Promise<string | undefined> => {
+                    const read = await patchWith(templateWithoutNotes({ body: `<w:p><w:r><w:t>{{note}}</w:t></w:r></w:p>` }), {
+                        patches: { note: { type: PatchType.PARAGRAPH, children: [new FootnoteReferenceRun(1)] } },
+                        footnotes,
+                    });
+                    return read("word/footnotes.xml");
+                };
+
+                await patchOnce();
+                expect(await patchOnce()).to.contain(
+                    `<w:footnote w:id="1"><w:p>${FOOTNOTE_MARK}<w:r><w:t xml:space="preserve">Reused</w:t></w:r></w:p></w:footnote>`,
+                );
+            });
+
+            it("should add the relationship of an image in a footnote to the footnotes' relationships", async () => {
+                const read = await patchWith(templateWithoutNotes({ body: `<w:p><w:r><w:t>{{note}}</w:t></w:r></w:p>` }), {
+                    patches: { note: { type: PatchType.PARAGRAPH, children: [new FootnoteReferenceRun(1)] } },
+                    footnotes: {
+                        1: {
+                            children: [
+                                new Paragraph({
+                                    children: [
+                                        new ImageRun({ type: "png", data: Buffer.from(""), transformation: { width: 10, height: 10 } }),
+                                    ],
+                                }),
+                            ],
+                        },
+                    },
+                });
+
+                const [, relationshipId] = (await read("word/footnotes.xml"))!.match(/<a:blip r:embed="([^"]+)"/)!;
+                expect(await read("word/_rels/footnotes.xml.rels")).to.match(
+                    new RegExp(
+                        `<Relationship Id="${relationshipId}" Type="http://schemas\\.openxmlformats\\.org/officeDocument/2006/relationships/image" Target="media/[^"]+\\.png"/>`,
+                    ),
+                );
+                expect(await read("word/_rels/document.xml.rels")).not.to.contain("relationships/image");
+            });
+
+            it("should write the footnote a reference run brings with it, with an id none of the template's footnotes have", async () => {
+                const template = await Packer.toBuffer(
+                    new File({
+                        sections: [
+                            {
+                                children: [
+                                    new Paragraph({ children: [new TextRun("Existing"), new FootnoteReferenceRun(1)] }),
+                                    new Paragraph("{{note}}"),
+                                ],
+                            },
+                        ],
+                        footnotes: { 1: noteWithText("Existing footnote") },
+                    }),
+                );
+                const read = await patchWith(template, {
+                    patches: {
+                        note: {
+                            type: PatchType.PARAGRAPH,
+                            children: [new TextRun("New"), new FootnoteReferenceRun(noteWithText("Its own"))],
+                        },
+                    },
+                });
+
+                expect((await read("word/document.xml"))!.match(/<w:footnoteReference w:id="\d+"\/>/g)).to.deep.equal([
+                    '<w:footnoteReference w:id="1"/>',
+                    '<w:footnoteReference w:id="2"/>',
+                ]);
+                expect(await read("word/footnotes.xml")).to.contain(
+                    `<w:footnote w:id="2"><w:p>${FOOTNOTE_MARK}<w:r><w:t xml:space="preserve">Its own</w:t></w:r></w:p></w:footnote>`,
+                );
+            });
+
+            it("should write the notes reference runs bring with them alongside the notes given, without mixing their ids up", async () => {
+                const read = await patchWith(templateWithoutNotes({ body: `<w:p><w:r><w:t>{{note}}</w:t></w:r></w:p>` }), {
+                    patches: {
+                        note: {
+                            type: PatchType.PARAGRAPH,
+                            children: [
+                                new FootnoteReferenceRun(noteWithText("Carried")),
+                                new FootnoteReferenceRun(1),
+                                new EndnoteReferenceRun(noteWithText("Carried endnote")),
+                                new EndnoteReferenceRun(2),
+                            ],
+                        },
+                    },
+                    footnotes: { 1: noteWithText("Given") },
+                    endnotes: { 2: noteWithText("Given endnote") },
+                });
+
+                const footnotes = (await read("word/footnotes.xml"))!;
+                expect(footnotes).to.contain(`<w:footnote w:id="1"><w:p>${FOOTNOTE_MARK}<w:r><w:t xml:space="preserve">Carried</w:t>`);
+                expect(footnotes).to.contain(`<w:footnote w:id="2"><w:p>${FOOTNOTE_MARK}<w:r><w:t xml:space="preserve">Given</w:t>`);
+                const endnotes = (await read("word/endnotes.xml"))!;
+                expect(
+                    endnotes.match(
+                        /<w:endnote w:id="\d+"><w:p><w:r><w:rPr><w:rStyle w:val="EndnoteReference"\/><\/w:rPr><w:endnoteRef\/><\/w:r><w:r><w:t xml:space="preserve">[^<]+/g,
+                    ),
+                ).to.deep.equal([
+                    '<w:endnote w:id="1"><w:p><w:r><w:rPr><w:rStyle w:val="EndnoteReference"/></w:rPr><w:endnoteRef/></w:r><w:r><w:t xml:space="preserve">Carried endnote',
+                    '<w:endnote w:id="2"><w:p><w:r><w:rPr><w:rStyle w:val="EndnoteReference"/></w:rPr><w:endnoteRef/></w:r><w:r><w:t xml:space="preserve">Given endnote',
+                ]);
+                expect((await read("word/document.xml"))!.match(/<w:(?:foot|end)noteReference w:id="\d+"\/>/g)).to.deep.equal([
+                    '<w:footnoteReference w:id="1"/>',
+                    '<w:footnoteReference w:id="2"/>',
+                    '<w:endnoteReference w:id="1"/>',
+                    '<w:endnoteReference w:id="2"/>',
+                ]);
+            });
+
+            it("should give each place a reference run with its own footnote is inserted a footnote of its own", async () => {
+                const reference = new FootnoteReferenceRun(noteWithText("Twice"));
+                const read = await patchWith(templateWithoutNotes({ body: `<w:p><w:r><w:t>{{note}} and {{note}}</w:t></w:r></w:p>` }), {
+                    patches: { note: { type: PatchType.PARAGRAPH, children: [reference] } },
+                });
+
+                expect((await read("word/document.xml"))!.match(/<w:footnoteReference w:id="\d+"\/>/g)).to.deep.equal([
+                    '<w:footnoteReference w:id="1"/>',
+                    '<w:footnoteReference w:id="2"/>',
+                ]);
+                expect((await read("word/footnotes.xml"))!.match(/<w:footnote w:id="\d+"><w:p>.*?Twice/g)).to.have.length(2);
+            });
+
+            it("should leave out a reference run with its own footnote in a header, as Word has footnotes only in the body", async () => {
+                const template = await Packer.toBuffer(
+                    new File({
+                        sections: [{ headers: { default: new Header({ children: [new Paragraph("{{note}}")] }) }, children: [] }],
+                    }),
+                );
+                const read = await patchWith(template, {
+                    patches: {
+                        note: {
+                            type: PatchType.PARAGRAPH,
+                            children: [new TextRun("Header"), new FootnoteReferenceRun(noteWithText("Nowhere"))],
+                        },
+                    },
+                });
+
+                const header = (await read("word/header1.xml"))!;
+                expect(header).to.contain("Header");
+                expect(header).not.to.contain("footnoteReference");
+                expect(header).not.to.contain("FootnoteReference");
+                expect(await read("word/footnotes.xml")).not.to.contain("Nowhere");
+            });
+        });
+
+        describe("Lists", () => {
+            const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+            const NUMBERING_RELATIONSHIP = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering";
+            // A template made in Word with two lists of its own
+            const TEMPLATE_NUMBERING =
+                `<w:numbering xmlns:w="${W}" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" mc:Ignorable="w16se">` +
+                `<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/></w:lvl></w:abstractNum>` +
+                `<w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="upperRoman"/></w:lvl></w:abstractNum>` +
+                `<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>` +
+                `<w:numIdMacAtCleanup w:val="1"/></w:numbering>`;
+            const STEPS = {
+                config: [
+                    {
+                        reference: "steps",
+                        levels: [
+                            { level: 0, format: LevelFormat.DECIMAL, text: "%1." },
+                            { level: 1, format: LevelFormat.LOWER_LETTER, text: "%2)" },
+                        ],
+                    },
+                ],
+            };
+
+            // Patches a template with this body, and the parts given, and returns a reader for the patched parts
+            const patchTemplate = async (
+                { body, numbering, styles }: { readonly body: string; readonly numbering?: string; readonly styles?: string },
+                options: Omit<PatchDocumentOptions, "outputType" | "data">,
+            ): Promise<(path: string) => Promise<string | undefined>> => {
+                const template = zip({
+                    "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>`,
+                    "word/document.xml": `<w:document xmlns:w="${W}"><w:body>${body}</w:body></w:document>`,
+                    ...(numbering !== undefined
+                        ? {
+                              "word/numbering.xml": numbering,
+                              "word/_rels/document.xml.rels":
+                                  `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+                                  `<Relationship Id="rId1" Type="${NUMBERING_RELATIONSHIP}" Target="numbering.xml"/></Relationships>`,
+                          }
+                        : {}),
+                    ...(styles !== undefined ? { "word/styles.xml": `<w:styles xmlns:w="${W}">${styles}</w:styles>` } : {}),
+                });
+
+                const patched = unzip(await patchDocument({ outputType: "uint8array", data: template, ...options }));
+                return (path) => Promise.resolve(textOf(patched, path));
+            };
+
+            const placeholder = (key: string): string => `<w:p><w:r><w:t>{{${key}}}</w:t></w:r></w:p>`;
+            const numIdsIn = (xml: string | undefined): readonly string[] =>
+                [...xml!.matchAll(/<w:numId w:val="([^"]*)"\/>/g)].map(([, id]) => id);
+            // The ids of the lists and abstract lists in a numbering part, in order, and the abstract list each list is of
+            const listsIn = (xml: string | undefined): readonly string[] =>
+                [
+                    ...xml!.matchAll(
+                        /<w:(abstractNum) w:abstractNumId="(\d+)"|<w:(num) w:numId="(\d+)"><w:abstractNumId w:val="(\d+)"\/>|<w:(numIdMacAtCleanup)/g,
+                    ),
+                ].map(([, abstractNum, abstractNumId, num, numId, ofAbstractNumId, cleanup]) =>
+                    abstractNum ? `abstractNum ${abstractNumId}` : num ? `num ${numId} of ${ofAbstractNumId}` : cleanup,
+                );
+
+            it("should put the paragraphs in lists from the numbering option, with ids none of the template's lists have", async () => {
+                const read = await patchTemplate(
+                    { body: placeholder("list"), numbering: TEMPLATE_NUMBERING },
+                    {
+                        numbering: STEPS,
+                        patches: {
+                            list: {
+                                type: PatchType.DOCUMENT,
+                                children: [
+                                    new Paragraph({ text: "First", numbering: { reference: "steps", level: 0 } }),
+                                    new Paragraph({ text: "Detail", numbering: { reference: "steps", level: 1 } }),
+                                    new Paragraph({ text: "Again", numbering: { reference: "steps", level: 0, instance: 1 } }),
+                                ],
+                            },
+                        },
+                    },
+                );
+
+                expect(numIdsIn(await read("word/document.xml"))).to.deep.equal(["3", "3", "4"]);
+                const numbering = await read("word/numbering.xml");
+                // Both instances of the list are of one abstract list, after the template's, and its lists are before numIdMacAtCleanup
+                expect(listsIn(numbering)).to.deep.equal([
+                    "abstractNum 0",
+                    "abstractNum 1",
+                    "abstractNum 2",
+                    "num 1 of 0",
+                    "num 2 of 1",
+                    "num 3 of 2",
+                    "num 4 of 2",
+                    "numIdMacAtCleanup",
+                ]);
+                expect(numbering).to.match(
+                    /<w:abstractNum w:abstractNumId="2"[^>]*>.*?<w:numFmt w:val="decimal"\/>.*?<w:numFmt w:val="lowerLetter"\/>/,
+                );
+                expect(numbering).to.contain(
+                    '<w:num w:numId="4"><w:abstractNumId w:val="2"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/>',
+                );
+            });
+
+            it("should put the paragraphs in a list they give the definition of, with no numbering option", async () => {
+                const ownList = { reference: "own-list", levels: [{ level: 0, format: LevelFormat.UPPER_ROMAN, text: "%1." }] };
+                const read = await patchTemplate(
+                    { body: placeholder("list"), numbering: TEMPLATE_NUMBERING },
+                    {
+                        patches: {
+                            list: {
+                                type: PatchType.DOCUMENT,
+                                children: [
+                                    new Paragraph({ text: "First", numbering: { reference: ownList, level: 0 } }),
+                                    new Paragraph({ text: "Second", numbering: { reference: ownList, level: 0 } }),
+                                ],
+                            },
+                        },
+                    },
+                );
+
+                expect(numIdsIn(await read("word/document.xml"))).to.deep.equal(["3", "3"]);
+                const numbering = await read("word/numbering.xml");
+                expect(listsIn(numbering)).to.deep.equal([
+                    "abstractNum 0",
+                    "abstractNum 1",
+                    "abstractNum 2",
+                    "num 1 of 0",
+                    "num 2 of 1",
+                    "num 3 of 2",
+                    "numIdMacAtCleanup",
+                ]);
+                expect(numbering).to.match(/<w:abstractNum w:abstractNumId="2"[^>]*>.*?<w:numFmt w:val="upperRoman"\/>/);
+            });
+
+            it("should put the paragraphs in a list they give the definition of, in a template without a numbering part", async () => {
+                const ownList = { reference: "own-list", levels: [{ level: 0, format: LevelFormat.DECIMAL, text: "%1." }] };
+                const read = await patchTemplate(
+                    { body: placeholder("list") },
+                    {
+                        patches: {
+                            list: {
+                                type: PatchType.DOCUMENT,
+                                children: [new Paragraph({ text: "First", numbering: { reference: ownList, level: 0 } })],
+                            },
+                        },
+                    },
+                );
+
+                expect(numIdsIn(await read("word/document.xml"))).to.deep.equal(["1"]);
+                expect(listsIn(await read("word/numbering.xml"))).to.deep.equal(["abstractNum 1", "num 1 of 1"]);
+            });
+
+            it("should keep a list's id from one patch to the next, so it is numbered on", async () => {
+                const step = (text: string): IPatch => ({
+                    type: PatchType.DOCUMENT,
+                    children: [new Paragraph({ text, numbering: { reference: "steps", level: 0 } })],
+                });
+                const read = await patchTemplate(
+                    { body: placeholder("first") + placeholder("second"), numbering: TEMPLATE_NUMBERING },
+                    { numbering: STEPS, patches: { first: step("First"), second: step("Second") } },
+                );
+
+                expect(numIdsIn(await read("word/document.xml"))).to.deep.equal(["3", "3"]);
+                expect(listsIn(await read("word/numbering.xml")))
+                    .to.contain("num 3 of 2")
+                    .and.not.contain("num 4 of 2");
+            });
+
+            it("should put a bullet paragraph in a bullet list of its own, rather than in the template's list with its id", async () => {
+                const read = await patchTemplate(
+                    { body: placeholder("bullet"), numbering: TEMPLATE_NUMBERING },
+                    {
+                        patches: {
+                            bullet: { type: PatchType.DOCUMENT, children: [new Paragraph({ text: "Point", bullet: { level: 0 } })] },
+                        },
+                    },
+                );
+
+                expect(numIdsIn(await read("word/document.xml"))).to.deep.equal(["3"]);
+                const numbering = await read("word/numbering.xml");
+                expect(listsIn(numbering)).to.include.members(["abstractNum 2", "num 3 of 2"]);
+                expect(numbering).to.match(/<w:abstractNum w:abstractNumId="2"[^>]*>.*?<w:numFmt w:val="bullet"\/>/);
+            });
+
+            it("should add the namespaces the lists are written with to the template's numbering part, keeping its own", async () => {
+                const read = await patchTemplate(
+                    { body: placeholder("list"), numbering: TEMPLATE_NUMBERING },
+                    {
+                        numbering: STEPS,
+                        patches: {
+                            list: {
+                                type: PatchType.DOCUMENT,
+                                children: [new Paragraph({ text: "First", numbering: { reference: "steps", level: 0 } })],
+                            },
+                        },
+                    },
+                );
+
+                const root = toJson((await read("word/numbering.xml"))!).elements![0];
+                expect(root.attributes).to.include({
+                    "xmlns:w": W,
+                    "xmlns:w15": "http://schemas.microsoft.com/office/word/2012/wordml",
+                    "mc:Ignorable": "w16se w14 w15 wp14",
+                });
+            });
+
+            it("should write the lists to a numbering part without attributes", async () => {
+                const read = await patchTemplate(
+                    { body: placeholder("list"), numbering: "<w:numbering/>" },
+                    {
+                        numbering: STEPS,
+                        patches: {
+                            list: {
+                                type: PatchType.DOCUMENT,
+                                children: [new Paragraph({ text: "First", numbering: { reference: "steps", level: 0 } })],
+                            },
+                        },
+                    },
+                );
+
+                const numbering = await read("word/numbering.xml");
+                expect(listsIn(numbering)).to.deep.equal(["abstractNum 1", "num 1 of 1"]);
+                expect(toJson(numbering!).elements![0].attributes).to.include({ "mc:Ignorable": "w14 w15 wp14" });
+            });
+
+            it("should add a numbering part, its relationship and its content type to a template without one", async () => {
+                const read = await patchTemplate(
+                    { body: placeholder("list") },
+                    {
+                        numbering: STEPS,
+                        patches: {
+                            list: {
+                                type: PatchType.DOCUMENT,
+                                children: [new Paragraph({ text: "First", numbering: { reference: "steps", level: 0 } })],
+                            },
+                        },
+                    },
+                );
+
+                expect(numIdsIn(await read("word/document.xml"))).to.deep.equal(["1"]);
+                expect(listsIn(await read("word/numbering.xml"))).to.deep.equal(["abstractNum 1", "num 1 of 1"]);
+                expect(await read("word/_rels/document.xml.rels")).to.contain(`Type="${NUMBERING_RELATIONSHIP}" Target="numbering.xml"`);
+                expect(await read("[Content_Types].xml")).to.contain(
+                    `<Override ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml" PartName="/word/numbering.xml"/>`,
+                );
+            });
+
+            it("should add the ListParagraph style that list paragraphs have to a template without it, and only then", async () => {
+                const patches = {
+                    list: {
+                        type: PatchType.DOCUMENT,
+                        children: [new Paragraph({ text: "First", numbering: { reference: "steps", level: 0 } })],
+                    },
+                } as const;
+                const withoutStyle = await patchTemplate(
+                    { body: placeholder("list"), styles: `<w:docDefaults/><w:style w:type="paragraph" w:styleId="Normal"/>` },
+                    { numbering: STEPS, patches },
+                );
+                const withStyle = await patchTemplate(
+                    {
+                        body: placeholder("list"),
+                        styles: `<w:style w:type="paragraph" w:styleId="ListParagraph"><w:name w:val="Mine"/></w:style>`,
+                    },
+                    { numbering: STEPS, patches },
+                );
+
+                expect(await withoutStyle("word/styles.xml")).to.match(
+                    /<w:style w:type="paragraph" w:styleId="ListParagraph">.*<w:basedOn w:val="Normal"\/>/,
+                );
+                expect((await withStyle("word/styles.xml"))!.match(/w:styleId="ListParagraph"/g)).to.have.length(1);
+                expect(await withStyle("word/styles.xml")).to.contain('<w:name w:val="Mine"/>');
+            });
+
+            it("should write the lists of the paragraphs in a footnote", async () => {
+                const read = await patchTemplate(
+                    { body: placeholder("note"), numbering: TEMPLATE_NUMBERING },
+                    {
+                        numbering: STEPS,
+                        patches: { note: { type: PatchType.PARAGRAPH, children: [new FootnoteReferenceRun(1)] } },
+                        footnotes: { 1: { children: [new Paragraph({ text: "First", numbering: { reference: "steps", level: 0 } })] } },
+                    },
+                );
+
+                expect(numIdsIn(await read("word/footnotes.xml"))).to.deep.equal(["3"]);
+                expect(listsIn(await read("word/numbering.xml"))).to.contain("num 3 of 2");
+            });
+
+            it("should leave a paragraph taken out of a list with numbering: false as it is, without writing lists", async () => {
+                const read = await patchTemplate(
+                    { body: placeholder("plain") },
+                    { patches: { plain: { type: PatchType.DOCUMENT, children: [new Paragraph({ text: "Plain", numbering: false })] } } },
+                );
+
+                expect(numIdsIn(await read("word/document.xml"))).to.deep.equal(["0"]);
+                expect(await read("word/numbering.xml")).to.equal(undefined);
+            });
+
+            it("should throw for a paragraph whose list isn't in the numbering option, rather than write an id Word can't read", async () => {
+                await expect(
+                    patchTemplate(
+                        { body: placeholder("list") },
+                        {
+                            patches: {
+                                list: {
+                                    type: PatchType.DOCUMENT,
+                                    children: [new Paragraph({ text: "First", numbering: { reference: "my-list-2", level: 0 } })],
+                                },
+                            },
+                        },
+                    ),
+                ).rejects.toThrowError(
+                    `A paragraph in a patch uses the numbering "my-list-2", which isn't in the numbering option of patchDocument`,
+                );
+            });
+        });
+
+        describe("Styles", () => {
+            const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+            // The styles of a template made in Word, which only saves the styles that a document uses, so it has no headings
+            const WORD_STYLES = `<w:docDefaults/><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>`;
+
+            // Patches {{content}} in a template with these styles, and returns a reader for the patched parts
+            const patchTemplate = async (
+                styles: string | undefined,
+                options: Omit<PatchDocumentOptions, "outputType" | "data">,
+            ): Promise<(path: string) => Promise<string | undefined>> => {
+                const template = zip({
+                    "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>`,
+                    "word/document.xml": `<w:document xmlns:w="${W}"><w:body><w:p><w:r><w:t>{{content}}</w:t></w:r></w:p></w:body></w:document>`,
+                    ...(styles !== undefined ? { "word/styles.xml": `<w:styles xmlns:w="${W}">${styles}</w:styles>` } : {}),
+                });
+                const patched = unzip(await patchDocument({ outputType: "nodebuffer", data: template, ...options }));
+                return (path) => Promise.resolve(textOf(patched, path));
+            };
+
+            const content = (...children: readonly (Paragraph | Table)[]): PatchDocumentOptions["patches"] => ({
+                content: { type: PatchType.DOCUMENT, children },
+            });
+            const styleIdsIn = (xml: string | undefined): readonly string[] =>
+                [...xml!.matchAll(/w:styleId="([^"]*)"/g)].map(([, id]) => id);
+            const styleReferencesIn = (xml: string | undefined): readonly string[] =>
+                [...xml!.matchAll(/<w:(?:pStyle|rStyle|basedOn|next|link) w:val="([^"]*)"\/>/g)].map(([, id]) => id);
+
+            it("should add the styles of headings to a template that doesn't have them, as a Document writes them", async () => {
+                const read = await patchTemplate(WORD_STYLES, {
+                    patches: content(
+                        new Paragraph({ text: "Chapter", heading: HeadingLevel.HEADING_1 }),
+                        new Paragraph({ text: "Section", heading: HeadingLevel.HEADING_2 }),
+                        new Paragraph({ text: "Another chapter", heading: HeadingLevel.HEADING_1 }),
+                    ),
+                });
+
+                expect(styleReferencesIn(await read("word/document.xml"))).to.deep.equal(["Heading1", "Heading2", "Heading1"]);
+                expect(styleIdsIn(await read("word/styles.xml"))).to.deep.equal(["Normal", "Heading1", "Heading2"]);
+                expect(await read("word/styles.xml")).to.contain(
+                    `<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="Heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/>`,
+                );
+            });
+
+            it("should keep a template's own style, rather than add docx's", async () => {
+                const heading = `<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:rPr><w:sz w:val="40"/></w:rPr></w:style>`;
+                const read = await patchTemplate(`${WORD_STYLES}${heading}`, {
+                    patches: content(new Paragraph({ text: "Chapter", heading: HeadingLevel.HEADING_1 })),
+                });
+
+                expect(await read("word/styles.xml")).to.equal(`<w:styles xmlns:w="${W}">${WORD_STYLES}${heading}</w:styles>`);
+            });
+
+            it("should use the template's style of the same name, as in a template saved by Word in another language", async () => {
+                // The ids German Word gives Normal and Heading 1
+                const read = await patchTemplate(
+                    `<w:style w:type="paragraph" w:default="1" w:styleId="Standard"><w:name w:val="Normal"/></w:style>` +
+                        `<w:style w:type="paragraph" w:styleId="berschrift1"><w:name w:val="heading 1"/></w:style>`,
+                    {
+                        patches: content(
+                            new Paragraph({ text: "Chapter", heading: HeadingLevel.HEADING_1 }),
+                            new Paragraph({ text: "Section", heading: HeadingLevel.HEADING_2 }),
+                        ),
+                    },
+                );
+
+                expect(styleReferencesIn(await read("word/document.xml"))).to.deep.equal(["berschrift1", "Heading2"]);
+                // A style that is added is based on the template's Normal
+                expect(styleIdsIn(await read("word/styles.xml"))).to.deep.equal(["Standard", "berschrift1", "Heading2"]);
+                expect(styleReferencesIn(await read("word/styles.xml"))).to.deep.equal(["Standard", "Standard"]);
+            });
+
+            it("should only use a template's style of the same name that is of the same type", async () => {
+                // Word's Strong is a character style, which a paragraph can't have, and docx's is a paragraph style
+                const read = await patchTemplate(
+                    `${WORD_STYLES}<w:style w:type="character" w:styleId="Fett"><w:name w:val="Strong"/></w:style>`,
+                    {
+                        patches: content(new Paragraph({ text: "Important", style: "Strong" })),
+                    },
+                );
+
+                expect(styleReferencesIn(await read("word/document.xml"))).to.deep.equal(["Strong"]);
+                expect(styleIdsIn(await read("word/styles.xml"))).to.deep.equal(["Normal", "Fett", "Strong"]);
+            });
+
+            it("should indent the levels of the TOC styles it adds by the size of the template's Normal font, as Word does", async () => {
+                const indentOfTOC3With = async (styles: string): Promise<string | undefined> => {
+                    const read = await patchTemplate(styles, { patches: content(new Paragraph({ text: "Entry", style: "TOC3" })) });
+                    return /w:styleId="TOC3">.*?<w:ind w:left="(\d+)"\/>/.exec((await read("word/styles.xml"))!)?.[1];
+                };
+                const defaults = `<w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val="24"/></w:rPr></w:rPrDefault></w:docDefaults>`;
+                const normal = (id: string, name: string, runProperties = ""): string =>
+                    `<w:style w:type="paragraph" w:default="1" w:styleId="${id}"><w:name w:val="${name}"/>${runProperties}</w:style>`;
+                const fourteenPoints = `<w:rPr><w:sz w:val="28"/></w:rPr>`;
+
+                // docx's 10 points, without a size in the template
+                expect(await indentOfTOC3With(WORD_STYLES)).to.equal("400");
+                // The document's default size, 12 points, as Word for Mac saves
+                expect(await indentOfTOC3With(`${defaults}${normal("Normal", "Normal")}`)).to.equal("480");
+                // Normal's own size, 14 points, of the style the added styles are based on: the one with Normal's id, or else
+                // the one with its name, as in a template saved by Word in German
+                expect(await indentOfTOC3With(`${defaults}${normal("Normal", "Body", fourteenPoints)}`)).to.equal("560");
+                expect(await indentOfTOC3With(`${defaults}${normal("Standard", "Normal", fourteenPoints)}`)).to.equal("560");
+            });
+
+            it("should add the styles that an added style is based on or linked to, if the template doesn't have them", async () => {
+                const read = await patchTemplate("<w:docDefaults/>", {
+                    patches: content(new Paragraph({ text: "Note", style: "FootnoteText" })),
+                });
+
+                expect(styleIdsIn(await read("word/styles.xml"))).to.deep.equal(["FootnoteText", "Normal", "FootnoteTextChar"]);
+            });
+
+            it("should add the styles of runs in a paragraph patch, and of paragraphs in tables and footnotes", async () => {
+                const heading = (text: string): Paragraph => new Paragraph({ text, heading: HeadingLevel.HEADING_3 });
+                const read = await patchTemplate(WORD_STYLES, {
+                    patches: {
+                        content: {
+                            type: PatchType.PARAGRAPH,
+                            children: [new TextRun({ text: "Link", style: "Hyperlink" }), new FootnoteReferenceRun(1)],
+                        },
+                    },
+                    footnotes: { 1: { children: [heading("In a footnote")] } },
+                });
+                const readTable = await patchTemplate(WORD_STYLES, {
+                    patches: content(
+                        new Table({ rows: [new TableRow({ children: [new TableCell({ children: [heading("In a table")] })] })] }),
+                    ),
+                });
+
+                expect(styleIdsIn(await read("word/styles.xml"))).to.include.members(["Hyperlink", "Heading3"]);
+                expect(styleReferencesIn(await read("word/footnotes.xml"))).to.include("Heading3");
+                expect(styleIdsIn(await readTable("word/styles.xml"))).to.deep.equal(["Normal", "Heading3"]);
+            });
+
+            it("should leave a style that docx doesn't have as it is", async () => {
+                const read = await patchTemplate(WORD_STYLES, { patches: content(new Paragraph({ text: "Mine", style: "MyStyle" })) });
+
+                expect(styleReferencesIn(await read("word/document.xml"))).to.deep.equal(["MyStyle"]);
+                expect(styleIdsIn(await read("word/styles.xml"))).to.deep.equal(["Normal"]);
+            });
+
+            it("should leave a template without a styles part without one", async () => {
+                const read = await patchTemplate(undefined, {
+                    patches: content(new Paragraph({ text: "Chapter", heading: HeadingLevel.HEADING_1 })),
+                });
+
+                expect(styleReferencesIn(await read("word/document.xml"))).to.deep.equal(["Heading1"]);
+                expect(await read("word/styles.xml")).to.equal(undefined);
+            });
+        });
+
+        describe("Page numbers", () => {
+            const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+            // A page reference, with the page Word wrote for it before the template was patched
+            const PAGE_REFERENCE =
+                '<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> PAGEREF _Toc1 \\h </w:instrText></w:r>' +
+                '<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>9</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>';
+            const template = (): Uint8Array =>
+                zip({
+                    "[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>`,
+                    "word/document.xml": `<w:document xmlns:w="${W}"><w:body><w:p>${PAGE_REFERENCE}</w:p><w:p><w:r><w:t>{{name}}</w:t></w:r></w:p></w:body></w:document>`,
+                });
+            const patches = { name: { type: PatchType.PARAGRAPH, children: [new TextRun("Ada")] } } as const;
+            const documentOf = (output: Buffer): string => textOf(unzip(output), "word/document.xml")!;
+
+            it("should write the page numbers the estimator works out for the patched template", async () => {
+                const pageNumbers = vi.fn(({ parts }: { readonly parts: ReadonlyMap<string, unknown> }) => {
+                    // The estimate is of the template once it is patched
+                    expect(JSON.stringify(parts.get("word/document.xml"))).to.contain("Ada");
+                    return { bookmarks: new Map([["_Toc1", "4"]]) };
+                });
+                const document = documentOf(await patchDocument({ outputType: "nodebuffer", data: template(), patches, pageNumbers }));
+                expect(pageNumbers).toHaveBeenCalledOnce();
+                expect(document).to.contain('<w:fldChar w:fldCharType="separate"/><w:t xml:space="preserve">4</w:t></w:r><w:r/>');
+                expect(document).not.to.contain("<w:t>9</w:t>");
+            });
+
+            it("should leave the template's page numbers as they are without an estimator", async () => {
+                expect(documentOf(await patchDocument({ outputType: "nodebuffer", data: template(), patches }))).to.contain("<w:t>9</w:t>");
+            });
+        });
+    });
+});

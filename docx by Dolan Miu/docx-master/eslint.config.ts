@@ -1,0 +1,494 @@
+import eslint from "@eslint/js";
+import type { Linter } from "eslint";
+import { createTypeScriptImportResolver } from "eslint-import-resolver-typescript";
+import { createNodeResolver, importX } from "eslint-plugin-import-x";
+import unicorn from "eslint-plugin-unicorn";
+import jsdoc from "eslint-plugin-jsdoc";
+import preferArrow from "eslint-plugin-prefer-arrow";
+import functional from "eslint-plugin-functional";
+import globals from "globals";
+import tsEslint from "typescript-eslint";
+
+const config: Linter.Config<Linter.RulesRecord>[] = [
+    {
+        ignores: [
+            "**/vite*.config.ts",
+            "**/dist/**",
+            "docs/live-examples/lib/**",
+            "**/coverage/**",
+            "**/*.js",
+            "eslint.config.ts",
+            "**/demo/**",
+            "**/scripts/**",
+            // Worktrees Claude Code makes for other branches, which have their own copies of the source
+            ".claude/**",
+        ],
+    },
+    eslint.configs.recommended,
+    importX.flatConfigs.recommended,
+    ...tsEslint.configs.recommended,
+    ...tsEslint.configs.stylistic,
+    {
+        files: ["**/src/**/*.ts"],
+        plugins: {
+            unicorn,
+            jsdoc,
+            "prefer-arrow": preferArrow,
+            functional,
+        },
+
+        languageOptions: {
+            parserOptions: {
+                projectService: true,
+                tsconfigRootDir: import.meta.dirname,
+            },
+        },
+
+        settings: {
+            "import-x/resolver-next": [createTypeScriptImportResolver(), createNodeResolver()],
+        },
+
+        rules: {
+            "no-undef": "off",
+            "no-extra-boolean-cast": "off",
+            "no-alert": "error",
+            "no-self-compare": "error",
+            "no-unreachable-loop": "error",
+            "no-template-curly-in-string": "error",
+            "no-unused-private-class-members": "error",
+            "no-extend-native": "error",
+            "no-floating-decimal": "error",
+            "no-implied-eval": "error",
+            "no-iterator": "error",
+            "no-lone-blocks": "error",
+            "no-loop-func": "error",
+            "no-new-object": "error",
+            "no-proto": "error",
+            "no-useless-catch": "error",
+            "one-var-declaration-per-line": "error",
+            "prefer-arrow-callback": "error",
+            "prefer-destructuring": "error",
+            "prefer-exponentiation-operator": "error",
+            "prefer-promise-reject-errors": "error",
+            "prefer-regex-literals": "error",
+            "prefer-spread": "error",
+            "prefer-template": "error",
+            "require-await": "error",
+            "@typescript-eslint/adjacent-overload-signatures": "error",
+
+            "@typescript-eslint/array-type": [
+                "error",
+                {
+                    default: "array",
+                },
+            ],
+
+            "@typescript-eslint/no-restricted-types": [
+                "error",
+                {
+                    types: {
+                        Object: {
+                            message: "Avoid using the `Object` type. Did you mean `object`?",
+                            fixWith: "object",
+                        },
+
+                        Function: {
+                            message: "Avoid using the `Function` type. Prefer a specific function type, like `() => void`.",
+                        },
+
+                        Boolean: {
+                            message: "Avoid using the `Boolean` type. Did you mean `boolean`?",
+                            fixWith: "boolean",
+                        },
+
+                        Number: {
+                            message: "Avoid using the `Number` type. Did you mean `number`?",
+                            fixWith: "number",
+                        },
+
+                        String: {
+                            message: "Avoid using the `String` type. Did you mean `string`?",
+                            fixWith: "string",
+                        },
+
+                        Symbol: {
+                            message: "Avoid using the `Symbol` type. Did you mean `symbol`?",
+                            fixWith: "symbol",
+                        },
+                    },
+                },
+            ],
+
+            "@typescript-eslint/consistent-type-assertions": "error",
+            "@typescript-eslint/consistent-type-imports": [
+                "error",
+                {
+                    prefer: "type-imports",
+                    fixStyle: "inline-type-imports",
+                },
+            ],
+            "@typescript-eslint/dot-notation": "error",
+
+            "@typescript-eslint/explicit-function-return-type": [
+                "error",
+                {
+                    allowExpressions: true,
+                    allowTypedFunctionExpressions: true,
+                    allowHigherOrderFunctions: false,
+                    allowDirectConstAssertionInArrowFunctions: true,
+                    allowConciseArrowFunctionExpressionsStartingWithVoid: true,
+                },
+            ],
+
+            "@typescript-eslint/explicit-member-accessibility": [
+                "error",
+                {
+                    accessibility: "explicit",
+
+                    overrides: {
+                        accessors: "explicit",
+                    },
+                },
+            ],
+
+            "@typescript-eslint/explicit-module-boundary-types": [
+                "error",
+                {
+                    allowArgumentsExplicitlyTypedAsAny: true,
+                    allowDirectConstAssertionInArrowFunctions: true,
+                    allowHigherOrderFunctions: false,
+                    allowTypedFunctionExpressions: false,
+                },
+            ],
+
+            "@typescript-eslint/naming-convention": [
+                "error",
+                {
+                    selector: ["objectLiteralProperty"],
+                    leadingUnderscore: "allow",
+                    format: ["camelCase", "PascalCase", "UPPER_CASE"],
+
+                    filter: {
+                        regex: "(^[a-z]+:.+)|_attr|[0-9]",
+                        match: false,
+                    },
+                },
+            ],
+
+            "@typescript-eslint/no-empty-function": "error",
+            "@typescript-eslint/no-empty-interface": "error",
+            "@typescript-eslint/no-explicit-any": "error",
+            "@typescript-eslint/no-misused-new": "error",
+            "@typescript-eslint/no-namespace": "error",
+            "@typescript-eslint/no-parameter-properties": "off",
+            "@typescript-eslint/no-require-imports": "error",
+
+            "@typescript-eslint/no-shadow": [
+                "error",
+                {
+                    hoist: "all",
+                },
+            ],
+
+            "@typescript-eslint/consistent-type-definitions": ["error", "type"],
+
+            "@typescript-eslint/no-this-alias": "error",
+            "@typescript-eslint/no-unused-expressions": "error",
+            "@typescript-eslint/no-use-before-define": "off",
+            "@typescript-eslint/no-var-requires": "error",
+            "@typescript-eslint/prefer-for-of": "error",
+            "@typescript-eslint/prefer-function-type": "error",
+            "@typescript-eslint/prefer-namespace-keyword": "error",
+            "@typescript-eslint/prefer-readonly": "error",
+
+            "@typescript-eslint/triple-slash-reference": [
+                "error",
+                {
+                    path: "always",
+                    types: "prefer-import",
+                    lib: "always",
+                },
+            ],
+
+            "@typescript-eslint/typedef": [
+                "error",
+                {
+                    parameter: true,
+                    propertyDeclaration: true,
+                },
+            ],
+
+            "@typescript-eslint/no-inferrable-types": "off",
+
+            "@typescript-eslint/unified-signatures": "error",
+            "arrow-body-style": "error",
+            complexity: "off",
+            "consistent-return": "error",
+            "constructor-super": "error",
+            curly: "error",
+            "dot-notation": "off",
+            eqeqeq: ["error", "smart"],
+            "guard-for-in": "error",
+
+            "id-denylist": ["error", "any", "Number", "number", "String", "string", "Boolean", "boolean", "Undefined", "undefined"],
+
+            "id-match": "error",
+            "import-x/no-default-export": "error",
+            "import-x/no-duplicates": ["error", { "prefer-inline": true }],
+            "import-x/no-extraneous-dependencies": "off",
+            "import-x/no-internal-modules": "off",
+            "sort-imports": [
+                "error",
+                {
+                    allowSeparatedGroups: true,
+                    ignoreDeclarationSort: true,
+                },
+            ],
+            "import-x/order": [
+                "error",
+                {
+                    groups: [["external", "builtin"], "internal", ["sibling", "parent", "index"]],
+                    "newlines-between": "always",
+                    pathGroups: [
+                        { pattern: "@file/**/*", group: "internal" },
+                        { pattern: "@file/**", group: "internal" },
+                        { pattern: "@export/**", group: "internal" },
+                    ],
+                    pathGroupsExcludedImportTypes: ["internal"],
+                    alphabetize: {
+                        order: "asc",
+                        caseInsensitive: true,
+                    },
+                },
+            ],
+            indent: "off",
+            "jsdoc/check-alignment": "error",
+            "jsdoc/check-indentation": "off",
+            "max-classes-per-file": "off",
+            "max-len": "off",
+            "new-parens": "error",
+            "no-bitwise": "error",
+            "no-caller": "error",
+            "no-cond-assign": "error",
+            "no-console": "error",
+            "no-debugger": "error",
+            "no-duplicate-case": "error",
+            "no-duplicate-imports": "error",
+            "no-empty": "error",
+            "no-empty-function": "off",
+            "no-eval": "error",
+            "no-extra-bind": "error",
+            "no-fallthrough": "off",
+            "no-invalid-this": "off",
+            "no-multiple-empty-lines": "error",
+            "no-new-func": "error",
+            "no-new-wrappers": "error",
+            "no-param-reassign": "error",
+            "no-redeclare": "error",
+            // The ES2015 build wraps a super() inside a branch in an arrow function when the class has fields, and
+            // Next.js Turbopack turns that arrow function into a plain function, which can't call super()
+            // https://github.com/dolanmiu/docx/issues/3473
+            "no-restricted-syntax": [
+                "error",
+                {
+                    selector:
+                        "CallExpression[callee.type='Super']:not(MethodDefinition[kind='constructor'] > FunctionExpression > BlockStatement > ExpressionStatement > CallExpression)",
+                    message: "Call super() once, as a statement of its own at the top level of the constructor.",
+                },
+            ],
+            "no-return-await": "error",
+            "no-sequences": "error",
+            "no-shadow": "off",
+            "no-sparse-arrays": "error",
+            "no-throw-literal": "error",
+            "no-trailing-spaces": "error",
+            "no-undef-init": "error",
+
+            "no-underscore-dangle": [
+                "error",
+                {
+                    allow: ["_attr"],
+                },
+            ],
+
+            "no-unsafe-finally": "error",
+            "no-unused-expressions": "off",
+            "no-unused-labels": "error",
+            "no-use-before-define": "off",
+            "no-useless-constructor": "error",
+            "no-var": "error",
+            "object-shorthand": "off",
+            "one-var": ["error", "never"],
+            "prefer-arrow/prefer-arrow-functions": "error",
+            "prefer-const": "error",
+            "prefer-object-spread": "error",
+            radix: "error",
+            "space-in-parens": ["error", "never"],
+
+            "spaced-comment": [
+                "error",
+                "always",
+                {
+                    markers: ["/"],
+                },
+            ],
+
+            "unicorn/filename-case": "error",
+            "unicorn/prefer-ternary": "error",
+            "use-isnan": "error",
+            "valid-typeof": "off",
+
+            "functional/immutable-data": [
+                "error",
+                {
+                    ignoreImmediateMutation: true,
+                    ignoreAccessorPattern: ["**.root*", "**.numberingReferences*", "**.sections*", "**.properties*"],
+                },
+            ],
+
+            "functional/prefer-property-signatures": "error",
+            "functional/no-mixed-types": "error",
+            "functional/prefer-readonly-type": "error",
+
+            "@typescript-eslint/no-unused-vars": [
+                "error",
+                {
+                    argsIgnorePattern: "^[_]+$",
+                },
+            ],
+        },
+    },
+    {
+        files: ["**/*.spec.ts"],
+        plugins: {
+            unicorn,
+            jsdoc,
+            "prefer-arrow": preferArrow,
+            functional,
+        },
+        languageOptions: {
+            globals: {
+                ...globals.browser,
+                ...globals.node,
+            },
+
+            sourceType: "module",
+
+            parserOptions: {
+                projectService: true,
+                tsconfigRootDir: import.meta.dirname,
+            },
+        },
+        rules: {
+            "@typescript-eslint/no-unused-expressions": "off",
+            "@typescript-eslint/dot-notation": "off",
+            "prefer-destructuring": "off",
+            "@typescript-eslint/explicit-function-return-type": "off",
+            "no-unused-vars": [
+                "error",
+                {
+                    argsIgnorePattern: "^[_]+$",
+                },
+            ],
+        },
+    },
+    // docx's optional entries, docx/shapes (src/shapes), docx/watermarks (src/watermarks), docx/charts (src/charts) and
+    // docx/layout (src/layout), are built on docx's public API. They import docx by name, so their builds leave docx out
+    // and the package has one copy of each class and id counter. docx doesn't import them. Specs may import docx's
+    // internals, such as the Formatter. docx/math (src/math) re-exports docx's math, which docx still exports and keeps in
+    // src/file/paragraph/math. src/text-layout measures text for docx/shapes and docx/layout, and each bundles a copy.
+    // docx/html (src/html) imports docx/math by name too, for the math in HTML. docx/macros (src/macros) writes VBA
+    // projects for docx's macros, and docx/embedded-files (src/embedded-files) embeds files as OLE objects.
+    // src/compound-file writes the compound files both keep them in, and each bundles a copy. docx/bibliography
+    // (src/bibliography) writes citations and bibliographies. Spec helpers (src/tests) may import the entries, as specs do
+    {
+        files: ["src/**/*.ts"],
+        ignores: [
+            "src/shapes/**",
+            "src/watermarks/**",
+            "src/charts/**",
+            "src/math/**",
+            "src/layout/**",
+            "src/html/**",
+            "src/macros/**",
+            "src/embedded-files/**",
+            "src/compound-file/**",
+            "src/text-layout/**",
+            "src/bibliography/**",
+            "src/tests/**",
+            "**/*.spec.ts",
+        ],
+        rules: {
+            "no-restricted-imports": [
+                "error",
+                {
+                    paths: [{ name: "docx", message: "docx doesn't import itself by name. Use a path alias such as @file/" }],
+                    patterns: [
+                        { group: ["docx/*"], message: "docx doesn't import its optional entries, such as docx/shapes" },
+                        {
+                            regex: "(^|/)(shapes|watermarks|charts|layout|html|macros|embedded-files|compound-file|text-layout|bibliography)(/|$)",
+                            message: "docx doesn't import its optional entries, such as docx/shapes",
+                        },
+                    ],
+                },
+            ],
+        },
+    },
+    {
+        files: [
+            "src/shapes/*.ts",
+            "src/watermarks/*.ts",
+            "src/charts/*.ts",
+            "src/math/*.ts",
+            "src/layout/*.ts",
+            "src/html/*.ts",
+            "src/macros/*.ts",
+            "src/embedded-files/*.ts",
+            "src/compound-file/*.ts",
+            "src/text-layout/*.ts",
+            "src/bibliography/*.ts",
+        ],
+        ignores: ["**/*.spec.ts"],
+        rules: {
+            "no-restricted-imports": [
+                "error",
+                {
+                    patterns: [
+                        {
+                            group: ["@file/*", "@util/*", "@export/*", "@shared", "@shared/*"],
+                            message: 'Optional entries import docx from "docx"',
+                        },
+                        { regex: "^\\.\\./(?!(text-layout|compound-file)(/|$))", message: 'Optional entries import docx from "docx"' },
+                    ],
+                },
+            ],
+        },
+    },
+    {
+        files: [
+            "src/shapes/*/*.ts",
+            "src/watermarks/*/*.ts",
+            "src/charts/*/*.ts",
+            "src/layout/*/*.ts",
+            "src/html/*/*.ts",
+            "src/bibliography/*/*.ts",
+        ],
+        ignores: ["**/*.spec.ts"],
+        rules: {
+            "no-restricted-imports": [
+                "error",
+                {
+                    patterns: [
+                        {
+                            group: ["@file/*", "@util/*", "@export/*", "@shared", "@shared/*"],
+                            message: 'Optional entries import docx from "docx"',
+                        },
+                        { regex: "^\\.\\./\\.\\./(?!text-layout(/|$))", message: 'Optional entries import docx from "docx"' },
+                    ],
+                },
+            ],
+        },
+    },
+];
+
+export default config;

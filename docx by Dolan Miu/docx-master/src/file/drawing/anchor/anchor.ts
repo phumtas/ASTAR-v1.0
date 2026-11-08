@@ -1,0 +1,162 @@
+// http://officeopenxml.com/drwPicFloating.php
+import type { IExtendedMediaData, IMediaDataTransformation } from "@file/media";
+import { XmlComponent } from "@file/xml-components";
+
+import type { IDrawingOptions } from "../drawing";
+import { type IFloating, createHorizontalPosition, createSimplePos, createVerticalPosition } from "../floating";
+import { Graphic } from "../inline/graphic";
+import {
+    TextWrappingType,
+    createWrapNone,
+    createWrapSquare,
+    createWrapThrough,
+    createWrapTight,
+    createWrapTopAndBottom,
+} from "../text-wrap";
+import { DocProperties } from "./../doc-properties/doc-properties";
+import { createEffectExtent } from "./../effect-extent/effect-extent";
+import { createExtent } from "./../extent/extent";
+import { createGraphicFrameProperties } from "./../graphic-frame/graphic-frame-properties";
+import { AnchorAttributes } from "./anchor-attributes";
+
+// <xsd:complexType name="CT_Anchor">
+//     <xsd:sequence>
+//         <xsd:element name="simplePos" type="a:CT_Point2D"/>
+//         <xsd:element name="positionH" type="CT_PosH"/>
+//         <xsd:element name="positionV" type="CT_PosV"/>
+//         <xsd:element name="extent" type="a:CT_PositiveSize2D"/>
+//         <xsd:element name="effectExtent" type="CT_EffectExtent" minOccurs="0"/>
+//         <xsd:group ref="EG_WrapType"/>
+//         <xsd:element name="docPr" type="a:CT_NonVisualDrawingProps" minOccurs="1" maxOccurs="1"/>
+//         <xsd:element name="cNvGraphicFramePr" type="a:CT_NonVisualGraphicFrameProperties"
+//             minOccurs="0" maxOccurs="1"/>
+//         <xsd:element ref="a:graphic" minOccurs="1" maxOccurs="1"/>
+//     </xsd:sequence>
+//     <xsd:attribute name="distT" type="ST_WrapDistance" use="optional"/>
+//     <xsd:attribute name="distB" type="ST_WrapDistance" use="optional"/>
+//     <xsd:attribute name="distL" type="ST_WrapDistance" use="optional"/>
+//     <xsd:attribute name="distR" type="ST_WrapDistance" use="optional"/>
+//     <xsd:attribute name="simplePos" type="xsd:boolean"/>
+//     <xsd:attribute name="relativeHeight" type="xsd:unsignedInt" use="required"/>
+//     <xsd:attribute name="behindDoc" type="xsd:boolean" use="required"/>
+//     <xsd:attribute name="locked" type="xsd:boolean" use="required"/>
+//     <xsd:attribute name="layoutInCell" type="xsd:boolean" use="required"/>
+//     <xsd:attribute name="hidden" type="xsd:boolean" use="optional"/>
+//     <xsd:attribute name="allowOverlap" type="xsd:boolean" use="required"/>
+// </xsd:complexType>
+/**
+ * Represents an anchored/floating drawing in a WordprocessingML document.
+ *
+ * Anchored drawings can be positioned relative to the page, margin, column,
+ * paragraph, character, or line. They support text wrapping options.
+ *
+ * Reference: http://officeopenxml.com/drwPicFloating.php
+ *
+ * ## XSD Schema
+ * ```xml
+ * <xsd:complexType name="CT_Anchor">
+ *   <xsd:sequence>
+ *     <xsd:element name="simplePos" type="a:CT_Point2D"/>
+ *     <xsd:element name="positionH" type="CT_PosH"/>
+ *     <xsd:element name="positionV" type="CT_PosV"/>
+ *     <xsd:element name="extent" type="a:CT_PositiveSize2D"/>
+ *     <xsd:element name="effectExtent" type="CT_EffectExtent" minOccurs="0"/>
+ *     <xsd:group ref="EG_WrapType"/>
+ *     <xsd:element name="docPr" type="a:CT_NonVisualDrawingProps"/>
+ *     <xsd:element name="cNvGraphicFramePr" type="a:CT_NonVisualGraphicFrameProperties" minOccurs="0"/>
+ *     <xsd:element ref="a:graphic"/>
+ *   </xsd:sequence>
+ *   <xsd:attribute name="distT" type="ST_WrapDistance"/>
+ *   <xsd:attribute name="distB" type="ST_WrapDistance"/>
+ *   <xsd:attribute name="distL" type="ST_WrapDistance"/>
+ *   <xsd:attribute name="distR" type="ST_WrapDistance"/>
+ *   <xsd:attribute name="simplePos" type="xsd:boolean"/>
+ *   <xsd:attribute name="relativeHeight" type="xsd:unsignedInt" use="required"/>
+ *   <xsd:attribute name="behindDoc" type="xsd:boolean" use="required"/>
+ *   <xsd:attribute name="locked" type="xsd:boolean" use="required"/>
+ *   <xsd:attribute name="layoutInCell" type="xsd:boolean" use="required"/>
+ *   <xsd:attribute name="hidden" type="xsd:boolean"/>
+ *   <xsd:attribute name="allowOverlap" type="xsd:boolean" use="required"/>
+ * </xsd:complexType>
+ * ```
+ */
+export class Anchor extends XmlComponent {
+    public constructor({
+        mediaData,
+        transform,
+        drawingOptions,
+    }: {
+        readonly mediaData: IExtendedMediaData;
+        readonly transform: IMediaDataTransformation;
+        readonly drawingOptions: IDrawingOptions;
+    }) {
+        super("wp:anchor");
+
+        const floating: IFloating = {
+            allowOverlap: true,
+            behindDocument: false,
+            lockAnchor: false,
+            layoutInCell: true,
+            verticalPosition: {},
+            horizontalPosition: {},
+            ...drawingOptions.floating,
+        };
+
+        this.root.push(
+            new AnchorAttributes({
+                distT: floating.margins ? floating.margins.top || 0 : 0,
+                distB: floating.margins ? floating.margins.bottom || 0 : 0,
+                distL: floating.margins ? floating.margins.left || 0 : 0,
+                distR: floating.margins ? floating.margins.right || 0 : 0,
+                simplePos: "0", // note: word doesn't fully support - so we use 0
+                allowOverlap: floating.allowOverlap === true ? "1" : "0",
+                behindDoc: floating.behindDocument === true ? "1" : "0",
+                locked: floating.lockAnchor === true ? "1" : "0",
+                layoutInCell: floating.layoutInCell === true ? "1" : "0",
+                relativeHeight: floating.zIndex ? floating.zIndex : transform.emus.y,
+            }),
+        );
+
+        this.root.push(createSimplePos());
+        this.root.push(createHorizontalPosition(floating.horizontalPosition));
+        this.root.push(createVerticalPosition(floating.verticalPosition));
+        this.root.push(createExtent({ x: transform.emus.x, y: transform.emus.y }));
+        this.root.push(createEffectExtent(drawingOptions.effectExtent ?? { top: 0, right: 0, bottom: 0, left: 0 }));
+
+        if (drawingOptions.floating !== undefined && drawingOptions.floating.wrap !== undefined) {
+            switch (drawingOptions.floating.wrap.type) {
+                case TextWrappingType.SQUARE:
+                    this.root.push(createWrapSquare(drawingOptions.floating.wrap, drawingOptions.floating.margins));
+                    break;
+                case TextWrappingType.TIGHT:
+                    this.root.push(createWrapTight(drawingOptions.floating.margins, drawingOptions.floating.wrap));
+                    break;
+                case TextWrappingType.THROUGH:
+                    this.root.push(createWrapThrough(drawingOptions.floating.margins, drawingOptions.floating.wrap));
+                    break;
+                case TextWrappingType.TOP_AND_BOTTOM:
+                    this.root.push(createWrapTopAndBottom(drawingOptions.floating.margins));
+                    break;
+                case TextWrappingType.NONE:
+                default:
+                    this.root.push(createWrapNone());
+            }
+        } else {
+            this.root.push(createWrapNone());
+        }
+
+        this.root.push(
+            new DocProperties(drawingOptions.docProperties, { link: drawingOptions.link, decorative: drawingOptions.decorative }),
+        );
+        this.root.push(createGraphicFrameProperties(mediaData.type !== "graphic" || mediaData.lockAspectRatio !== false));
+        this.root.push(
+            new Graphic({
+                mediaData,
+                transform,
+                outline: drawingOptions.outline,
+                solidFill: drawingOptions.solidFill,
+                crop: drawingOptions.crop,
+            }),
+        );
+    }
+}

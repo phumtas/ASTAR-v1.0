@@ -1,0 +1,377 @@
+# Custom Fonts
+
+Custom fonts allow you to embed fonts directly into your document, ensuring consistent appearance across different systems.
+
+## Embedding Fonts
+
+Embed a font by providing the font data in the `Document` constructor:
+
+```ts live
+import * as fs from "fs";
+import { CharacterSet, Document, Paragraph, TextRun } from "docx";
+
+const fontData = fs.readFileSync("./demo/assets/Pacifico.ttf");
+
+const doc = new Document({
+    fonts: [
+        {
+            name: "Pacifico",
+            data: fontData,
+            characterSet: CharacterSet.ANSI,
+        },
+    ],
+    sections: [
+        {
+            children: [
+                new Paragraph({
+                    children: [
+                        new TextRun({
+                            text: "This text uses a custom font",
+                            font: "Pacifico",
+                        }),
+                    ],
+                }),
+            ],
+        },
+    ],
+});
+```
+
+## Font Names
+
+The `name` property can contain spaces and non-ASCII characters (e.g. `"EB Garamond"`, `"Noto Sans JP"`). Internally, docx uses sequential filenames (`font1.odttf`, `font2.odttf`, …) for the embedded font data in the zip package, so the font name you choose has no effect on file compatibility.
+
+## Bold and Italic Faces
+
+`data` is the font's regular face. To embed the font's other faces, give their files too. Word then draws bold and italic text in the font with those faces, rather than making the regular face bolder or slanting it:
+
+```ts live
+import * as fs from "fs";
+import { Document, Paragraph, TextRun } from "docx";
+
+const doc = new Document({
+    fonts: [
+        {
+            name: "Crimson Text",
+            data: fs.readFileSync("./demo/assets/CrimsonText-Regular.ttf"),
+            bold: fs.readFileSync("./demo/assets/CrimsonText-Bold.ttf"),
+            italic: fs.readFileSync("./demo/assets/CrimsonText-Italic.ttf"),
+            boldItalic: fs.readFileSync("./demo/assets/CrimsonText-BoldItalic.ttf"),
+        },
+    ],
+    styles: {
+        default: {
+            document: {
+                run: { font: "Crimson Text", size: 32 },
+            },
+        },
+    },
+    sections: [
+        {
+            children: [
+                new Paragraph("Regular text in the embedded regular face"),
+                new Paragraph({ children: [new TextRun({ text: "Bold text in the embedded bold face", bold: true })] }),
+                new Paragraph({ children: [new TextRun({ text: "Italic text in the embedded italic face", italics: true })] }),
+                new Paragraph({
+                    children: [new TextRun({ text: "Bold italic text in the embedded bold italic face", bold: true, italics: true })],
+                }),
+            ],
+        },
+    ],
+});
+```
+
+Each face is embedded as a file of its own.
+
+## Font Options
+
+| Property     | Type           | Notes    | Description                            |
+| ------------ | -------------- | -------- | -------------------------------------- |
+| name         | `string`       | Required | Font name to reference                 |
+| data         | `Buffer`       | Required | Font file data of the regular face     |
+| bold         | `Buffer`       | Optional | Font file data of the bold face        |
+| italic       | `Buffer`       | Optional | Font file data of the italic face      |
+| boldItalic   | `Buffer`       | Optional | Font file data of the bold italic face |
+| characterSet | `CharacterSet` | Optional | Character set for the font             |
+
+## Character Sets
+
+The `characterSet` property controls the `w:charset` element in `fontTable.xml`, which tells Word how to interpret the font's character encoding. While optional, specifying the correct character set is important for non-Latin scripts — without it, Word may fall back to a default encoding and render characters incorrectly.
+
+Available character sets:
+
+| Value                      | Description              |
+| -------------------------- | ------------------------ |
+| `CharacterSet.ANSI`        | Standard ANSI characters |
+| `CharacterSet.DEFAULT`     | Default character set    |
+| `CharacterSet.SYMBOL`      | Symbol characters        |
+| `CharacterSet.MAC`         | Macintosh characters     |
+| `CharacterSet.SHIFTJIS`    | Japanese Shift-JIS       |
+| `CharacterSet.HANGUL`      | Korean Hangul            |
+| `CharacterSet.JOHAB`       | Korean Johab             |
+| `CharacterSet.GB2312`      | Simplified Chinese       |
+| `CharacterSet.CHINESEBIG5` | Traditional Chinese      |
+| `CharacterSet.GREEK`       | Greek characters         |
+| `CharacterSet.TURKISH`     | Turkish characters       |
+| `CharacterSet.VIETNAMESE`  | Vietnamese characters    |
+| `CharacterSet.HEBREW`      | Hebrew characters        |
+| `CharacterSet.ARABIC`      | Arabic characters        |
+| `CharacterSet.BALTIC`      | Baltic characters        |
+| `CharacterSet.RUSSIAN`     | Cyrillic characters      |
+| `CharacterSet.THAI`        | Thai characters          |
+| `CharacterSet.EASTEUROPE`  | Eastern European         |
+
+## Using Custom Fonts
+
+### In TextRun
+
+```ts live
+import * as fs from "fs";
+import { CharacterSet, Document, Paragraph, TextRun } from "docx";
+
+const fontData = fs.readFileSync("./demo/assets/Pacifico.ttf");
+
+const doc = new Document({
+    fonts: [{ name: "Pacifico", data: fontData, characterSet: CharacterSet.ANSI }],
+    sections: [
+        {
+            children: [
+                new Paragraph({
+                    children: [
+                        new TextRun({
+                            text: "Custom font text",
+                            font: "Pacifico",
+                        }),
+                    ],
+                }),
+            ],
+        },
+    ],
+});
+```
+
+### In Paragraph Style
+
+```ts live
+import * as fs from "fs";
+import { CharacterSet, Document, Paragraph, TextRun } from "docx";
+
+const fontData = fs.readFileSync("./demo/assets/Pacifico.ttf");
+
+const doc = new Document({
+    fonts: [{ name: "Pacifico", data: fontData, characterSet: CharacterSet.ANSI }],
+    sections: [
+        {
+            children: [
+                new Paragraph({
+                    run: {
+                        font: "Pacifico",
+                    },
+                    children: [new TextRun("All text in this paragraph uses the custom font")],
+                }),
+            ],
+        },
+    ],
+});
+```
+
+### In Document Styles
+
+```ts live
+import * as fs from "fs";
+import { CharacterSet, Document, Paragraph } from "docx";
+
+const fontData = fs.readFileSync("./demo/assets/Pacifico.ttf");
+
+const doc = new Document({
+    fonts: [{ name: "Pacifico", data: fontData, characterSet: CharacterSet.ANSI }],
+    styles: {
+        default: {
+            document: {
+                run: {
+                    font: "Pacifico",
+                },
+            },
+        },
+    },
+    sections: [
+        {
+            children: [new Paragraph("All text in the document uses the custom font")],
+        },
+    ],
+});
+```
+
+### As the Theme's Font
+
+A font can also be one of the fonts of the document's [theme](usage/themes.md), so text in it changes font when the theme's fonts change:
+
+```ts live
+import * as fs from "fs";
+import { CharacterSet, Document, Paragraph } from "docx";
+
+const fontData = fs.readFileSync("./demo/assets/Pacifico.ttf");
+
+const doc = new Document({
+    fonts: [{ name: "Pacifico", data: fontData, characterSet: CharacterSet.ANSI }],
+    theme: { fonts: { body: "Pacifico" } },
+    styles: {
+        default: {
+            document: {
+                run: {
+                    font: { theme: "body" },
+                },
+            },
+        },
+    },
+    sections: [
+        {
+            children: [new Paragraph("All text in the document uses the theme's font for body text")],
+        },
+    ],
+});
+```
+
+## Multiple Fonts
+
+Embed multiple fonts:
+
+```ts live
+import * as fs from "fs";
+import { CharacterSet, Document, Paragraph, TextRun } from "docx";
+
+const doc = new Document({
+    fonts: [
+        {
+            name: "HeadingFont",
+            // The demo folder has one font, so both are Pacifico here: give each its own font file
+            data: fs.readFileSync("./demo/assets/Pacifico.ttf"),
+            characterSet: CharacterSet.ANSI,
+        },
+        {
+            name: "BodyFont",
+            data: fs.readFileSync("./demo/assets/Pacifico.ttf"),
+            characterSet: CharacterSet.ANSI,
+        },
+    ],
+    sections: [
+        {
+            children: [
+                new Paragraph({
+                    children: [
+                        new TextRun({
+                            text: "Heading",
+                            font: "HeadingFont",
+                            size: 48,
+                        }),
+                    ],
+                }),
+                new Paragraph({
+                    children: [
+                        new TextRun({
+                            text: "Body text with a different font",
+                            font: "BodyFont",
+                        }),
+                    ],
+                }),
+            ],
+        },
+    ],
+});
+```
+
+## Mixing System and Custom Fonts
+
+You can mix embedded fonts with system fonts:
+
+```ts live
+import * as fs from "fs";
+import { CharacterSet, Document, Paragraph, TextRun } from "docx";
+
+const fontData = fs.readFileSync("./demo/assets/Pacifico.ttf");
+
+const doc = new Document({
+    fonts: [{ name: "Pacifico", data: fontData, characterSet: CharacterSet.ANSI }],
+    sections: [
+        {
+            children: [
+                new Paragraph({
+                    children: [
+                        new TextRun({
+                            text: "System font (Arial), ",
+                            font: "Arial",
+                        }),
+                        new TextRun({
+                            text: "Custom embedded font",
+                            font: "Pacifico",
+                        }),
+                    ],
+                }),
+            ],
+        },
+    ],
+});
+```
+
+## Browser Usage
+
+In browsers, convert your font file to a base64 string or ArrayBuffer:
+
+```ts
+import { CharacterSet, Document, Packer, Paragraph, TextRun } from "docx";
+import { saveAs } from "file-saver";
+
+// Fetch the font file and convert to ArrayBuffer
+const response = await fetch("./fonts/MyFont.ttf");
+const fontData = await response.arrayBuffer();
+
+const doc = new Document({
+    fonts: [
+        {
+            name: "MyFont",
+            data: Buffer.from(fontData),
+            characterSet: CharacterSet.ANSI,
+        },
+    ],
+    sections: [
+        {
+            children: [
+                new Paragraph({
+                    children: [
+                        new TextRun({
+                            text: "Text with embedded font",
+                            font: "MyFont",
+                        }),
+                    ],
+                }),
+            ],
+        },
+    ],
+});
+
+// Export the document
+Packer.toBlob(doc).then((blob) => {
+    saveAs(blob, "document.docx");
+});
+```
+
+## Supported Font Formats
+
+- **TTF** (TrueType Font) - Most common, widely supported
+- **OTF** (OpenType Font) - Also supported
+
+?> For best compatibility, use TTF fonts when possible.
+
+## Demo
+
+### Embedding Custom Fonts
+
+[Example](https://raw.githubusercontent.com/dolanmiu/docx/master/demo/text/custom-fonts.ts ":include")
+
+_Source: https://github.com/dolanmiu/docx/blob/master/demo/text/custom-fonts.ts_
+
+### Declarative Custom Fonts
+
+[Example](https://raw.githubusercontent.com/dolanmiu/docx/master/demo/text/custom-fonts-in-styles.ts ":include")
+
+_Source: https://github.com/dolanmiu/docx/blob/master/demo/text/custom-fonts-in-styles.ts_

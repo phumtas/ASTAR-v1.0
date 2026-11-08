@@ -1,0 +1,790 @@
+# Templates
+
+Templates allow you to modify existing Word documents by replacing placeholder text with dynamic content. This is useful for generating documents from pre-designed layouts.
+
+!> For detailed information on the `patchDocument` function, see the [Patcher](usage/patcher.md) guide.
+
+## Overview
+
+The template workflow consists of:
+
+1. Create a Word document (.docx) with placeholder tags like `{{placeholder}}`
+2. Use `patchDocument` to replace the placeholders with content
+3. Export the modified document
+
+## Creating a Template
+
+Open your Word processor and create a document with placeholders:
+
+```
+Dear {{customer_name}},
+
+Thank you for your order #{{order_number}}.
+
+Your items will ship on {{ship_date}}.
+
+Best regards,
+{{company_name}}
+```
+
+?> Use double curly braces `{{}}` for placeholders. These will be replaced at runtime.
+
+### Spaces inside placeholders
+
+People often type a placeholder with spaces inside its braces, such as `{{ customer_name }}`, which doesn't match the patch `customer_name`. Give `patchDocument` `trimPlaceholders: true` to patch it as if the spaces weren't there:
+
+```ts live
+import * as fs from "fs";
+import { Document, Packer, Paragraph, patchDocument, PatchType, TextRun } from "docx";
+
+// The template, with spaces inside the braces of its placeholders
+const template = new Document({
+    sections: [
+        {
+            children: [new Paragraph("Dear {{ customer_name }},"), new Paragraph("Thank you for your order #{{order_number }}.")],
+        },
+    ],
+});
+
+const doc = await patchDocument({
+    outputType: "nodebuffer",
+    data: await Packer.toBuffer(template),
+    patches: {
+        customer_name: { type: PatchType.PARAGRAPH, children: [new TextRun("John Smith")] },
+        order_number: { type: PatchType.PARAGRAPH, children: [new TextRun("12345")] },
+    },
+    trimPlaceholders: true,
+});
+
+fs.writeFileSync("output.docx", doc);
+```
+
+- Only the spaces at the ends are left out, as JavaScript's `trim()` does, including tabs and non-breaking spaces. `{{ first name }}` is the placeholder of the patch `first name`.
+- It works for every kind of patch: the fields of a [`TABLE_ROWS`](#table_rows-type) patch, such as `{{ items.name }}`, and the alt text of a [picture](#replacing-a-picture) or a [chart](usage/chart-templates.md).
+- Only the placeholders of the patches given lose their spaces. Other text that looks like a placeholder, such as `{{ not_patched }}`, is left as it is.
+- [`patchDetector`](usage/patcher.md#discover-placeholders-before-building-patches) takes `trimPlaceholders` too, and then gives the key of `{{ customer_name }}` as `customer_name`.
+
+## Basic Usage
+
+```ts live
+import * as fs from "fs";
+import { Document, Packer, Paragraph, patchDocument, PatchType, TextRun } from "docx";
+
+// The template, made here as it would be in Word
+const template = new Document({
+    sections: [
+        {
+            children: [
+                new Paragraph("Dear {{customer_name}},"),
+                new Paragraph("Thank you for your order #{{order_number}}."),
+                new Paragraph("Your items will ship on {{ship_date}}."),
+                new Paragraph("Best regards,"),
+                new Paragraph("{{company_name}}"),
+            ],
+        },
+    ],
+});
+
+const doc = await patchDocument({
+    outputType: "nodebuffer",
+    data: await Packer.toBuffer(template), // or fs.readFileSync("template.docx")
+    patches: {
+        customer_name: {
+            type: PatchType.PARAGRAPH,
+            children: [new TextRun("John Smith")],
+        },
+        order_number: {
+            type: PatchType.PARAGRAPH,
+            children: [new TextRun("12345")],
+        },
+        ship_date: {
+            type: PatchType.PARAGRAPH,
+            children: [new TextRun("January 15, 2024")],
+        },
+        company_name: {
+            type: PatchType.PARAGRAPH,
+            children: [new TextRun("Acme Corp")],
+        },
+    },
+});
+
+fs.writeFileSync("output.docx", doc);
+```
+
+## Patch Types
+
+The examples below patch [simple-template.docx](https://github.com/dolanmiu/docx/blob/master/demo/assets/simple-template.docx), which has placeholders such as `{{name}}`, `{{paragraph_replace}}` and `{{table}}`.
+
+### PARAGRAPH Type
+
+Use `PatchType.PARAGRAPH` to replace with inline content (TextRun, images, hyperlinks):
+
+```ts live
+import * as fs from "fs";
+import { patchDocument, PatchType, TextRun } from "docx";
+
+const doc = await patchDocument({
+    outputType: "nodebuffer",
+    data: fs.readFileSync("./demo/assets/simple-template.docx"),
+    patches: {
+        name: {
+            type: PatchType.PARAGRAPH,
+            children: [new TextRun("Hello "), new TextRun({ text: "World", bold: true })],
+        },
+    },
+});
+
+fs.writeFileSync("My Document.docx", doc);
+```
+
+### DOCUMENT Type
+
+Use `PatchType.DOCUMENT` to replace with block-level content (paragraphs, tables):
+
+```ts live
+import * as fs from "fs";
+import { Paragraph, patchDocument, PatchType, Table, TableCell, TableRow } from "docx";
+
+const doc = await patchDocument({
+    outputType: "nodebuffer",
+    data: fs.readFileSync("./demo/assets/simple-template.docx"),
+    patches: {
+        paragraph_replace: {
+            type: PatchType.DOCUMENT,
+            children: [
+                new Paragraph("First paragraph"),
+                new Paragraph("Second paragraph"),
+                new Table({
+                    rows: [
+                        new TableRow({
+                            children: [
+                                new TableCell({ children: [new Paragraph("First cell")] }),
+                                new TableCell({ children: [new Paragraph("Second cell")] }),
+                            ],
+                        }),
+                    ],
+                }),
+            ],
+        },
+    },
+});
+
+fs.writeFileSync("My Document.docx", doc);
+```
+
+### TABLE_ROWS Type
+
+Use `PatchType.TABLE_ROWS` to fill a table designed in the template with any number of rows. The table keeps its look, such as its header, borders and shading, and each row of data gets its own copy of the template's row.
+
+The row to repeat holds the patch's fields: placeholders made of the patch's key, a dot and the field's name, such as `{{items.name}}` and `{{items.price}}` for the patch `items`. Each of `rows` gives the patches for one copy, by the name of the field they patch. A field's patch is a `PARAGRAPH` or `DOCUMENT` patch, as above.
+
+```ts live
+import * as fs from "fs";
+import { Document, IPatch, Packer, Paragraph, patchDocument, PatchType, ShadingType, Table, TableCell, TableRow, TextRun } from "docx";
+
+// The template, made here as it would be in Word: a header, and a row with the fields
+const header = (text: string) =>
+    new TableCell({
+        shading: { type: ShadingType.CLEAR, fill: "1F4E79" },
+        children: [new Paragraph({ children: [new TextRun({ text, bold: true, color: "FFFFFF" })] })],
+    });
+
+const template = new Document({
+    sections: [
+        {
+            children: [
+                new Table({
+                    columnWidths: [4000, 2000],
+                    rows: [
+                        new TableRow({ tableHeader: true, children: [header("Fruit"), header("Price")] }),
+                        new TableRow({
+                            children: [
+                                new TableCell({ children: [new Paragraph("{{items.name}}")] }),
+                                new TableCell({ children: [new Paragraph("£{{items.price}}")] }),
+                            ],
+                        }),
+                    ],
+                }),
+            ],
+        },
+    ],
+});
+
+const text = (value: string): IPatch => ({ type: PatchType.PARAGRAPH, children: [new TextRun(value)] });
+
+const doc = await patchDocument({
+    outputType: "nodebuffer",
+    data: await Packer.toBuffer(template), // or fs.readFileSync("template.docx")
+    patches: {
+        items: {
+            type: PatchType.TABLE_ROWS,
+            rows: [
+                { name: text("Apples"), price: text("0.40") },
+                { name: text("Pears"), price: text("0.55") },
+                { name: text("Figs"), price: text("0.30") },
+            ],
+        },
+    },
+});
+
+fs.writeFileSync("My Document.docx", doc);
+```
+
+- **Other placeholders**: The rows are repeated before the other patches are applied, so a placeholder of another patch in the repeated row, such as `{{currency}}`, is patched in every copy.
+- **More than one row for each item**: Rows next to each other that hold the fields are repeated together, such as a row for an item and a row under it for its notes.
+- **Missing fields**: A field that a row has no patch for, or whose patch is `undefined`, is left empty.
+- **No rows**: With no rows, the rows are removed and the rest of the table, such as its header, is kept. A table left with no rows at all is removed.
+- **Tables in tables**: A field's patch can be a `TABLE_ROWS` patch too, to repeat rows of a table in the repeated row. Its fields are then such as `{{orders.items.name}}`. When they are in the repeated row itself, rather than in a table in it, the row is repeated for each item, with its order's fields, and an order without items has no row.
+- **Bookmarks and ids**: Like content pasted in Word, only the first copy keeps the row's bookmarks, and the ids Word gives its paragraphs, rows and content controls, as these must be unique in a document.
+
+## Advanced Patches
+
+### Images
+
+```ts live
+import * as fs from "fs";
+import { ImageRun, patchDocument, PatchType } from "docx";
+
+const doc = await patchDocument({
+    outputType: "nodebuffer",
+    data: fs.readFileSync("./demo/assets/simple-template.docx"),
+    patches: {
+        image_test: {
+            type: PatchType.PARAGRAPH,
+            children: [
+                new ImageRun({
+                    type: "png",
+                    data: fs.readFileSync("./demo/assets/images/dog.png"),
+                    transformation: { width: 100, height: 90 },
+                }),
+            ],
+        },
+    },
+});
+
+fs.writeFileSync("My Document.docx", doc);
+```
+
+### Replacing a Picture
+
+To give a picture the template already has a new image, such as a placeholder photo or logo, put the placeholder in the picture's alt text rather than in the text, and patch it with an `ImagePatch`. The picture keeps its size, position, text wrapping, border, shape and effects, so it can be laid out and styled in Word:
+
+1. In Word, insert a placeholder picture, and size, place and style it as the document needs.
+2. Right-click the picture, choose **Edit Alt Text**, and type a placeholder as its description, such as `{{photo}}`.
+3. Patch the template with an `ImagePatch` for the placeholder's key, giving the new image as you would to an `ImageRun`:
+
+```ts live
+import * as fs from "fs";
+import { Document, ImagePatch, ImageRun, Packer, Paragraph, patchDocument } from "docx";
+
+// The template, made here as it would be in Word: a picture with a border, with {{photo}} as its alt text's description
+const template = new Document({
+    sections: [
+        {
+            children: [
+                new Paragraph({
+                    children: [
+                        new ImageRun({
+                            type: "gif",
+                            data: fs.readFileSync("./demo/assets/images/pizza.gif"),
+                            transformation: { width: 200, height: 200 },
+                            outline: { type: "solidFill", solidFillType: "rgb", value: "1F4E79", width: 38100 },
+                            altText: { name: "Photo", description: "{{photo}}" },
+                        }),
+                    ],
+                }),
+            ],
+        },
+    ],
+});
+
+const doc = await patchDocument({
+    outputType: "nodebuffer",
+    data: await Packer.toBuffer(template),
+    patches: {
+        photo: new ImagePatch({
+            type: "png",
+            data: fs.readFileSync("./demo/assets/images/dog.png"),
+            altText: { description: "A puppy" },
+        }),
+    },
+});
+
+fs.writeFileSync("My Document.docx", doc);
+```
+
+An `ImagePatch` only looks in pictures' alt text, so `{{photo}}` typed in the document's text stays as it is. Every picture whose alt text holds the placeholder gets the new image, wherever it is: in the document, a table, a header, a footer or a footnote. `patchDetector` lists the placeholders in pictures' alt text along with those in text.
+
+| Property       | Type                                              | Notes    | Description                                                                                                                 |
+| -------------- | ------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------- |
+| type           | `"png"`, `"jpg"`, `"gif"`, `"bmp"` or `"svg"`     | Required | The new image's format, as for an [`ImageRun`](usage/images.md)                                                             |
+| data           | `Buffer`, `Uint8Array`, `ArrayBuffer` or `string` | Required | The new image, or a base64 data URI of it                                                                                   |
+| fallback       | `{ type, data }`                                  | Optional | For an SVG image, the PNG, JPEG, GIF or BMP image that applications that can't show SVG show instead. Required for `"svg"`  |
+| transformation | `{ width: number; height: number }`               | Optional | The picture's new size, in pixels. Default is the template picture's size                                                   |
+| altText        | `{ description?: string; title?: string }`        | Optional | The picture's alt text. Default is the template's, with the placeholder taken out. An empty description or title removes it |
+
+The new image fills the picture, so it is stretched to the template picture's proportions. Give a new image with other proportions a `transformation` that keeps its own:
+
+```ts live
+import * as fs from "fs";
+import { Document, ImagePatch, ImageRun, Packer, Paragraph, patchDocument } from "docx";
+
+// A square placeholder picture
+const template = new Document({
+    sections: [
+        {
+            children: [
+                new Paragraph({
+                    children: [
+                        new ImageRun({
+                            type: "gif",
+                            data: fs.readFileSync("./demo/assets/images/pizza.gif"),
+                            transformation: { width: 200, height: 200 },
+                            altText: { name: "Photo", description: "{{photo}}" },
+                        }),
+                    ],
+                }),
+            ],
+        },
+    ],
+});
+
+const doc = await patchDocument({
+    outputType: "nodebuffer",
+    data: await Packer.toBuffer(template),
+    patches: {
+        // The cat is 625 by 417 pixels: 300 by 200 keeps its proportions
+        photo: new ImagePatch({
+            type: "jpg",
+            data: fs.readFileSync("./demo/assets/images/cat.jpg"),
+            transformation: { width: 300, height: 200 },
+        }),
+    },
+});
+
+fs.writeFileSync("My Document.docx", doc);
+```
+
+What changes, and what stays:
+
+- **The image.** The new image is added to the document, and the template's is removed, unless another picture shows it. A picture linked to a file gets the new image embedded.
+- **The look.** The picture's position, text wrapping, rotation, border, shape and effects, such as its transparency, are the template's. Word's crop of the template's image is removed, and so are Word's artistic effects, which keep a copy of the template's image.
+- **The alt text.** The placeholder is taken out of the description and title, unless `altText` is given. Describe the new image in `altText`, so screen readers can read it.
+
+`patchDocument` throws an error that names the placeholder for a drawing that isn't a picture, such as a chart, a shape, a group of drawings or a drawing canvas. Ungroup a picture in Word to patch it. To give a chart new data, use `ChartDataPatch` (see [Charts in Templates](usage/chart-templates.md)).
+
+### Hyperlinks
+
+```ts live
+import * as fs from "fs";
+import { ExternalHyperlink, patchDocument, PatchType, TextRun } from "docx";
+
+const doc = await patchDocument({
+    outputType: "nodebuffer",
+    data: fs.readFileSync("./demo/assets/simple-template.docx"),
+    patches: {
+        item_1: {
+            type: PatchType.PARAGRAPH,
+            children: [
+                new ExternalHyperlink({
+                    children: [
+                        new TextRun({
+                            text: "Visit our website",
+                            style: "Hyperlink",
+                        }),
+                    ],
+                    link: "https://example.com",
+                }),
+            ],
+        },
+    },
+});
+
+fs.writeFileSync("My Document.docx", doc);
+```
+
+### Tables
+
+```ts live
+import * as fs from "fs";
+import { Paragraph, patchDocument, PatchType, Table, TableCell, TableRow } from "docx";
+
+const doc = await patchDocument({
+    outputType: "nodebuffer",
+    data: fs.readFileSync("./demo/assets/simple-template.docx"),
+    patches: {
+        table: {
+            type: PatchType.DOCUMENT,
+            children: [
+                new Table({
+                    rows: [
+                        new TableRow({
+                            children: [
+                                new TableCell({ children: [new Paragraph("Item")] }),
+                                new TableCell({ children: [new Paragraph("Price")] }),
+                            ],
+                        }),
+                        new TableRow({
+                            children: [
+                                new TableCell({ children: [new Paragraph("Widget")] }),
+                                new TableCell({ children: [new Paragraph("$9.99")] }),
+                            ],
+                        }),
+                    ],
+                }),
+            ],
+        },
+    },
+});
+
+fs.writeFileSync("My Document.docx", doc);
+```
+
+### Footnotes and endnotes
+
+A patch refers to a footnote with a `FootnoteReferenceRun`, and the footnotes go in `footnotes`, as they do in a `Document` (see [Footnotes](usage/footnotes.md)). Endnotes work the same way, with `EndnoteReferenceRun` and `endnotes`:
+
+```ts live
+import * as fs from "fs";
+import { EndnoteReferenceRun, FootnoteReferenceRun, Paragraph, patchDocument, PatchType, TextRun } from "docx";
+
+const doc = await patchDocument({
+    outputType: "nodebuffer",
+    data: fs.readFileSync("./demo/assets/simple-template.docx"),
+    patches: {
+        name: {
+            type: PatchType.PARAGRAPH,
+            children: [new TextRun("John Doe"), new FootnoteReferenceRun(1)],
+        },
+        paragraph_replace: {
+            type: PatchType.DOCUMENT,
+            children: [
+                new Paragraph({
+                    children: [new TextRun("The report is due on Friday."), new EndnoteReferenceRun(1)],
+                }),
+            ],
+        },
+    },
+    footnotes: {
+        1: { children: [new Paragraph("Our new head of sales.")] },
+    },
+    endnotes: {
+        1: { children: [new Paragraph("Send it to the whole team.")] },
+    },
+});
+
+fs.writeFileSync("My Document.docx", doc);
+```
+
+The ids only link each reference to its note. In the patched document, each note is given an id that none of the template's own notes have, and Word numbers the notes in the order they appear. Each reference a patch inserts gets a note of its own, so a placeholder that is in the template twice gets two. Only the notes that a patch refers to are written.
+
+A reference run can be given its note's content instead of an id, as in a `Document`, such as `new FootnoteReferenceRun({ children: [new Paragraph("Our new head of sales.")] })`, and then needs nothing in `footnotes`. The HTML of `htmlToContent` and `htmlToRuns` brings its footnotes this way. Word has notes only in a document's body, so a reference run with its own note is left out of a patch in a header or footer.
+
+A template that has no footnotes or endnotes yet is given what they need, including the styles that show their numbers as superscript.
+
+### Lists
+
+A paragraph in a patch is put in a numbered list with `numbering`, and the lists go in `numbering`, as they do in a `Document` (see [Bullets and Numbering](usage/numbering.md)). A paragraph with `bullet` is put in a bullet list, as in a `Document`:
+
+```ts live
+import * as fs from "fs";
+import { LevelFormat, Paragraph, patchDocument, PatchType } from "docx";
+
+const doc = await patchDocument({
+    outputType: "nodebuffer",
+    data: fs.readFileSync("./demo/assets/simple-template.docx"),
+    numbering: {
+        config: [
+            {
+                reference: "steps",
+                levels: [
+                    { level: 0, format: LevelFormat.DECIMAL, text: "%1.", style: { paragraph: { indent: { left: 720, hanging: 360 } } } },
+                    {
+                        level: 1,
+                        format: LevelFormat.LOWER_LETTER,
+                        text: "%2)",
+                        style: { paragraph: { indent: { left: 1440, hanging: 360 } } },
+                    },
+                ],
+            },
+        ],
+    },
+    patches: {
+        paragraph_replace: {
+            type: PatchType.DOCUMENT,
+            children: [
+                new Paragraph({ text: "Open the box", numbering: { reference: "steps", level: 0 } }),
+                new Paragraph({ text: "Check that every part is there", numbering: { reference: "steps", level: 1 } }),
+                new Paragraph({ text: "Put it together", numbering: { reference: "steps", level: 0 } }),
+                new Paragraph({ text: "Keep the receipt", bullet: { level: 0 } }),
+            ],
+        },
+    },
+});
+
+fs.writeFileSync("My Document.docx", doc);
+```
+
+Each list that the patches use is added to the template's lists, with an id that none of them has, so the template's own lists stay as they are. A list is numbered on from one patch to the next, as it is in a `Document`, and a paragraph with another `instance` starts it again. A template that has no lists yet is given what they need.
+
+To add an item to a list that is already in the template, put its placeholder in a paragraph of the list, and patch it with `PatchType.PARAGRAPH`. The paragraph stays in the list, and the items after it are numbered on from it. For an item that is optional, a `PatchType.DOCUMENT` patch with no children removes the paragraph:
+
+```ts live
+import * as fs from "fs";
+import { Document, LevelFormat, Packer, Paragraph, patchDocument, PatchType, TextRun } from "docx";
+
+// A template with a list, whose second item is a placeholder
+const item = (text: string): Paragraph => new Paragraph({ text, numbering: { reference: "packing-list", level: 0 } });
+const template = await Packer.toBuffer(
+    new Document({
+        numbering: { config: [{ reference: "packing-list", levels: [{ level: 0, format: LevelFormat.DECIMAL, text: "%1." }] }] },
+        sections: [{ children: [item("Water bottle"), item("{{lunch}}"), item("Raincoat")] }],
+    }),
+);
+
+const bringsLunch = true;
+const doc = await patchDocument({
+    outputType: "nodebuffer",
+    data: template,
+    patches: {
+        lunch: bringsLunch
+            ? { type: PatchType.PARAGRAPH, children: [new TextRun("A packed lunch")] }
+            : { type: PatchType.DOCUMENT, children: [] },
+    },
+});
+
+fs.writeFileSync("My Document.docx", doc);
+```
+
+### Headings and styles
+
+A paragraph in a patch is made a heading with `heading`, as in a `Document`:
+
+```ts live
+import * as fs from "fs";
+import { HeadingLevel, Paragraph, patchDocument, PatchType } from "docx";
+
+const doc = await patchDocument({
+    outputType: "nodebuffer",
+    data: fs.readFileSync("./demo/assets/simple-template.docx"),
+    patches: {
+        paragraph_replace: {
+            type: PatchType.DOCUMENT,
+            children: [
+                new Paragraph({ text: "Introduction", heading: HeadingLevel.HEADING_1 }),
+                new Paragraph({ text: "Background", heading: HeadingLevel.HEADING_2 }),
+                new Paragraph("The project started in the spring."),
+            ],
+        },
+    },
+});
+
+fs.writeFileSync("My Document.docx", doc);
+```
+
+A heading has the look of the template's heading style. Word only saves the styles that a document uses, so a template may not have it yet, and Word would show the heading as body text. A heading style that the template doesn't have, or another of docx's styles such as `ListParagraph` or `Hyperlink`, is added to it as a `Document` writes it. The `TOC1` to `TOC9` styles of the entries of a table of contents indent each level by the size of the template's Normal font, as Word's do. To give the headings a look of your own, change the heading style in the template in Word, which saves it with the template.
+
+A template saved by Word in another language has its styles under other ids, such as `berschrift1` for Heading 1 in German. A heading is given the template's style of the same name, such as `heading 1`, so it has the template's look there too.
+
+A style of your own, given with `style`, has to be in the template.
+
+### Page numbers
+
+A template's table of contents, page references and numbers of pages show the page numbers the template was saved with, which the patches can change. Give `patchDocument` `estimatePageNumbers` from `docx/layout` as its `pageNumbers`, and it lays out the filled-in document's pages as Word would, and writes their numbers:
+
+```ts
+import * as fs from "fs";
+import { patchDocument, PatchType, TextRun } from "docx";
+import { estimatePageNumbers } from "docx/layout";
+
+const doc = await patchDocument({
+    outputType: "nodebuffer",
+    data: fs.readFileSync("Report template.docx"),
+    patches: {
+        name: { type: PatchType.PARAGRAPH, children: [new TextRun("John Doe")] },
+    },
+    pageNumbers: estimatePageNumbers,
+});
+```
+
+Its page references and tables of contents are written clean, so Word shows the numbers as they are, rather than asking to update the fields when it opens the document. See [Layout](usage/layout.md#templates) for what it follows, and what it leaves blank.
+
+## Preserving Styles
+
+Set `keepOriginalStyles: true` to preserve the formatting of the placeholder text:
+
+```ts live
+import * as fs from "fs";
+import { patchDocument, PatchType, TextRun } from "docx";
+
+const doc = await patchDocument({
+    outputType: "nodebuffer",
+    data: fs.readFileSync("./demo/assets/simple-template-3.docx"),
+    keepOriginalStyles: true, // Preserve template formatting
+    patches: {
+        salutation: {
+            type: PatchType.PARAGRAPH,
+            children: [new TextRun("Mr.")],
+        },
+        "first-name": {
+            type: PatchType.PARAGRAPH,
+            children: [new TextRun("John")],
+        },
+    },
+});
+
+fs.writeFileSync("My Document.docx", doc);
+```
+
+The text of a link, such as an `ExternalHyperlink`'s, is formatted as the placeholder is too. Formatting that a run sets itself, such as the link's color, is kept.
+
+## Headers and Footers
+
+Placeholders in headers and footers are also replaced:
+
+```ts live
+import * as fs from "fs";
+import { patchDocument, PatchType, TextRun } from "docx";
+
+const doc = await patchDocument({
+    outputType: "nodebuffer",
+    data: fs.readFileSync("./demo/assets/simple-template.docx"),
+    patches: {
+        header_adjective: {
+            type: PatchType.PARAGRAPH,
+            children: [new TextRun("great header")],
+        },
+        footer_text: {
+            type: PatchType.PARAGRAPH,
+            children: [new TextRun("Confidential")],
+        },
+    },
+});
+
+fs.writeFileSync("My Document.docx", doc);
+```
+
+## Document Properties
+
+Give `patchDocument` the document's `properties`, such as its title, author, tags and comments, which Word shows in File > Info:
+
+```ts live
+import * as fs from "fs";
+import { patchDocument, PatchType, TextRun } from "docx";
+
+const doc = await patchDocument({
+    outputType: "nodebuffer",
+    data: fs.readFileSync("./demo/assets/simple-template.docx"),
+    patches: {
+        name: {
+            type: PatchType.PARAGRAPH,
+            children: [new TextRun("John Doe")],
+        },
+    },
+    properties: {
+        title: "Letter to John Doe",
+        creator: "Dolan Miu",
+        keywords: "letter, customer",
+        description: "Made from simple-template.docx",
+    },
+});
+
+fs.writeFileSync("My Document.docx", doc);
+```
+
+They have the names that `Document` gives them (see [Document Properties](usage/document.md#metadata-properties)): `title`, `subject`, `creator` (the author), `keywords` (the tags), `description` (the comments), `lastModifiedBy` and `revision`. Each one replaces the template's, and an empty string clears it. The template's other properties, such as when it was created, are kept.
+
+## Complete Example
+
+Invoice template:
+
+```ts live
+import * as fs from "fs";
+import { Document, Packer, Paragraph, patchDocument, PatchType, Table, TableCell, TableRow, TextRun } from "docx";
+
+// Invoice data
+const invoice = {
+    number: "INV-2024-001",
+    date: "January 10, 2024",
+    customer: "Acme Corporation",
+    items: [
+        { name: "Widget A", qty: 5, price: 10.0 },
+        { name: "Widget B", qty: 3, price: 15.0 },
+    ],
+    total: 95.0,
+};
+
+// The template, made here as it would be in Word
+const cell = (text: string) => new TableCell({ children: [new Paragraph(text)] });
+const template = new Document({
+    sections: [
+        {
+            children: [
+                new Paragraph("Invoice {{invoice_number}}"),
+                new Paragraph("Date: {{invoice_date}}"),
+                new Paragraph("Bill to: {{customer_name}}"),
+                new Table({
+                    rows: [
+                        new TableRow({ tableHeader: true, children: [cell("Item"), cell("Qty"), cell("Price")] }),
+                        new TableRow({
+                            children: [cell("{{line_items.name}}"), cell("{{line_items.qty}}"), cell("${{line_items.price}}")],
+                        }),
+                    ],
+                }),
+                new Paragraph("Total: {{total}}"),
+            ],
+        },
+    ],
+});
+
+const doc = await patchDocument({
+    outputType: "nodebuffer",
+    data: await Packer.toBuffer(template), // or fs.readFileSync("invoice-template.docx")
+    patches: {
+        invoice_number: {
+            type: PatchType.PARAGRAPH,
+            children: [new TextRun(invoice.number)],
+        },
+        invoice_date: {
+            type: PatchType.PARAGRAPH,
+            children: [new TextRun(invoice.date)],
+        },
+        customer_name: {
+            type: PatchType.PARAGRAPH,
+            children: [new TextRun(invoice.customer)],
+        },
+        line_items: {
+            type: PatchType.TABLE_ROWS,
+            rows: invoice.items.map((item) => ({
+                name: { type: PatchType.PARAGRAPH, children: [new TextRun(item.name)] },
+                qty: { type: PatchType.PARAGRAPH, children: [new TextRun(String(item.qty))] },
+                price: { type: PatchType.PARAGRAPH, children: [new TextRun(item.price.toFixed(2))] },
+            })),
+        },
+        total: {
+            type: PatchType.PARAGRAPH,
+            children: [
+                new TextRun({
+                    text: `$${invoice.total.toFixed(2)}`,
+                    bold: true,
+                }),
+            ],
+        },
+    },
+});
+
+fs.writeFileSync("invoice-output.docx", doc);
+```
+
+## Tips
+
+- **Placeholder naming**: Use descriptive names like `customer_name` instead of `x1`
+- **Testing**: Open the template in Word to verify placeholders are formatted as plain text
+- **Complex layouts**: Design the layout in Word, then add placeholders where content varies
+- **Reusable templates**: Store templates in a dedicated folder for easy access
+
+## Demo
+
+[Example](https://raw.githubusercontent.com/dolanmiu/docx/master/demo/templates/patch-document.ts ":include")
+
+_Source: https://github.com/dolanmiu/docx/blob/master/demo/templates/patch-document.ts_

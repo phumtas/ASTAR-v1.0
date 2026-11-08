@@ -1,0 +1,8178 @@
+import { describe, expect, it } from "vitest";
+
+import { Formatter } from "@export/formatter";
+import type { IPropertiesOptions } from "@file/core-properties";
+import { File } from "@file/file";
+import { FootnoteReferenceRun } from "@file/footnotes";
+import type { ICompatibilityOptions } from "@file/settings/compatibility";
+import { HeightRule, Table, TableCell, TableRow, WidthType } from "@file/table";
+import { Textbox } from "@file/textbox";
+import { DeletedTextRun } from "@file/track-revision";
+import {
+    AlignmentType,
+    Bookmark,
+    DocumentGridType,
+    EndnoteReferenceRun,
+    Footer,
+    Header,
+    HeadingLevel,
+    HorizontalPositionAlign,
+    HorizontalPositionRelativeFrom,
+    type IContext,
+    type ISectionOptions,
+    type IXmlableObject,
+    ImageRun,
+    LevelFormat,
+    LevelSuffix,
+    PageTextDirectionType,
+    Paragraph,
+    TextRun,
+    TextWrappingSide,
+    TextWrappingType,
+    VerticalPositionRelativeFrom,
+} from "docx";
+
+import { type TextFont, type TextGrid, WORD_DEFAULT_STYLES, readTextStyles } from "../text-layout";
+import type { ImageSize } from "./image-sizes";
+import {
+    type Block,
+    type DocumentContent,
+    type DocumentParts,
+    type FloatingDrawing,
+    type LayoutItem,
+    type ParagraphBlock,
+    type ReadOptions,
+    type Section,
+    type TableBlock,
+    readContent,
+    readDocument,
+} from "./read-document";
+
+const contextOf = (file: File): IContext => ({ file, viewWrapper: file.Document, stack: [] }) as unknown as IContext;
+
+/** Reads a body of formatted elements, with the styles, lists and settings of a document with the options */
+const readBody = (elements: readonly unknown[], options: Partial<IPropertiesOptions> = {}): DocumentContent => {
+    const file = new File({ sections: [], ...options });
+    return readDocument({ "w:body": elements } as IXmlableObject, contextOf(file));
+};
+
+/** Reads a document as it is written */
+const readWritten = (options: IPropertiesOptions): DocumentContent => {
+    let content: DocumentContent | undefined;
+    const file = new File({
+        ...options,
+        pageNumbers: (body, context) => {
+            content = readDocument(body, context);
+            return { bookmarks: new Map() };
+        },
+    });
+    new Formatter().format(file.Document.View, contextOf(file));
+    return content!;
+};
+
+/**
+ * Reads a body of formatted elements, with the styles, lists and notes of a document with the options, and settings of
+ * these elements, which docx doesn't write, in Word 2013's compatibility mode
+ */
+const readWithSettings = (
+    elements: readonly unknown[],
+    settings: readonly object[],
+    options: Partial<IPropertiesOptions> = {},
+    read: ReadOptions = {},
+): DocumentContent => {
+    const file = new File({ sections: [], ...options });
+    const compatibility = { "w:compat": [{ "w:compatSetting": { _attr: { "w:name": "compatibilityMode", "w:val": 15 } } }] };
+    const withSettings = Object.create(file, {
+        Settings: { value: { prepForXml: () => ({ "w:settings": [...settings, compatibility] }) } },
+    }) as File;
+    return readDocument({ "w:body": elements } as IXmlableObject, contextOf(withSettings), read);
+};
+
+const p = (...children: readonly unknown[]): object => ({ "w:p": children });
+const r = (...children: readonly unknown[]): object => ({ "w:r": children });
+const t = (text: string): object => ({ "w:t": [{ _attr: { "xml:space": "preserve" } }, text] });
+const pPr = (...children: readonly unknown[]): object => ({ "w:pPr": children });
+const rPr = (...children: readonly unknown[]): object => ({ "w:rPr": children });
+const value = (name: string, val: unknown): object => ({ [name]: { _attr: { "w:val": val } } });
+const field = (type: string): object => r({ "w:fldChar": { _attr: { "w:fldCharType": type } } });
+const instruction = (text: string): object => r({ "w:instrText": [{ _attr: { "xml:space": "preserve" } }, text] });
+
+const paragraphOf = (content: DocumentContent, index = 0): ParagraphBlock => content.blocks[index].block as ParagraphBlock;
+const itemsOf = (content: DocumentContent, index = 0): readonly LayoutItem[] => paragraphOf(content, index).items;
+const textOf = (content: DocumentContent, index = 0): string =>
+    itemsOf(content, index)
+        .map((item) => (item.type === "text" ? item.text : item.type === "pageReference" ? `[${item.bookmark}]` : ""))
+        .join("");
+
+describe("readDocument", () => {
+    describe("paragraphs", () => {
+        it("should read the text of runs in their formatting: the document's defaults, the styles, and their own", () => {
+            const content = readBody(
+                [p(pPr(value("w:pStyle", "Heading1")), r(t("Plain")), r(rPr(value("w:sz", 30), { "w:b": {} }), t("Big")))],
+                {
+                    styles: { default: { document: { run: { font: "Arial", size: 20 } }, heading1: { run: { size: 28 } } } },
+                },
+            );
+            expect(itemsOf(content)).to.deep.equal([
+                { type: "text", text: "Plain", font: { font: "Arial", size: 14 } },
+                { type: "text", text: "Big", font: { font: "Arial", size: 15, bold: true } },
+            ]);
+            expect(paragraphOf(content).markFont).to.deep.equal({ font: "Arial", size: 14 });
+            expect(paragraphOf(content).style).to.equal("Heading1");
+        });
+
+        it("should mark text Word doesn't hyphenate, and text in a language other than English, whose dictionary Word hasn't shown", () => {
+            const lang = (val: string): object => ({ "w:lang": { _attr: { "w:val": val } } });
+            const content = readBody([
+                p(
+                    r(t("a")),
+                    r(rPr(lang("en-GB")), t("b")),
+                    r(rPr(lang("EN")), t("c")),
+                    r(rPr({ "w:noProof": {} }, lang("en-US")), t("d")),
+                    r(rPr(lang("zxx")), t("e")),
+                    r(rPr(lang("de-DE")), t("f")),
+                    r(rPr(lang("eng")), t("g")),
+                ),
+            ]);
+            expect(itemsOf(content).map((item) => (item.type === "text" ? item.hyphenation : item.type))).to.deep.equal([
+                undefined,
+                undefined,
+                undefined,
+                "none",
+                "none",
+                "unknown",
+                "unknown",
+            ]);
+        });
+
+        it("should read East Asian text in its run's East Asian font, with its language, and right-to-left runs in the font of complex scripts", () => {
+            const fonts = { "w:rFonts": { _attr: { "w:ascii": "Arial", "w:eastAsia": "SimSun", "w:cs": "Times New Roman" } } };
+            const content = readBody([
+                p(
+                    r(rPr(fonts, { "w:lang": { _attr: { "w:eastAsia": "zh-CN" } } }), t("a永")),
+                    r(rPr(fonts, { "w:rtl": {} }, value("w:szCs", 28)), t("b")),
+                ),
+            ]);
+            expect(itemsOf(content)).to.deep.equal([
+                { type: "text", text: "a", font: { font: "Arial" }, language: "zh-CN", eastAsian: true },
+                { type: "text", text: "永", font: { font: "SimSun" }, language: "zh-CN", eastAsian: true },
+                { type: "text", text: "b", font: { font: "Times New Roman", size: 14, rightToLeft: true }, eastAsian: true },
+            ]);
+        });
+
+        it("should read characters past ASCII in the run's high ANSI font, inherited on its own, and stop where Word's font for them isn't known", () => {
+            // Curly quotes in a run given SimSun for ASCII alone are in the document's Calibri, as Word drew them
+            // (word-stops-fe-layout2.docx FE2c, word-stops-compat2-15.docx CN10c)
+            const simSun = { "w:rFonts": { _attr: { "w:ascii": "SimSun", "w:eastAsia": "SimSun" } } };
+            const calibri = { styles: { default: { document: { run: { font: "Calibri" } } } } };
+            const content = readBody([p(r(rPr(simSun), t("a\u201c\u4e2d\u201d")))], calibri);
+            expect(itemsOf(content)).to.deep.equal([
+                { type: "text", text: "a", font: { font: "SimSun" }, eastAsian: true },
+                { type: "text", text: "\u201c", font: { font: "Calibri" }, eastAsian: true },
+                { type: "text", text: "\u4e2d", font: { font: "SimSun" }, eastAsian: true },
+                { type: "text", text: "\u201d", font: { font: "Calibri" }, eastAsian: true },
+            ]);
+            // Without a high ANSI font in the document, all of it is in the run's font
+            expect(itemsOf(readBody([p(r(rPr(simSun), t("a\u201c")))]))).to.deep.equal([
+                { type: "text", text: "a\u201c", font: { font: "SimSun" }, eastAsian: true },
+            ]);
+            // With the run's hint for East Asian text, a curly quote is in the East Asian font, as Word drew them
+            // (word-stops-run-fonts.docx HA1a to HA1c); Thai, which the rules leave out, is in the high ANSI font, as Word
+            // drew such characters (HA3a); hidden text takes no room in any font
+            const hinted = { "w:rFonts": { _attr: { "w:ascii": "SimSun", "w:eastAsia": "SimSun", "w:hint": "eastAsia" } } };
+            expect(itemsOf(readBody([p(r(rPr(hinted), t("\u4e2d\u201c")))], calibri))).to.deep.equal([
+                { type: "text", text: "\u4e2d\u201c", font: { font: "SimSun" }, eastAsian: true },
+            ]);
+            expect(itemsOf(readBody([p(r(rPr(simSun), t("\u0e01")))], calibri))).to.deep.equal([
+                { type: "text", text: "\u0e01", font: { font: "Calibri" }, eastAsian: true },
+            ]);
+            // Which font Word draws a quote in with the hint in a run whose East Asian font isn't one hasn't been seen
+            const hintedCalibri = { "w:rFonts": { _attr: { "w:hint": "eastAsia" } } };
+            expect(paragraphOf(readBody([p(r(rPr(hintedCalibri), t("\u4e2d\u201c")))], calibri)).unsupported).to.equal(
+                "a character Word draws in the East Asian font of a run with the hint for East Asian text (w:hint), such as a curly quote, in a run whose East Asian font isn't one, such as Calibri",
+            );
+            expect(paragraphOf(readBody([p(r(rPr(hintedCalibri), t("\u4e2d\u6587")))], calibri)).unsupported).to.equal(undefined);
+            expect(paragraphOf(readBody([p(r(rPr(hintedCalibri, { "w:vanish": {} }), t("\u201c")))], calibri)).unsupported).to.equal(
+                undefined,
+            );
+            // Read to be laid out with a guess, it is laid out in the layout's fonts
+            const guessed = readDocument(
+                { "w:body": [p(r(rPr(hintedCalibri), t("\u4e2d\u201c")))] } as IXmlableObject,
+                contextOf(new File({ sections: [] })),
+                { guess: true },
+            );
+            expect(itemsOf(guessed).flatMap((item) => (item.type === "text" ? [item.text] : []))).to.deep.equal(["\u4e2d\u201c"]);
+        });
+
+        it("should read an empty paragraph", () => {
+            expect(paragraphOf(readBody([{ "w:p": {} }]))).to.deep.include({ items: [], style: "Normal" });
+        });
+
+        it("should read runs in their character style, and the paragraph mark's own formatting", () => {
+            const content = readBody([p(pPr(rPr(value("w:sz", 40))), r(rPr(value("w:rStyle", "Strong")), t("Strong")))], {
+                styles: { characterStyles: [{ id: "Strong", name: "Strong", run: { bold: true } }] },
+            });
+            expect(itemsOf(content)).to.deep.equal([{ type: "text", text: "Strong", font: { bold: true } }]);
+            expect(paragraphOf(content).markFont).to.deep.equal({ size: 20 });
+        });
+
+        it("should read tabs, breaks and the characters Word writes as elements, and leave out hidden text", () => {
+            const content = readBody([
+                p(
+                    r(
+                        t("a"),
+                        { "w:tab": {} },
+                        { "w:ptab": { _attr: {} } },
+                        { "w:br": { _attr: { "w:type": "page" } } },
+                        { "w:br": { _attr: { "w:type": "column" } } },
+                        { "w:br": {} },
+                        { "w:cr": {} },
+                        { "w:noBreakHyphen": {} },
+                        { "w:sym": { _attr: { "w:char": "F0A7" } } },
+                        { "w:endnoteReference": { _attr: { "w:id": 1 } } },
+                        { "w:lastRenderedPageBreak": {} },
+                    ),
+                    r(
+                        rPr({ "w:vanish": {} }),
+                        t("hidden"),
+                        { "w:tab": {} },
+                        { "w:br": {} },
+                        { "w:cr": {} },
+                        { "w:noBreakHyphen": {} },
+                        { "w:sym": { _attr: { "w:char": "F0A7" } } },
+                    ),
+                    r(rPr({ "w:caps": {} }), t("caps")),
+                ),
+            ]);
+            expect(
+                itemsOf(content).map((item) => (item.type === "break" ? item.kind : item.type === "text" ? item.text : item.type)),
+            ).to.deep.equal(["a", "tab", "tab", "page", "column", "line", "line", "\u2011", "\uf0a7", "marker", "i", "CAPS"]);
+            // An endnote's reference: the marker its bookmarks and fields are placed by, and its number, in its run's font,
+            // numbered as Word numbers endnotes
+            expect(itemsOf(content).slice(9, 11)).to.deep.equal([
+                { type: "marker", name: "endnote 1" },
+                { type: "text", text: "i", font: {} },
+            ]);
+        });
+
+        it("should read superscript, raised text, emphasis marks and borders into the font text is laid out in", () => {
+            const bdr = (style: string): object => ({ "w:bdr": { _attr: { "w:val": style, "w:sz": 4, "w:space": 4 } } });
+            const content = readBody([
+                p(
+                    r(rPr(value("w:vertAlign", "superscript"), value("w:sz", 22)), t("2")),
+                    r(rPr(value("w:position", 12), value("w:em", "underDot"), bdr("single")), t("up")),
+                ),
+            ]);
+            expect(itemsOf(content)).to.deep.equal([
+                { type: "text", text: "2", font: { size: 7, lineSize: 11 } },
+                {
+                    type: "text",
+                    text: "up",
+                    font: { raise: 6, emphasis: "below", border: { room: 4.5, key: '[["w:space","4"],["w:sz","4"],["w:val","single"]]' } },
+                },
+            ]);
+            // A border on the paragraph's mark is in its font, and takes no room in its line (word-run-formatting.ts RF8d)
+            expect(paragraphOf(readBody([p(pPr(rPr(bdr("single"))))])).markFont.border?.room).to.equal(4.5);
+        });
+
+        it("should stop at a run's formatting whose room Word hasn't shown, and at pictures in a box", () => {
+            const bdr = (style: string): object => ({ "w:bdr": { _attr: { "w:val": style, "w:sz": 4, "w:space": 0 } } });
+            const stopsAt = (...children: readonly unknown[]): string | undefined => paragraphOf(readBody([p(...children)])).unsupported;
+            expect(stopsAt(r(rPr(bdr("custom")), t("a")))).to.equal("a run border of a style, width or space not yet followed");
+            // A tab in a box, which goes on round it (word-stops-tabs.ts TA7a)
+            expect(stopsAt(r(rPr(bdr("single")), { "w:tab": {} }))).to.equal(undefined);
+            expect(stopsAt(r(rPr(bdr("single")), t("a\tb")))).to.equal(undefined);
+            // A picture in the line in a box of its own, with the border's room around it (word-stops-text2.ts RF32b), but not
+            // one placed on the page
+            expect(stopsAt(r(rPr(bdr("single")), { "w:drawing": [{ "wp:inline": [] }] }))).to.equal(undefined);
+            expect(stopsAt(r(rPr(bdr("single")), { "w:drawing": [{ "wp:anchor": [] }] }))).to.equal(
+                "a drawing placed on the page in text with a border",
+            );
+            // A position whose minus sign is its whole number's only: "-2.5pt" lowers text 1.5 points (word-stops-text.ts RF26a)
+            expect(stopsAt(r(rPr(value("w:position", "-2.5pt")), t("a")))).to.equal(undefined);
+            // Hidden text takes no room, whatever its formatting
+            expect(stopsAt(r(rPr({ "w:vanish": {} }, bdr("wave")), t("a")))).to.equal(undefined);
+        });
+
+        it("should read a symbol as its character in its own font, which the width tables don't have when it's a symbol font's", () => {
+            const content = readBody([
+                p(
+                    r(
+                        { "w:sym": { _attr: { "w:font": "Wingdings", "w:char": "F0FC" } } },
+                        { "w:sym": { _attr: { "w:font": "Calibri", "w:char": "2022" } } },
+                    ),
+                ),
+            ]);
+            expect(itemsOf(content)).to.deep.equal([
+                { type: "text", text: "\uf0fc", font: { font: "Wingdings" } },
+                { type: "text", text: "\u2022", font: { font: "Calibri" } },
+            ]);
+        });
+
+        it("should stop at a symbol whose character isn't four hexadecimal digits, as the schema has it, rather than read part of it", () => {
+            // "110000" is past the last code point, and "F0FCzz" and "41" aren't four digits
+            for (const character of ["110000", "F0FCzz", "41", undefined]) {
+                const attributes = character === undefined ? { "w:font": "Wingdings" } : { "w:font": "Wingdings", "w:char": character };
+                expect(paragraphOf(readBody([p(r({ "w:sym": { _attr: attributes } }))])).unsupported).to.equal(
+                    "a symbol whose character isn't four hexadecimal digits",
+                );
+            }
+        });
+
+        it("should read a tab in the text as a tab, as Word lays it out and docx writes those of a TextRun's text", () => {
+            const content = readBody([p(r(t("a\tb\t")), r(rPr({ "w:vanish": {} }), t("hidden\t")))]);
+            expect(itemsOf(content).map((item) => (item.type === "text" ? item.text : item.type))).to.deep.equal(["a", "tab", "b", "tab"]);
+        });
+
+        it("should read the text in hyperlinks, insertions, content controls and other elements that hold runs, but not deletions", () => {
+            const content = readBody([
+                p(
+                    { "w:hyperlink": [{ _attr: { "w:anchor": "a" } }, r(t("link "))] },
+                    { "w:ins": [r(t("inserted "))] },
+                    { "w:del": [r({ "w:delText": ["deleted"] })] },
+                    { "w:sdt": [{ "w:sdtPr": [] }, { "w:sdtContent": [r(t("control "))] }] },
+                    { "w:smartTag": [r(t("tag"))] },
+                    { "w:proofErr": { _attr: {} } },
+                ),
+            ]);
+            expect(textOf(content)).to.equal("link inserted control tag");
+        });
+
+        it("should read where bookmarks start", () => {
+            const content = readBody([
+                p({ "w:bookmarkStart": { _attr: { "w:name": "here", "w:id": 1 } } }, r(t("a")), {
+                    "w:bookmarkStart": { _attr: { "w:id": 2 } },
+                }),
+            ]);
+            expect(itemsOf(content)).to.deep.equal([
+                { type: "marker", name: "here" },
+                { type: "text", text: "a", font: {} },
+            ]);
+        });
+
+        it("should read the paragraph's formatting from its styles and its own, and add up their tab stops", () => {
+            const content = readBody(
+                [
+                    p(
+                        pPr(
+                            value("w:pStyle", "Tabbed"),
+                            {
+                                "w:tabs": [
+                                    { "w:tab": { _attr: { "w:val": "clear", "w:pos": 720 } } },
+                                    { "w:tab": { _attr: { "w:val": "right", "w:pos": 9000 } } },
+                                ],
+                            },
+                            { "w:spacing": { _attr: { "w:after": 200 } } },
+                        ),
+                    ),
+                ],
+                {
+                    externalStyles: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+    <w:style w:type="paragraph" w:styleId="Tabbed">
+        <w:name w:val="Tabbed"/>
+        <w:pPr>
+            <w:keepNext/>
+            <w:spacing w:before="100"/>
+            <w:tabs><w:tab w:val="left" w:pos="720"/><w:tab w:val="center" w:pos="1440"/><w:tab w:val="bar" w:pos="2880"/></w:tabs>
+        </w:pPr>
+    </w:style>
+</w:styles>`,
+                },
+            );
+            expect(paragraphOf(content).format).to.deep.include({ spaceBefore: 5, spaceAfter: 10, keepNext: true });
+            expect(paragraphOf(content).tabStops).to.deep.equal([
+                { position: 72, alignment: "center" },
+                { position: 450, alignment: "right" },
+            ]);
+        });
+
+        it("should give the space in lines as 12 points a line, in place of the space in twips, as Word does (TX7d)", () => {
+            const spacing = (attributes: Record<string, unknown>): ParagraphBlock =>
+                paragraphOf(readBody([p(pPr({ "w:spacing": { _attr: attributes } }), r(t("a")))]));
+            expect(spacing({ "w:beforeLines": 100, "w:afterLines": "50" }).format).to.deep.include({ spaceBefore: 12, spaceAfter: 6 });
+            expect(spacing({ "w:before": 600, "w:beforeLines": 100, "w:after": 200, "w:afterLines": 0 }).format).to.deep.include({
+                spaceBefore: 12,
+                spaceAfter: 10,
+            });
+        });
+
+        it("should make a character of an indent as wide as the first character is tall, or the mark for a left indent, as Word does (TX7, C1 to C16)", () => {
+            /** A paragraph with an indent, a mark of a size, 11 points as its style's or another, and runs of text */
+            const indented = (attributes: Record<string, unknown>, mark: number, ...runs: readonly object[]): ParagraphBlock =>
+                paragraphOf(
+                    readBody([p(pPr({ "w:ind": { _attr: attributes } }, ...(mark === 22 ? [] : [rPr(value("w:sz", mark))])), ...runs)], {
+                        styles: { default: { document: { run: { size: 22 } } } },
+                    }),
+                );
+            const sized = (size: number, text = "text"): object => r(rPr(value("w:sz", size)), t(text));
+            const big = sized(40);
+            // The first character's size, not the mark's or the rest of the text's (TX7a, TX7b, C5, C6, C12)
+            expect(indented({ "w:firstLineChars": 200 }, 22, big, sized(22)).format).to.deep.include({ firstLineIndent: 40 });
+            expect(indented({ "w:firstLineChars": 200 }, 40, sized(22), big).format).to.deep.include({ firstLineIndent: 22 });
+            // An empty paragraph's characters are as tall as its mark
+            expect(indented({ "w:firstLineChars": 200 }, 22).format).to.deep.include({ firstLineIndent: 22 });
+            // A left indent in the mark's size, and a first line's from it, or from a left indent in twips (C1, C4, C8, C11)
+            expect(indented({ "w:leftChars": 400, "w:firstLineChars": 200 }, 22, big).format).to.deep.include({
+                indentLeft: 44,
+                firstLineIndent: 40,
+            });
+            expect(indented({ "w:left": 720, "w:firstLineChars": 200 }, 22, big).format).to.deep.include({
+                indentLeft: 36,
+                firstLineIndent: 40,
+            });
+            // A hanging indent puts the first line at the left indent in characters, or 0, and the others that much further
+            // in, whatever the left indent in twips and hanging indent in twips (TX7c, C3, C9, C11, C14)
+            expect(indented({ "w:leftChars": 400, "w:hangingChars": 200 }, 22, big).format).to.deep.include({
+                indentLeft: 84,
+                firstLineIndent: -40,
+            });
+            expect(indented({ "w:left": 1440, "w:hangingChars": 200 }, 22, sized(22)).format).to.deep.include({
+                indentLeft: 22,
+                firstLineIndent: -22,
+            });
+            expect(
+                indented({ "w:left": 720, "w:hanging": 360, "w:leftChars": 400, "w:hangingChars": 200 }, 22, sized(22)).format,
+            ).to.deep.include({
+                indentLeft: 66,
+                firstLineIndent: -22,
+            });
+            // In place of those in twips, but for 0 (C2, C7, C10, C15)
+            expect(indented({ "w:right": 720, "w:rightChars": 400 }, 22, sized(22)).format).to.deep.include({ indentRight: 44 });
+            expect(indented({ "w:left": 720, "w:leftChars": 0 }, 22, big).format).to.deep.include({ indentLeft: 36 });
+            expect(indented({ "w:firstLine": 720, "w:firstLineChars": 0 }, 22, big).format).to.deep.include({ firstLineIndent: 36 });
+            expect(indented({ "w:startChars": 400 }, 22, big).format).to.deep.include({ indentLeft: 44 });
+            // A left indent in its style's size, though its mark is another (word-stops-text.ts PB5b), and a right indent in its
+            // mark's, though its text is another (PB5c)
+            expect(indented({ "w:leftChars": 400 }, 22, big).unsupported).to.equal(undefined);
+            const markedLarger = indented({ "w:leftChars": 400 }, 40, big);
+            expect([markedLarger.unsupported, markedLarger.format.indentLeft]).to.deep.equal([undefined, 44]);
+            const rightOfLarger = indented({ "w:rightChars": 400 }, 22, big);
+            expect([rightOfLarger.unsupported, rightOfLarger.format.indentRight]).to.deep.equal([undefined, 44]);
+            // A first line indent in twips from a left indent in characters (PB5e)
+            expect(indented({ "w:leftChars": 400, "w:firstLine": 720 }, 22, big).format).to.deep.include({
+                indentLeft: 44,
+                firstLineIndent: 36,
+            });
+            // A hanging indent in twips from a left indent in characters leaves the first line at it and puts the others that
+            // much further in (word-stops-text2.ts PB5f)
+            const hanging = indented({ "w:leftChars": 400, "w:left": 880, "w:hanging": 360 }, 22, sized(22));
+            expect([hanging.unsupported, hanging.format.indentLeft, hanging.format.firstLineIndent]).to.deep.equal([undefined, 62, -18]);
+            // Where Word's sizes aren't known
+            expect(indented({ "w:rightChars": 400 }, 40, big).unsupported).to.equal(
+                "an indent in characters right of a paragraph whose mark is another size than its style",
+            );
+            expect(indented({ "w:leftChars": 0, "w:hangingChars": 200 }, 22, sized(22)).format).to.deep.include({ indentLeft: 22 });
+            expect(indented({ "w:leftChars": 0, "w:left": 720, "w:hangingChars": 200 }, 22, big).unsupported).to.equal(
+                "an indent in characters hanging from a left indent in twips",
+            );
+            // Page numbers are the paragraph's text too, and text without a size is Word's default 10 points
+            const fields = [
+                ...[field("begin"), instruction(" PAGEREF here "), field("separate"), r(t("9")), field("end")],
+                ...[field("begin"), instruction(" NUMPAGES "), field("separate"), r(t("9")), field("end")],
+            ];
+            const plain = (...runs: readonly object[]): ParagraphBlock =>
+                paragraphOf(readBody([p(pPr({ "w:ind": { _attr: { "w:firstLineChars": 200 } } }), ...runs)]));
+            expect(plain(...fields, r(t("text"))).format).to.deep.include({ firstLineIndent: 20 });
+            expect(plain().format).to.deep.include({ firstLineIndent: 20 });
+        });
+
+        it("should stop at an indent in characters in a list whose number is another size than its text", () => {
+            const content = readWritten({
+                numbering: {
+                    config: [
+                        {
+                            reference: "list",
+                            levels: [{ level: 0, format: LevelFormat.DECIMAL, text: "%1.", style: { run: { size: 40 } } }],
+                        },
+                    ],
+                },
+                sections: [
+                    {
+                        children: [
+                            new Paragraph({
+                                numbering: { reference: "list", level: 0 },
+                                indent: { firstLineChars: 200 },
+                                children: [new TextRun("a")],
+                            }),
+                            new Paragraph({ numbering: { reference: "list", level: 0 }, children: [new TextRun("b")] }),
+                        ],
+                    },
+                ],
+            });
+            expect(paragraphOf(content, 0).unsupported).to.equal(
+                "an indent in characters in a list whose number is another size than its text",
+            );
+            // A left indent in characters with a hanging indent in twips puts the number at the left indent whatever its size,
+            // and the other lines that much further in: the number of 16 points at 880, and the text at 1240
+            // (word-stops-text.ts PB5a)
+            const numbering = {
+                config: [
+                    {
+                        reference: "list",
+                        levels: [
+                            {
+                                level: 0,
+                                format: LevelFormat.DECIMAL,
+                                text: "%1.",
+                                style: { run: { size: 32 }, paragraph: { indent: { left: 880, hanging: 360 } } },
+                            },
+                        ],
+                    },
+                ],
+            };
+            const hanging = readBody(
+                [
+                    p(
+                        pPr(
+                            { "w:numPr": [value("w:ilvl", 0), value("w:numId", 1)] },
+                            { "w:ind": { _attr: { "w:leftChars": 400, "w:left": 880, "w:hanging": 360 } } },
+                        ),
+                        r(t("a")),
+                    ),
+                ],
+                { numbering, styles: { default: { document: { run: { size: 22 } } } } },
+            );
+            const numbered = paragraphOf(hanging, 0);
+            expect([numbered.unsupported, numbered.format.indentLeft, numbered.format.firstLineIndent]).to.deep.equal([undefined, 62, -18]);
+            expect(paragraphOf(content, 1).list).to.deep.include({ level: 0 });
+            expect(paragraphOf(content, 1).list!.id).to.equal(paragraphOf(content, 0).list!.id);
+            expect(paragraphOf(content, 1).unsupported).to.equal(undefined);
+        });
+
+        it("should read the room a paragraph's top, bottom and between borders take, and what paragraphs in one box share (TX5, B5, B6)", () => {
+            const border = (style: string, size?: number, space = 1, more: Record<string, unknown> = {}): object => ({
+                _attr: { "w:val": style, ...(size === undefined ? {} : { "w:sz": size }), "w:space": space, ...more },
+            });
+            const bordered = (...sides: readonly object[]): ParagraphBlock =>
+                paragraphOf(readBody([p(pPr({ "w:pBdr": sides }), r(t("a")))]));
+            const box = bordered(
+                { "w:top": border("single", 6) },
+                { "w:bottom": border("single", 24, 4) },
+                { "w:between": border("single", 6) },
+            );
+            expect(box.borders).to.deep.include({ top: 1.75, bottom: 7, between: 1.75, betweenSpace: 1 });
+            expect(box.unsupported).to.equal(undefined);
+            // Borders at the sides take no room, but tell boxes apart, as indents do and between borders
+            const withLeft = bordered(
+                { "w:top": border("single", 6) },
+                { "w:bottom": border("single", 24, 4) },
+                { "w:between": border("single", 6) },
+                { "w:left": border("single", 6) },
+            );
+            expect(withLeft.borders).to.deep.include({ top: 1.75, bottom: 7, between: 1.75 });
+            expect(withLeft.borders!.box).to.not.equal(box.borders!.box);
+            const indented = paragraphOf(
+                readBody([
+                    p(
+                        pPr(
+                            {
+                                "w:pBdr": [
+                                    { "w:top": border("single", 6) },
+                                    { "w:bottom": border("single", 24, 4) },
+                                    { "w:between": border("single", 6) },
+                                ],
+                            },
+                            { "w:ind": { _attr: { "w:left": 720 } } },
+                        ),
+                        r(t("a")),
+                    ),
+                ]),
+            );
+            expect(indented.borders!.box).to.not.equal(box.borders!.box);
+            const without = bordered({ "w:top": border("single", 6) }, { "w:bottom": border("single", 24, 4) });
+            expect(without.borders!.box).to.not.equal(box.borders!.box);
+            expect(without.borders!.outline).to.equal(box.borders!.outline);
+            expect(bordered({ "w:left": border("single", 6) }, { "w:top": border("none", 6) }).borders).to.equal(undefined);
+            expect(bordered({ "w:top": border("single", 6) }).borders).to.deep.include({
+                top: 1.75,
+                bottom: 0,
+                between: 0,
+                betweenSpace: 0,
+            });
+            // The room each style takes as Word draws it, in points, with no space (B6)
+            const roomOf = (style: string, size: number, more: Record<string, unknown> = {}): number | undefined =>
+                bordered({ "w:top": border(style, size, 0, more) }).borders?.top;
+            expect(
+                ["single", "thick", "dotted", "dashed", "dotDash", "dotDotDash", "dashSmallGap", "inset", "outset"].map((style) =>
+                    roomOf(style, 6),
+                ),
+            ).to.deep.equal(Array.from({ length: 9 }, () => 0.75));
+            expect([
+                roomOf("double", 6),
+                roomOf("triple", 18),
+                roomOf("wave", 6),
+                roomOf("dashDotStroked", 18),
+                roomOf("doubleWave", 6),
+            ]).to.deep.equal([2.25, 11.25, 3, 3, 5.25]);
+            expect(
+                ["thinThickSmallGap", "thickThinSmallGap", "threeDEmboss", "threeDEngrave", "thinThickThinSmallGap"].map((style) =>
+                    roomOf(style, 18),
+                ),
+            ).to.deep.equal([3.75, 3.75, 3.75, 3.75, 5.25]);
+            // Those with a medium or large gap, as beside a table's cells (word-table-formats.docx BS, word-stops-text.docx PB4b)
+            expect([roomOf("thinThickMediumGap", 12), roomOf("thinThickThinMediumGap", 4), roomOf("thickThinLargeGap", 24)]).to.deep.equal([
+                3, 1.5, 5.25,
+            ]);
+            expect(roomOf("thinThickThinLargeGap", 24)).to.equal(9);
+            expect(roomOf("single", 6, { "w:shadow": "1" })).to.equal(1.5);
+            // An art border is as wide as its size in points (word-stops-table-borders2.docx BT2f, BT2g), and a line of no width
+            // whose width is a multiple of its size takes none (BT3a to BT3c)
+            const spaced = (style: string, size: number, space: number): number | undefined =>
+                bordered({ "w:top": border(style, size, space) }).borders?.top;
+            expect([roomOf("apples", 6), roomOf("triangles", 31), spaced("single", 0, 12), spaced("double", 0, 12)]).to.deep.equal([
+                6, 31, 12, 12,
+            ]);
+            // Word keeps the space in five bits (BT3d to BT3f)
+            expect([spaced("single", 4, 32), spaced("single", 4, 50), spaced("single", 4, 63)]).to.deep.equal([0.5, 18.5, 31.5]);
+            // Those Word hasn't been seen to draw
+            for (const side of [
+                border("double", 6, 1, { "w:shadow": "1" }),
+                border("single", 6, 1, { "w:frame": "on" }),
+                border("custom", 6),
+            ]) {
+                expect(bordered({ "w:bottom": side }).unsupported).to.equal("a paragraph border of a style not yet followed");
+            }
+            for (const side of [
+                border("single"),
+                border("single", 1),
+                border("single", 97),
+                border("thinThickSmallGap", 2),
+                border("threeDEmboss", 19),
+                border("wave", 0),
+                border("apples", 32),
+            ]) {
+                expect(bordered({ "w:top": side }).unsupported).to.equal("a paragraph border of a width not yet followed");
+            }
+        });
+
+        it("should read an equation of text as a box that takes room as a line of Cambria Math does, in its paragraph's size", () => {
+            const math = (...parts: readonly object[]): object => ({ "m:oMath": parts });
+            const mathRun = (characters: string): object => ({ "m:r": [{ "m:t": [characters] }] });
+            const [text, box] = itemsOf(readBody([p(r(t("a ")), math(mathRun("x")))]));
+            expect(text).to.deep.include({ type: "text", text: "a " });
+            // As wide as Word makes it, and 1946 and 455 of Cambria Math's 2048 units above and below its baseline, at the 10
+            // points of the text here: at 11, 123.75 twips wide (`word-equations.docx` EQ1a, EQ2c)
+            expect(box).to.deep.include({ type: "box", unbroken: "an equation that doesn't fit on its line" });
+            const { width, height, descent } = box as { readonly width: number; readonly height: number; readonly descent: number };
+            expect([width * 22, height * 20, descent * 20].map((length) => Math.round(length * 100) / 100)).to.deep.equal([
+                123.75, 190.04, 44.43,
+            ]);
+            // In the size of its paragraph's text, with its bookmarks before it
+            const bookmark = { "w:bookmarkStart": { _attr: { "w:id": 1, "w:name": "in" } } };
+            const big = readBody([p(pPr(value("w:pStyle", "Big")), math(bookmark, mathRun("x")))], {
+                styles: { paragraphStyles: [{ id: "Big", name: "Big", run: { size: 44 } }] },
+            });
+            expect(itemsOf(big)[0]).to.deep.equal({ type: "marker", name: "in" });
+            expect((itemsOf(big)[1] as { readonly width: number }).width * 10).to.be.closeTo(123.75, 0.01);
+            // A paragraph of one equation is that equation, and one of none nothing
+            const paragraphOfOne = { "m:oMathPara": [{ "m:oMathParaPr": [] }, math(mathRun("x"))] };
+            expect(itemsOf(readBody([p(paragraphOfOne)]))[0]).to.deep.include({ type: "box" });
+            expect(paragraphOf(readBody([p({ "m:oMathPara": [] })])).items).to.deep.equal([]);
+        });
+
+        it("should read an equation Word builds up, and a paragraph of more than one equation in a row, as Word lays them out", () => {
+            const run = (characters: string): object => ({ "m:r": [{ "m:t": [characters] }] });
+            const fraction = { "m:f": [{ "m:num": [run("a")] }, { "m:den": [run("b")] }] };
+            // In a line of text, its numerator and denominator in a script's size, and alone in its paragraph, displayed
+            // (`word-stops-equations.docx` EQ10a, EQ10ad)
+            const [, inline] = itemsOf(
+                readBody([p(pPr(rPr(value("w:sz", 22))), r(rPr(value("w:sz", 22)), t("a ")), { "m:oMath": [fraction] })], {
+                    styles: { default: { document: { run: { size: 22 } } } },
+                }),
+            );
+            expect((inline as { readonly width: number }).width).to.be.closeTo(5.2, 0.03);
+            const [displayed] = itemsOf(
+                readBody([p({ "m:oMath": [fraction] })], { styles: { default: { document: { run: { size: 22 } } } } }),
+            );
+            expect((displayed as { readonly width: number }).width).to.be.closeTo(6.396, 0.03);
+            const incomplete = paragraphOf(readBody([p(r(t("a")), { "m:oMath": [{ "m:f": [] }] })]));
+            expect(incomplete.unsupported).to.equal("a part of an equation with nothing in it");
+            expect(incomplete.items).to.deep.equal([]);
+            expect(paragraphOf(readBody([p({ "m:oMath": [] })])).unsupported).to.equal("an empty equation on a line of its own");
+            // Two in one displayed paragraph are on one line, the second right after the first (EQ25c)
+            const two = { "m:oMathPara": [{ "m:oMath": [run("x")] }, { "m:oMath": [run("y")] }] };
+            const [both] = itemsOf(readBody([p(two)]));
+            const [x] = itemsOf(readBody([p({ "m:oMath": [run("x")] })]));
+            expect((both as { readonly width: number }).width).to.be.greaterThan((x as { readonly width: number }).width);
+        });
+
+        it("should lay out an equation displayed beside text, and one alone after its list's number, in the line, built up as in a line of text", () => {
+            const run = (characters: string): object => ({ "m:r": [{ "m:t": [characters] }] });
+            const math = (characters: string): object => ({ "m:oMath": [run(characters)] });
+            const fraction = { "m:oMath": [{ "m:f": [{ "m:num": [run("a")] }, { "m:den": [run("b")] }] }] };
+            const displayed = { "m:oMathPara": [{ "m:oMathParaPr": [{ "m:jc": { _attr: { "m:val": "right" } } }] }, math("x")] };
+            const reasonOf = (content: DocumentContent): string | undefined => paragraphOf(content).unsupported;
+            // Word lays one in `m:oMathPara` out in the line beside text in its paragraph or in a hyperlink there, and builds
+            // one up there as in a line of text, its fraction's numerator and denominator in a script's size
+            // (`word-stops-equations.docx` EQ25a, EQ25b, `word-stops-equations2.docx` EQ38a, EQ38b)
+            expect(reasonOf(readBody([p(r(t("a")), displayed)]))).to.equal(undefined);
+            const link = { "w:hyperlink": [{ _attr: { "w:anchor": "a" } }, displayed] };
+            expect(reasonOf(readBody([p(link, r(t("a")))]))).to.equal(undefined);
+            const builtUp = { "m:oMathPara": [fraction] };
+            const eleven = { styles: { default: { document: { run: { size: 22 } } } } };
+            const [, beside] = itemsOf(readBody([p(r(t("a")), builtUp)], eleven));
+            expect((beside as { readonly width: number }).width).to.be.closeTo(5.2, 0.03);
+            // Two alone in a paragraph, and one Word builds up alone after its list's number, as in a line of text (EQ25d,
+            // EQ38c, EQ38d)
+            expect(reasonOf(readBody([p(math("x"), math("y"))]))).to.equal("equations alone in their paragraph beside each other");
+            const numbering = { config: [{ reference: "list", levels: [{ level: 0, format: LevelFormat.DECIMAL, text: "%1." }] }] };
+            const numbered = pPr({ "w:numPr": [value("w:ilvl", 0), value("w:numId", 1)] });
+            expect(reasonOf(readBody([p(numbered, math("x"))], { numbering }))).to.equal(undefined);
+            const after = itemsOf(readBody([p(numbered, fraction)], { numbering, ...eleven })).filter(({ type }) => type === "box");
+            expect((after[0] as { readonly width: number }).width).to.be.closeTo(5.2, 0.03);
+            // One alone in its paragraph, its justification its own, and one in a line of text, numbered or not, are laid out
+            expect(reasonOf(readBody([p(displayed)]))).to.equal(undefined);
+            expect(reasonOf(readBody([p(numbered, r(t("a ")), math("x"))], { numbering }))).to.equal(undefined);
+            expect(reasonOf(readBody([p(numbered, r(t("a ")), fraction)], { numbering, ...eleven }))).to.equal(undefined);
+            expect(reasonOf(readBody([p(r(t("a ")), math("x"), r(t(" b ")), math("y"))]))).to.equal(undefined);
+            // Equations deleted, or moved elsewhere, in a tracked change are left out, as their paragraph is laid out without
+            // them
+            expect(reasonOf(readBody([p(r(t("a ")), math("x"), { "w:del": [math("y")] })]))).to.equal(undefined);
+            expect(reasonOf(readBody([p(numbered, { "w:moveFrom": [math("x")] }, r(t("a")))], { numbering }))).to.equal(undefined);
+            expect(reasonOf(readBody([p(r(t("a")), r(t("b")), { "w:del": [displayed] })]))).to.equal(undefined);
+        });
+
+        it("should stop at equations in a maths font other than Cambria Math, and displayed ones with margins, in a document's maths settings, and put limits where they say", () => {
+            const equation = p(r(t("a ")), { "m:oMath": [{ "m:r": [{ "m:t": ["x"] }] }] });
+            const setting = (name: string, val: string): object => ({ [name]: { _attr: { "m:val": val } } });
+            const reasonWith = (...settings: readonly object[]): string | undefined =>
+                paragraphOf(readWithSettings([equation], [{ "m:mathPr": settings }])).unsupported;
+            // Those Word writes are followed
+            const word = [
+                setting("m:mathFont", "Cambria Math"),
+                setting("m:brkBin", "before"),
+                setting("m:lMargin", "0"),
+                setting("m:rMargin", "0"),
+                setting("m:defJc", "centerGroup"),
+                setting("m:wrapIndent", "1440"),
+            ];
+            expect(reasonWith(...word)).to.equal(undefined);
+            expect(paragraphOf(readWithSettings([equation], [])).unsupported).to.equal(undefined);
+            expect(reasonWith(setting("m:mathFont", "STIX Two Math"))).to.equal("an equation in a maths font other than Cambria Math");
+            // Space around displayed equations, which Word leaves out, and margins, which don't change an equation in a line
+            // of text (`word-stops-equation-settings.docx` EQS1)
+            for (const name of ["m:lMargin", "m:rMargin", "m:preSp", "m:postSp", "m:interSp", "m:intraSp"]) {
+                expect(reasonWith(...word.filter((given) => !(name in given)), setting(name, "240")), name).to.equal(undefined);
+            }
+            // Margins narrow the room Word breaks a displayed equation too long for its line in, which isn't followed
+            const alone = p({ "m:oMathPara": [{ "m:oMath": [{ "m:r": [{ "m:t": ["x"] }] }] }] });
+            const displayedWith = (...settings: readonly object[]): string | undefined =>
+                paragraphOf(readWithSettings([alone], [{ "m:mathPr": settings }])).unsupported;
+            for (const name of ["m:lMargin", "m:rMargin"]) {
+                expect(displayedWith(setting(name, "720")), name).to.equal(
+                    "an equation displayed in a document whose maths settings give displayed equations margins",
+                );
+            }
+            expect(displayedWith(...word)).to.equal(undefined);
+            // Space between equations, which Word leaves out, even between two side by side in one paragraph of them, which it
+            // puts in a line with nothing between them (EQ25c, `word-stops-equation-spacing.docx` EQ44)
+            const x = { "m:oMath": [{ "m:r": [{ "m:t": ["x"] }] }] };
+            const pair = p({ "m:oMathPara": [x, { "m:oMath": [{ "m:r": [{ "m:t": ["y"] }] }] }] });
+            const pairWith = (...settings: readonly object[]): readonly LayoutItem[] =>
+                itemsOf(readWithSettings([pair], [{ "m:mathPr": settings }]));
+            expect(pairWith(setting("m:interSp", "240"))).to.deep.equal(pairWith(...word));
+            // Displayed equations' own defaults off, and small fractions with them off or on, which Word lays out alike
+            // (`word-stops-equation-small.docx` EQ43, `word-stops-equation-small2.docx` EQ56)
+            expect(reasonWith(...word, setting("m:dispDef", "0"))).to.equal(undefined);
+            expect(reasonWith(...word, setting("m:dispDef", "0"), setting("m:smallFrac", "1"))).to.equal(undefined);
+            expect(reasonWith(...word, setting("m:smallFrac", "1"))).to.equal(undefined);
+            expect(reasonWith(...word, setting("m:dispDef", "1"), { "m:smallFrac": {} })).to.equal(undefined);
+            // A displayed sum's limits, and an integral's, under and over it or beside it as the settings say, unless its own
+            // properties say otherwise (`word-stops-equation-limits.docx` EQ42)
+            const run = (characters: string): object => ({ "m:r": [{ "m:t": [characters] }] });
+            const nary = (character: string, ...properties: readonly object[]): object =>
+                p({
+                    "m:oMathPara": [
+                        {
+                            "m:oMath": [
+                                {
+                                    "m:nary": [
+                                        { "m:naryPr": [setting("m:chr", character), ...properties] },
+                                        { "m:sub": [run("i")] },
+                                        { "m:sup": [run("n")] },
+                                        { "m:e": [run("a")] },
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                });
+            const heightWith = (displayed: object, ...settings: readonly object[]): number => {
+                const [box] = itemsOf(readWithSettings([displayed], [{ "m:mathPr": settings }]));
+                const { height, descent } = box as { readonly height: number; readonly descent: number };
+                return height + descent;
+            };
+            const sum = nary("\u2211");
+            const integral = nary("\u222b");
+            expect(heightWith(sum, setting("m:naryLim", "subSup"))).to.be.lessThan(heightWith(sum));
+            expect(heightWith(integral, setting("m:intLim", "undOvr"))).to.be.greaterThan(heightWith(integral));
+            expect(heightWith(nary("\u2211", setting("m:limLoc", "undOvr")), setting("m:naryLim", "subSup"))).to.equal(heightWith(sum));
+            // Text without equations is laid out as it is
+            expect(
+                paragraphOf(readWithSettings([p(r(t("a")))], [{ "m:mathPr": [setting("m:mathFont", "STIX Two Math")] }])).unsupported,
+            ).to.equal(undefined);
+        });
+
+        it("should stop at a phonetic guide without a raise, a content part, text fitted to a width with other than text in it, two lines in one, text across in vertical text, a subdocument and a paragraph in an HTML division", () => {
+            const unsupportedOf = (...children: readonly unknown[]): string | undefined =>
+                paragraphOf(readBody([p(...children)])).unsupported;
+            // A guide without a raise, which the schema requires, hasn't been seen
+            const ruby = { "w:ruby": [{ "w:rubyPr": [] }, { "w:rt": [r(t("guide"))] }, { "w:rubyBase": [r(t("base"))] }] };
+            expect(unsupportedOf(r(ruby))).to.equal("a phonetic guide without a raise");
+            expect(unsupportedOf(r({ "w:contentPart": { _attr: { "r:id": "rId9" } } }))).to.equal("a content part, such as ink");
+            const fitted = "text fitted to a width with other than text in it, or to none";
+            expect(unsupportedOf(r(rPr({ "w:fitText": { _attr: { "w:val": 2000 } } }), t("a"), { "w:tab": {} }))).to.equal(fitted);
+            expect(unsupportedOf(r(rPr({ "w:fitText": { _attr: { "w:val": 0 } } }), t("a")))).to.equal(fitted);
+            expect(unsupportedOf(r(rPr({ "w:fitText": { _attr: { "w:id": 1 } } }), t("a")))).to.equal(fitted);
+            const layout = (attributes: object, text = "ab", size = 22): object =>
+                r(rPr({ "w:eastAsianLayout": { _attr: attributes } }, value("w:sz", size)), t(text));
+            // Two lines in one of text, without brackets, at a size that halves to whole half-points is drawn at half its
+            // size (word-stops-text.ts RF30)
+            const twoInOne = readBody([p(layout({ "w:combine": 1 }))]);
+            expect([paragraphOf(twoInOne).unsupported, itemsOf(twoInOne)[0]]).to.deep.equal([
+                undefined,
+                { type: "text", text: "ab", font: { size: 5.5 } },
+            ]);
+            // A run's attributes, such as Word's revision ids, aren't text in it
+            const withIds = r({ _attr: { "w:rsidR": "00A1" } }, rPr({ "w:eastAsianLayout": { _attr: { "w:combine": 1 } } }), t("ab"));
+            expect(unsupportedOf(withIds)).to.equal(undefined);
+            expect(unsupportedOf(layout({ "w:combine": 1, "w:combineBrackets": "round" }))).to.equal("two lines in one");
+            expect(unsupportedOf(layout({ "w:combine": 1, "w:combineBrackets": "none" }))).to.equal(undefined);
+            expect(unsupportedOf(layout({ "w:combine": 1 }, "漢字"))).to.equal("two lines in one");
+            expect(unsupportedOf(layout({ "w:combine": 1 }, "ab", 23))).to.equal("two lines in one");
+            expect(unsupportedOf(r(rPr({ "w:eastAsianLayout": { _attr: { "w:combine": 1 } } }), t("a"), { "w:tab": {} }))).to.equal(
+                "two lines in one",
+            );
+            expect(unsupportedOf(layout({ "w:vert": "true" }))).to.equal("text across in vertical text");
+            // With neither on, the run is laid out as it is
+            expect(unsupportedOf(layout({ "w:id": 1, "w:combine": "off" }))).to.equal(undefined);
+            // A run with nothing in it but its formatting has nothing to lay out
+            expect(unsupportedOf(r(rPr({ "w:fitText": { _attr: { "w:val": 2000 } } })))).to.equal(undefined);
+            expect(unsupportedOf({ "w:subDoc": { _attr: { "r:id": "rId9" } } })).to.equal("a subdocument");
+            // Without the document's web settings, its division's margins and borders aren't known (see read-docx.spec.ts)
+            expect(unsupportedOf(pPr(value("w:divId", 12)), r(t("web")))).to.equal(
+                "a paragraph in an HTML division the document's web settings don't have",
+            );
+        });
+
+        it("should read how a paragraph's lines line up, from its style or its own, and stop where Word's squeezing of them isn't known", () => {
+            const content = readWritten({
+                styles: { paragraphStyles: [{ id: "Justified", name: "Justified", paragraph: { alignment: AlignmentType.JUSTIFIED } }] },
+                sections: [
+                    {
+                        children: [
+                            new Paragraph({ style: "Justified", children: [new TextRun("a")] }),
+                            new Paragraph({ style: "Justified", alignment: AlignmentType.DISTRIBUTE, children: [new TextRun("b")] }),
+                            new Paragraph({ alignment: AlignmentType.THAI_DISTRIBUTE, children: [new TextRun("Latin")] }),
+                            new Paragraph({ alignment: AlignmentType.LOW_KASHIDA, children: [new TextRun("Latin")] }),
+                            new Paragraph({ alignment: AlignmentType.MEDIUM_KASHIDA, children: [new TextRun("c")] }),
+                            new Paragraph({ alignment: AlignmentType.HIGH_KASHIDA, children: [new TextRun("c")] }),
+                            new Paragraph({ alignment: AlignmentType.THAI_DISTRIBUTE, children: [new TextRun("\u0e44\u0e17\u0e22")] }),
+                            new Paragraph({ alignment: AlignmentType.LOW_KASHIDA, children: [new TextRun("\u0639\u0631\u0628\u064a")] }),
+                        ],
+                    },
+                ],
+            });
+            expect(paragraphOf(content, 0).format.alignment).to.equal("justified");
+            expect(paragraphOf(content, 1).format.alignment).to.equal("distributed");
+            // Word breaks Latin text justified for Thai or with a low kashida as it breaks justified text
+            for (const index of [0, 1, 2, 3]) {
+                expect(paragraphOf(content, index).unsupported).to.equal(undefined);
+            }
+            expect(paragraphOf(content, 4).unsupported).to.equal("a paragraph justified for Arabic with a medium or high kashida");
+            expect(paragraphOf(content, 5).unsupported).to.equal("a paragraph justified for Arabic with a medium or high kashida");
+            // And Thai text justified for it (stops2/word-stops-thai.ts TH1d, TH1e), but not Arabic
+            expect(paragraphOf(content, 6).unsupported).to.equal(undefined);
+            expect(paragraphOf(content, 7).unsupported).to.equal("Arabic text justified for Thai or with a kashida");
+        });
+    });
+
+    describe("footnotes and endnotes", () => {
+        it("should read the footnotes the body refers to, by the markers at their references, with the separator above them", () => {
+            const content = readBody(
+                [
+                    p(r(t("a"), { "w:footnoteReference": { _attr: { "w:id": 1 } } })),
+                    p(r(rPr(value("w:rStyle", "FootnoteReference")), { "w:footnoteReference": { _attr: { "w:id": 7 } } })),
+                ],
+                { footnotes: { 1: { children: [new Paragraph("Note")] } } },
+            );
+            // A reference is the marker its footnote is placed by, and the footnote's number, in its run's font
+            expect(itemsOf(content)).to.deep.equal([
+                { type: "text", text: "a", font: {} },
+                { type: "marker", name: "footnote 1" },
+                { type: "text", text: "1", font: {} },
+            ]);
+            // The footnote starts with its number, in docx's FootnoteReference style, in superscript: 6.5 points of 10, in a
+            // line of 10
+            expect((content.footnotes.get("footnote 1")![0] as ParagraphBlock).items).to.deep.equal([
+                { type: "text", text: "1", font: { size: 6.5, lineSize: 10 } },
+                { type: "text", text: "Note", font: {} },
+            ]);
+            // A reference to a footnote the document doesn't have is numbered, and has nothing to place
+            expect(itemsOf(content, 1)).to.deep.include({ type: "text", text: "2", font: { size: 6.5, lineSize: 10 } });
+            expect(content.footnotes.get("footnote 2")).to.deep.equal([]);
+            // The separators' paragraphs, whose lines are as tall as their marks
+            expect(content.footnoteSeparator).to.have.length(1);
+            expect((content.footnoteSeparator[0] as ParagraphBlock).items).to.deep.equal([]);
+            expect(content.footnoteContinuationSeparator).to.have.length(1);
+            expect((content.footnoteContinuationSeparator[0] as ParagraphBlock).items).to.deep.equal([]);
+            expect(content.endnotes).to.deep.equal([]);
+            // Each footnote's number, by its marker
+            expect(Object.fromEntries(content.footnoteNumbers)).to.deep.equal({ "footnote 1": "1", "footnote 2": "2" });
+        });
+
+        it("should read the endnotes the body refers to, after their separator, numbered as Word numbers them", () => {
+            const content = readBody(
+                [p(r({ "w:endnoteReference": { _attr: { "w:id": 1 } } }), r({ "w:endnoteReference": { _attr: { "w:id": 2 } } }))],
+                { endnotes: { 1: { children: [new Paragraph("First")] }, 2: { children: [new Paragraph("Second")] } } },
+            );
+            // Each reference is a marker, which the endnote's bookmarks and fields are placed by, and its number
+            expect(
+                itemsOf(content).map((item) => (item.type === "text" ? item.text : item.type === "marker" ? item.name : "")),
+            ).to.deep.equal(["endnote 1", "i", "endnote 2", "ii"]);
+            expect(
+                content.endnotes.map((block) => (block as ParagraphBlock).items.map((item) => (item.type === "text" ? item.text : ""))),
+            ).to.deep.equal([[], ["i", "First"], ["ii", "Second"]]);
+            expect([...content.endnoteReferences.values()]).to.deep.equal([[content.endnotes[1]], [content.endnotes[2]]]);
+            // The number of the endnote each block is in, but the separator's
+            expect(content.endnotes.map((block) => content.endnoteNumbers.get(block))).to.deep.equal([undefined, "i", "ii"]);
+            expect(content.footnotes.size).to.equal(0);
+            expect(content.footnoteSeparator).to.deep.equal([]);
+            expect(content.footnoteContinuationSeparator).to.deep.equal([]);
+            // The continuation separator above them on the pages after the first, which isn't read without them
+            expect(content.endnoteContinuationSeparator).to.have.length(1);
+            expect(readBody([]).endnoteContinuationSeparator).to.deep.equal([]);
+        });
+
+        it("should read the endnotes' separators a line of their style's text, whatever their own formatting, as Word lays them out", () => {
+            const sized = rPr({ "w:sz": { _attr: { "w:val": 40 } } });
+            /** A document whose line refers to an endnote, with the separators given */
+            const withSeparators = (separator: readonly object[], continuation: readonly object[]): DocumentContent =>
+                readContent(
+                    { "w:body": [p(r({ "w:endnoteReference": { _attr: { "w:id": 1 } } })), p()] },
+                    {
+                        styles: {
+                            ...WORD_DEFAULT_STYLES,
+                            styles: new Map([
+                                ...WORD_DEFAULT_STYLES.styles,
+                                ["Large", { type: "paragraph", run: { size: 20 }, paragraph: { spaceBefore: 30 } }],
+                            ]),
+                        },
+                        headersAndFooters: new Map(),
+                        endnotes: {
+                            "w:endnotes": [
+                                ...(separator.length > 0
+                                    ? [{ "w:endnote": [{ _attr: { "w:type": "separator", "w:id": -1 } }, ...separator] }]
+                                    : []),
+                                { "w:endnote": [{ _attr: { "w:type": "continuationSeparator", "w:id": 0 } }, ...continuation] },
+                                { "w:endnote": [{ _attr: { "w:id": 1 } }, p(r(t("One")))] },
+                            ],
+                        },
+                    },
+                );
+            // 400 before and exactly 1100 tall, and double spaced, in 20 points, all left out, as Word left them out
+            // (`word-continued-endnotes.docx` CE3 to CE5)
+            const formatted = withSeparators(
+                [
+                    p(
+                        pPr({ "w:spacing": { _attr: { "w:before": 400, "w:line": 1100, "w:lineRule": "exact" } } }, sized),
+                        r(sized, { "w:separator": {} }),
+                    ),
+                ],
+                [
+                    p(
+                        pPr({ "w:spacing": { _attr: { "w:line": 480, "w:lineRule": "auto" } } }, sized),
+                        r(sized, { "w:continuationSeparator": {} }),
+                    ),
+                ],
+            );
+            const plain = {
+                type: "paragraph",
+                items: [],
+                format: {},
+                tabStops: [],
+                markFont: paragraphOf(formatted, 1).markFont,
+                style: "Normal",
+            };
+            expect(formatted.endnotes[0]).to.deep.equal(plain);
+            expect(formatted.endnoteContinuationSeparator).to.deep.equal([plain]);
+            // In a style of their own, its text, in a content control too
+            const styled = withSeparators([p(pPr(value("w:pStyle", "Large")), r(sized, { "w:separator": {} }))], []);
+            expect(styled.endnotes[0]).to.deep.include({ style: "Large", format: {}, markFont: { size: 20 } });
+            const controlled = withSeparators([{ "w:sdt": [{ "w:sdtContent": [p(pPr(value("w:pStyle", "Large")))] }] }], []);
+            expect(controlled.endnotes[0]).to.deep.include({ style: "Large", markFont: { size: 20 } });
+            // Its bookmarks kept, to be placed where it is
+            const bookmarked = withSeparators(
+                [p({ "w:bookmarkStart": { _attr: { "w:id": 1, "w:name": "above" } } }, r({ "w:separator": {} }))],
+                [],
+            );
+            expect((bookmarked.endnotes[0] as ParagraphBlock).items).to.deep.equal([{ type: "marker", name: "above" }]);
+            // One with an equation in it stops as an equation anywhere does
+            expect(withSeparators([p({ "m:oMath": [{ "m:f": [] }] })], []).endnotes[0].unsupported).to.equal(
+                "a part of an equation with nothing in it",
+            );
+            // Text after the separator is left out, as Word left it out (`word-stops-endnotes.docx` NE3), but for its bookmarks
+            const after = withSeparators(
+                [p(r({ "w:separator": {} }), r(t(" Endnotes")), { "w:bookmarkStart": { _attr: { "w:id": 1, "w:name": "after" } } })],
+                [p(r({ "w:continuationSeparator": {} }), r(t(" Continued")))],
+            );
+            expect((after.endnotes[0] as ParagraphBlock).items).to.deep.equal([{ type: "marker", name: "after" }]);
+            expect(after.endnoteContinuationSeparator).to.deep.equal([
+                { ...plain, markFont: (after.endnoteContinuationSeparator[0] as ParagraphBlock).markFont },
+            ]);
+            // Text before the separator and paragraphs after its own are left out too, but for their bookmarks, as Word drew
+            // the separator alone, a line tall (stops2/word-stops-notes2.ts NE7)
+            const more = withSeparators(
+                [
+                    p(r(t("Endnotes ")), r({ "w:separator": {} })),
+                    p({ "w:bookmarkStart": { _attr: { "w:id": 1, "w:name": "second" } } }, r(t("Second paragraph"))),
+                ],
+                [p(r(t("Before ")), r({ "w:continuationSeparator": {} }))],
+            );
+            expect(more.endnotes[0]).to.deep.equal({ ...plain, items: [{ type: "marker", name: "second" }] });
+            expect(more.endnotes).to.have.length(withSeparators([p(r({ "w:separator": {} }))], []).endnotes.length);
+            expect(more.endnoteContinuationSeparator).to.deep.equal([
+                { ...plain, markFont: (more.endnoteContinuationSeparator[0] as ParagraphBlock).markFont },
+            ]);
+            // One of empty paragraphs is a line too, as it was. One with text and no separator, or a table, hasn't been seen
+            expect(withSeparators([p(), p()], []).endnotes[0].unsupported).to.equal(undefined);
+            const unknown = "an endnote separator with a table in it, or text and no separator";
+            expect(withSeparators([p(r(t("Endnotes")))], []).endnotes[0].unsupported).to.equal(unknown);
+            expect(withSeparators([{ "w:tbl": [{ "w:tr": [{ "w:tc": [p()] }] }] }], []).endnotes[0].unsupported).to.equal(unknown);
+            // None, when the endnotes have none, or it is empty
+            expect(styled.endnoteContinuationSeparator).to.deep.equal([]);
+            expect(withSeparators([], []).endnotes).to.have.length(1);
+        });
+    });
+
+    describe("numbering footnotes and endnotes", () => {
+        const reference = (kind: string, id: number, attributes: object = {}): object =>
+            r({ [`w:${kind}Reference`]: { _attr: { "w:id": id, ...attributes } } });
+        const properties = (kind: string, ...children: readonly object[]): object => ({ [`w:${kind}Pr`]: children });
+        const NOTES = {
+            footnotes: { 1: { children: [new Paragraph("One")] }, 2: { children: [new Paragraph("Two")] } },
+            endnotes: { 1: { children: [new Paragraph("One")] }, 2: { children: [new Paragraph("Two")] } },
+        };
+        /** Two sections, each referring to a footnote and an endnote, with the notes' properties of each and the document's */
+        const twoSections = (
+            first: readonly object[],
+            second: readonly object[],
+            settings: readonly object[] = [],
+            attributes: object = {},
+        ): DocumentContent =>
+            readWithSettings(
+                [
+                    p(reference("footnote", 1, attributes), reference("endnote", 1)),
+                    p(pPr({ "w:sectPr": first })),
+                    p(reference("footnote", 2), reference("endnote", 2)),
+                    { "w:sectPr": second },
+                ],
+                settings,
+                NOTES,
+            );
+        const numbersOf = (content: DocumentContent): readonly (readonly string[])[] => [
+            [...content.footnoteNumbers.values()],
+            [...new Set(content.endnotes.flatMap((block) => content.endnoteNumbers.get(block) ?? []))],
+        ];
+
+        it("should number footnotes and endnotes in the format and from the number the document gives, as Word does", () => {
+            const content = twoSections(
+                [],
+                [],
+                [
+                    properties("footnote", value("w:numFmt", "lowerLetter"), value("w:numStart", 3)),
+                    properties("endnote", value("w:numFmt", "decimal")),
+                ],
+            );
+            expect(numbersOf(content)).to.deep.equal([
+                ["c", "d"],
+                ["1", "2"],
+            ]);
+            expect(content.unsupported).to.equal(undefined);
+        });
+
+        it("should number a later section's notes from its own number on from all the notes before them, as Word does", () => {
+            // After 27 notes, a section numbered from 5 numbers its first 32, and the next, from 1, numbers its first 31 after
+            // 30 (`word-stops-notes.docx` NT14b, NT14c)
+            const three = readWithSettings(
+                [
+                    p(reference("footnote", 1), reference("endnote", 1)),
+                    p(pPr({ "w:sectPr": [] })),
+                    p(reference("footnote", 2), reference("endnote", 2)),
+                    p(pPr({ "w:sectPr": [properties("footnote", value("w:numStart", 5)), properties("endnote", value("w:numStart", 3))] })),
+                    p(reference("footnote", 3)),
+                    { "w:sectPr": [] },
+                ],
+                [],
+                { ...NOTES, footnotes: { ...NOTES.footnotes, 3: { children: [new Paragraph("Three")] } } },
+            );
+            expect(numbersOf(three)).to.deep.equal([
+                ["1", "6", "3"],
+                ["i", "iv"],
+            ]);
+            expect(three.unsupported).to.equal(undefined);
+        });
+
+        it("should number notes on through the document after a section that numbers its own afresh, from all the notes before, as Word does", () => {
+            // stops2/word-stops-notes2.ts NT18: after a section numbering its 2 afresh as 1 and 2, the next section's are
+            // numbered on from them, as they are counted too. Here a section numbering its one from 5 is followed by one
+            // numbered on, whose first is 2
+            const content = twoSections([properties("footnote", value("w:numRestart", "eachSect"), value("w:numStart", 5))], []);
+            expect(numbersOf(content)[0]).to.deep.equal(["5", "2"]);
+            expect(content.unsupported).to.equal(undefined);
+        });
+
+        it("should number footnotes afresh on each page from where their references are placed, as Word does", () => {
+            // Word numbered two footnotes on each of three pages 1 and 2 (`word-stops-notes.docx` NT14a)
+            const content = twoSections([properties("footnote", value("w:numRestart", "eachPage"), value("w:numFmt", "lowerLetter"))], []);
+            expect(content.footnotesOnEachPage).to.deep.equal(new Map([["footnote 1", { start: 1, format: "lowerLetter" }]]));
+            expect(content.footnoteNumbers.get("footnote 1")).to.equal("");
+            // Its reference and the mark at the start of the note are worked out from the page, and those after it are
+            // counted on, from 2, as Word counts them
+            expect(itemsOf(content).filter(({ type }) => type === "noteNumber")).to.deep.equal([
+                { type: "noteNumber", note: "footnote 1", font: {} },
+            ]);
+            const note = content.footnotes.get("footnote 1")![0] as ParagraphBlock;
+            expect(note.items[0]).to.deep.include({ type: "noteNumber", note: "footnote 1" });
+            expect(content.footnoteNumbers.get("footnote 2")).to.equal("2");
+            expect(content.unsupported).to.equal(undefined);
+            // Read again to size a table's columns, it is numbered from where the note's reference is
+            const cell = {
+                "w:tc": [
+                    { "w:tcPr": [{ "w:tcW": { _attr: { "w:w": 2000 } } }] },
+                    p(r(t("a")), { "w:del": [r({ "w:delText": ["b"] })] }, reference("footnote", 1)),
+                ],
+            };
+            const table = {
+                "w:tbl": [{ "w:tblPr": [] }, { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 2000 } } }] }, { "w:tr": [cell] }],
+            };
+            const sized = readWithSettings([table], [properties("footnote", value("w:numRestart", "eachPage"))], NOTES);
+            const sizing = (sized.blocks[0].block as TableBlock).rows[0].cells[0].sizing![0] as ParagraphBlock;
+            expect(sizing.items.filter(({ type }) => type === "noteNumber")).to.deep.equal([
+                { type: "noteNumber", note: "footnote 1", font: {} },
+            ]);
+        });
+
+        it("should stop at notes numbered afresh on each page where how Word numbers them hasn't been seen", () => {
+            // Endnotes, which Word numbers only on through the document or afresh in each section
+            expect(twoSections([], [], [properties("endnote", value("w:numRestart", "eachPage"))]).unsupported).to.equal(
+                "endnotes numbered afresh on each page",
+            );
+            // Footnotes of a section that shares a page with another numbered on through the document, before it or after it,
+            // or afresh on each page too, which Word numbers on from those of the page numbered so (stops2/word-stops-notes2.ts
+            // NT19a, NT19b), are laid out
+            const continuous = [{ "w:type": { _attr: { "w:val": "continuous" } } }];
+            const onEachPage = properties("footnote", value("w:numRestart", "eachPage"));
+            expect(twoSections([], [...continuous, onEachPage]).unsupported).to.equal(undefined);
+            expect(twoSections([onEachPage], continuous).unsupported).to.equal(undefined);
+            expect(twoSections([onEachPage], [...continuous, onEachPage]).unsupported).to.equal(undefined);
+            // But not after one numbered otherwise, after one numbered afresh on each page, on the page
+            const three = (second: readonly object[]): DocumentContent =>
+                readWithSettings(
+                    [
+                        p(reference("footnote", 1)),
+                        p(pPr({ "w:sectPr": [onEachPage] })),
+                        p(reference("footnote", 2)),
+                        p(pPr({ "w:sectPr": second })),
+                        p(reference("footnote", 3)),
+                        { "w:sectPr": [...continuous, onEachPage] },
+                    ],
+                    [],
+                    { ...NOTES, footnotes: { ...NOTES.footnotes, 3: { children: [new Paragraph("Three")] } } },
+                );
+            expect(three(continuous).unsupported).to.equal(
+                "footnotes numbered afresh on each page after a section on the page numbered otherwise",
+            );
+            // The second on a page of its own, or numbered afresh on each page too, is laid out
+            expect(three([]).unsupported).to.equal(undefined);
+            expect(three([...continuous, onEachPage]).unsupported).to.equal(undefined);
+            // A deleted footnote reference, which Word counts, on a page it isn't on
+            const deleted = readWithSettings(
+                [p({ "w:del": [r({ "w:footnoteReference": { _attr: { "w:id": 1 } } })] })],
+                [properties("footnote", value("w:numRestart", "eachPage"))],
+                NOTES,
+            );
+            expect(deleted.unsupported).to.equal(
+                "a deleted footnote reference in a section that numbers its footnotes afresh on each page",
+            );
+        });
+
+        it("should number each section's notes in its own format, afresh in each section when it says so, as Word does", () => {
+            const content = twoSections(
+                [properties("footnote", value("w:numFmt", "upperRoman"), value("w:numRestart", "eachSect"))],
+                [
+                    properties("footnote", value("w:numRestart", "eachSect"), value("w:numStart", 5)),
+                    properties("endnote", value("w:numFmt", "chicago")),
+                ],
+            );
+            // The endnotes number on through the document, in the format of the section each is in
+            expect(numbersOf(content)).to.deep.equal([
+                ["I", "5"],
+                ["i", "\u2020"],
+            ]);
+            expect(content.unsupported).to.equal(undefined);
+        });
+
+        it("should add the empty paragraph Word adds after a table that ends a footnote or endnote, in the Normal style", () => {
+            // word-watertight-notes.docx FN11, FN12, word-watertight-stops.docx SP3c: a line below the table
+            const withTable = (
+                paragraphStyles: NonNullable<IPropertiesOptions["styles"]>["paragraphStyles"] = [],
+                style?: string,
+            ): DocumentContent => {
+                const table = new Table({ rows: [new TableRow({ children: [new TableCell({ children: [new Paragraph("Cell")] })] })] });
+                return readWritten({
+                    styles: { paragraphStyles },
+                    footnotes: { 1: { children: [new Paragraph({ text: "Note", style }), table as unknown as Paragraph] } },
+                    endnotes: { 1: { children: [new Paragraph("End"), table as unknown as Paragraph] } },
+                    sections: [{ children: [new Paragraph({ children: [new FootnoteReferenceRun(1), new EndnoteReferenceRun(1)] })] }],
+                });
+            };
+            // docx's note text styles are smaller than Normal, but its notes' paragraphs are in Normal, and so is the empty
+            // paragraph, as Word made it a line of Normal in such notes (word-notes-final-table.docx NF1, NF2)
+            const [, , normal] = [...withTable().footnotes.values()][0];
+            expect(normal).to.deep.include({ type: "paragraph", items: [] });
+            expect(normal).not.to.have.property("unsupported");
+            // With a paragraph in another style, such as the footnote text style, which Word gives it isn't known
+            const [, , styled] = [...withTable([], "FootnoteText").footnotes.values()][0];
+            expect(styled).to.deep.include({
+                type: "paragraph",
+                items: [],
+                unsupported:
+                    "a footnote or endnote that ends with a table, with paragraphs of another style than Normal, in a document whose Normal and note text styles differ",
+            });
+            // Formatted alike, it is Normal's
+            const alike = withTable([
+                { id: "FootnoteText", name: "footnote text", basedOn: "Normal" },
+                { id: "EndnoteText", name: "endnote text", basedOn: "Normal" },
+            ]);
+            const [, , footnoteAfter] = [...alike.footnotes.values()][0];
+            expect(footnoteAfter).to.deep.include({ type: "paragraph", items: [] });
+            expect(footnoteAfter).not.to.have.property("unsupported");
+            expect(alike.endnotes.at(-1)).to.deep.include({ type: "paragraph", items: [] });
+        });
+
+        it("should number a note in a table cell with deleted text as it is numbered where it is, to size the columns by", () => {
+            // A cell with deleted text is read again as Word sizes the table's columns by it, which numbers its footnote as
+            // the cell does, in a format not yet written too
+            const cell = {
+                "w:tc": [
+                    { "w:tcPr": [{ "w:tcW": { _attr: { "w:w": 2000 } } }] },
+                    p(r(t("a")), { "w:del": [r({ "w:delText": ["b"] })] }, reference("footnote", 1)),
+                ],
+            };
+            const table = {
+                "w:tbl": [{ "w:tblPr": [] }, { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 2000 } } }] }, { "w:tr": [cell] }],
+            };
+            const content = readWithSettings([table], [properties("footnote", value("w:numFmt", "bogus"))], NOTES);
+            const sized = (content.blocks[0].block as TableBlock).rows[0].cells[0];
+            expect((sized.sizing![0] as ParagraphBlock).items.map((item) => (item.type === "text" ? item.text : item.type))).to.deep.equal([
+                "a",
+                "b",
+                "",
+            ]);
+            expect(content.unsupported).to.equal("notes numbered in a format not yet written");
+        });
+
+        it("should stop at notes numbered or placed in a way not yet followed", () => {
+            const reasonOf = (...args: Parameters<typeof twoSections>): string | undefined => twoSections(...args).unsupported;
+            expect(reasonOf([], [], [properties("footnote", value("w:pos", "docEnd"))])).to.equal(
+                "footnotes put elsewhere than at the bottom of the page or below the text",
+            );
+            // Below the text of columns
+            const columns = { "w:cols": { _attr: { "w:num": 2 } } };
+            expect(reasonOf([], [columns], [properties("footnote", value("w:pos", "beneathText"))])).to.equal(
+                "footnotes below the text of columns",
+            );
+            // Endnotes at the end of a section before one that starts on its page, when the settings put them there
+            const continuous = { "w:type": { _attr: { "w:val": "continuous" } } };
+            expect(reasonOf([], [continuous], [properties("endnote", value("w:pos", "sectEnd"))])).to.equal(
+                "endnotes at the end of a section before one that starts on its page",
+            );
+            expect(reasonOf([], [], [properties("endnote", value("w:numFmt", "bogus"))])).to.equal(
+                "notes numbered in a format not yet written",
+            );
+            // At the end of the only section is at the end of the document
+            const oneSection = readWithSettings(
+                [p(reference("endnote", 1)), { "w:sectPr": [properties("endnote", value("w:pos", "sectEnd"))] }],
+                [],
+                NOTES,
+            );
+            expect(oneSection.unsupported).to.equal(undefined);
+            // Only notes the document has stop it
+            expect(readWithSettings([p(t("a"))], [properties("footnote", value("w:numRestart", "eachPage"))], NOTES).unsupported).to.equal(
+                undefined,
+            );
+        });
+
+        it("should put the endnotes at the end of each section when the settings say so, but for a section that suppresses its own, as Word does", () => {
+            // Those a section puts there are at the end of the document, as Word put them (`word-stops-endnotes.docx` NE2)
+            const sectionsSay = twoSections(
+                [properties("endnote", value("w:pos", "sectEnd"))],
+                [properties("endnote", value("w:pos", "sectEnd"))],
+            );
+            expect([sectionsSay.unsupported, sectionsSay.endnotesAfter]).to.deep.equal([undefined, undefined]);
+            // Where the settings say so, each section's after it, after a separator of its own (stops2/word-stops-notes2.ts
+            // NE6)
+            const settingsSay = twoSections([], [], [properties("endnote", value("w:pos", "sectEnd"))]);
+            expect(settingsSay.unsupported).to.equal(undefined);
+            expect(settingsSay.endnotesAfter).to.deep.equal([0, 0, 1, 1]);
+            expect(settingsSay.endnotes.map((block) => settingsSay.endnoteNumbers.get(block))).to.deep.equal([
+                undefined,
+                "i",
+                undefined,
+                "ii",
+            ]);
+            // A section that suppresses its own has them at the end of the next
+            const suppressed = twoSections([{ "w:noEndnote": {} }], [], [properties("endnote", value("w:pos", "sectEnd"))]);
+            expect(suppressed.endnotesAfter).to.deep.equal([1, 1, 1]);
+            // However many in a row do
+            const many = 20000;
+            const manySuppressed = readWithSettings(
+                [
+                    p(reference("endnote", 1)),
+                    ...Array.from({ length: many }, () => p(pPr({ "w:sectPr": [{ "w:noEndnote": {} }] }))),
+                    { "w:sectPr": [] },
+                ],
+                [properties("endnote", value("w:pos", "sectEnd"))],
+                NOTES,
+            );
+            expect(manySuppressed.endnotesAfter).to.deep.equal([many, many]);
+            // At the end of the only section is at the end of the document
+            const oneSection = readWithSettings(
+                [p(reference("endnote", 1)), { "w:sectPr": [{ "w:noEndnote": {} }] }],
+                [properties("endnote", value("w:pos", "sectEnd"))],
+                NOTES,
+            );
+            expect([oneSection.unsupported, oneSection.endnotesAfter]).to.deep.equal([undefined, [0, 0]]);
+        });
+
+        it("should put a section's footnotes below the text of its pages when it says so, as Word does", () => {
+            const content = twoSections([properties("footnote", value("w:pos", "beneathText"))], []);
+            expect(content.sections.map(({ footnotesBeneathText }) => footnotesBeneathText)).to.deep.equal([true, undefined]);
+            expect(content.unsupported).to.equal(undefined);
+            // Not where the document has no footnotes
+            const none = readWithSettings([p(t("a"))], [properties("footnote", value("w:pos", "beneathText"))], NOTES);
+            expect(none.sections[0].footnotesBeneathText).to.equal(undefined);
+        });
+
+        it("should lay out a footnote with a mark of its own without counting it in the numbers, as Word does", () => {
+            // Between footnotes 38 and 39, Word numbered none 39 (`word-stops-notes.docx` NT15)
+            const own = { 9: { children: [new Paragraph("Own")] } };
+            const content = readWithSettings(
+                [
+                    p(reference("footnote", 1)),
+                    p(reference("footnote", 9, { "w:customMarkFollows": 1 }), r(t("*"))),
+                    p(reference("footnote", 2)),
+                    p({ "w:del": [r({ "w:footnoteReference": { _attr: { "w:id": 9, "w:customMarkFollows": 1 } } })] }),
+                    p(reference("footnote", 2)),
+                ],
+                [],
+                { ...NOTES, footnotes: { ...NOTES.footnotes, ...own } },
+            );
+            expect([...content.footnoteNumbers]).to.deep.equal([
+                ["footnote 1", "1"],
+                ["footnote 2", ""],
+                ["footnote 3", "2"],
+                ["footnote 4", "3"],
+            ]);
+            expect(itemsOf(content, 1)).to.deep.equal([{ type: "marker", name: "footnote 2" }, ...itemsOf(content, 1).slice(1)]);
+            expect(textOf(content, 1)).to.equal("*");
+            expect(content.unsupported).to.equal(undefined);
+            expect(paragraphOf(content, 1).unsupported).to.equal(undefined);
+            // Read again to size a table's columns, it is counted as it is where it is: not at all
+            const cell = {
+                "w:tc": [
+                    { "w:tcPr": [{ "w:tcW": { _attr: { "w:w": 2000 } } }] },
+                    p(
+                        r(t("a")),
+                        { "w:del": [r({ "w:delText": ["b"] })] },
+                        reference("footnote", 9, { "w:customMarkFollows": 1 }),
+                        reference("footnote", 1),
+                    ),
+                ],
+            };
+            const table = {
+                "w:tbl": [{ "w:tblPr": [] }, { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 2000 } } }] }, { "w:tr": [cell] }],
+            };
+            const sized = readWithSettings([table], [], { ...NOTES, footnotes: { ...NOTES.footnotes, ...own } });
+            const sizing = (sized.blocks[0].block as TableBlock).rows[0].cells[0].sizing![0] as ParagraphBlock;
+            expect(sizing.items.map((item) => (item.type === "text" ? item.text : item.type))).to.deep.equal(["a", "b", "1"]);
+            // What a mark for its number at its start shows hasn't been seen
+            const numbered = readWithSettings([p(reference("footnote", 1, { "w:customMarkFollows": 1 }))], [], {
+                footnotes: { 1: { children: [new Paragraph({ children: [new FootnoteReferenceRun(1)] })] } },
+            });
+            expect((numbered.footnotes.get("footnote 1")![0] as ParagraphBlock).unsupported).to.equal(
+                "a note's number in a footnote or endnote with a mark of its own",
+            );
+            // Hidden, what Word does with it hasn't been seen
+            const hidden = readWithSettings(
+                [p(r(rPr({ "w:vanish": {} }), { "w:footnoteReference": { _attr: { "w:id": 1, "w:customMarkFollows": 1 } } }))],
+                [],
+                NOTES,
+            );
+            expect(paragraphOf(hidden).unsupported).to.equal("a footnote or endnote reference with a mark of its own in hidden text");
+        });
+
+        it("should lay out an endnote with a mark of its own without counting it in the numbers, as Word does", () => {
+            // Between endnotes i and ii, Word numbered none ii (stops2/word-stops-notes2.ts NE5)
+            const content = readWithSettings(
+                [
+                    p(reference("endnote", 1)),
+                    p(reference("endnote", 9, { "w:customMarkFollows": 1 }), r(t("*"))),
+                    p(reference("endnote", 2)),
+                ],
+                [],
+                { ...NOTES, endnotes: { ...NOTES.endnotes, 9: { children: [new Paragraph("Own")] } } },
+            );
+            expect(content.endnotes.map((block) => content.endnoteNumbers.get(block))).to.deep.equal([undefined, "i", "", "ii"]);
+            expect([...content.endnoteReferences.keys()]).to.deep.equal(["endnote 1", "endnote 2", "endnote 3"]);
+            expect(itemsOf(content, 1)).to.deep.equal([{ type: "marker", name: "endnote 2" }, ...itemsOf(content, 1).slice(1)]);
+            expect(textOf(content, 1)).to.equal("*");
+            expect(content.unsupported).to.equal(undefined);
+            // What a mark for its number in it shows hasn't been seen, as for a footnote
+            expect(content.endnotes[2].unsupported).to.equal("a note's number in a footnote or endnote with a mark of its own");
+            // Read again to size a table's columns, it isn't counted either, so the endnote after it is i
+            const cell = {
+                "w:tc": [
+                    { "w:tcPr": [{ "w:tcW": { _attr: { "w:w": 2000 } } }] },
+                    p(
+                        r(t("a")),
+                        { "w:del": [r({ "w:delText": ["b"] })] },
+                        reference("endnote", 9, { "w:customMarkFollows": 1 }),
+                        reference("endnote", 1),
+                    ),
+                ],
+            };
+            const table = {
+                "w:tbl": [{ "w:tblPr": [] }, { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 2000 } } }] }, { "w:tr": [cell] }],
+            };
+            const sized = readWithSettings([table], [], {
+                ...NOTES,
+                endnotes: { ...NOTES.endnotes, 9: { children: [new Paragraph("Own")] } },
+            });
+            const sizing = (sized.blocks[0].block as TableBlock).rows[0].cells[0].sizing![0] as ParagraphBlock;
+            expect(sizing.items.map((item) => (item.type === "text" ? item.text : item.type))).to.deep.equal(["a", "b", "i"]);
+        });
+    });
+
+    describe("drawings", () => {
+        const drawing = (child: object): object => r({ "w:drawing": [child] });
+
+        it("should read a picture in the line as a box, with its effects, the space around it, and its run's font", () => {
+            const inline = {
+                "wp:inline": [
+                    { _attr: { distT: 12700, distB: 12700, distL: 0, distR: 25400 } },
+                    { "wp:extent": { _attr: { cx: 127000, cy: 254000 } } },
+                    { "wp:effectExtent": { _attr: { l: 12700, t: 0, r: 12700, b: 0 } } },
+                ],
+            };
+            expect(itemsOf(readBody([p(drawing(inline))]))).to.deep.equal([{ type: "box", width: 14, height: 22, font: {} }]);
+            expect(itemsOf(readBody([p(drawing({ "wp:inline": [{ "wp:extent": { _attr: { cx: 127000 } } }] }))]))).to.deep.equal([
+                { type: "box", width: 10, height: 0, font: {} },
+            ]);
+            // The font of its run, whose line Word makes the picture's at least as tall as
+            const sized = r(rPr(value("w:sz", 30)), { "w:drawing": [inline] });
+            expect(itemsOf(readBody([p(sized)]))).to.deep.equal([{ type: "box", width: 14, height: 22, font: { size: 15 } }]);
+        });
+
+        it("should leave out drawings text doesn't flow around, and stop at embedded objects", () => {
+            expect(itemsOf(readBody([p(drawing({ "wp:anchor": [{ "wp:wrapNone": {} }] }))]))).to.deep.equal([]);
+            // An embedded object's picture is drawn at the size its shape gives (`word-stops-vml-objects.docx` VM21a, VM21b)
+            const object = (...children: readonly object[]): object => r({ "w:object": children });
+            const objectShape = { "v:shape": [{ _attr: { style: "width:72pt;height:36pt", "o:ole": "" } }, { "v:imagedata": {} }] };
+            expect(itemsOf(readBody([p(object({ "v:shapetype": [] }, objectShape, { "o:OLEObject": {} }))]))).to.deep.equal([
+                { type: "box", width: 72, height: 36, font: {} },
+            ]);
+            expect(paragraphOf(readBody([p(object())])).unsupported).to.equal("an embedded object without a shape of its own");
+            expect(paragraphOf(readBody([p(object({ "v:shape": [{ _attr: { style: "width:72pt" } }] }))])).unsupported).to.equal(
+                "an embedded object with no size",
+            );
+            // One in hidden text takes no room
+            expect(itemsOf(readBody([p(r(rPr({ "w:vanish": {} }), { "w:object": [] }))]))).to.deep.equal([]);
+        });
+
+        it("should read a drawing that text flows around as docx writes it: its wrapping, size, effects, distances and place", () => {
+            const content = readWritten({
+                sections: [
+                    {
+                        children: [
+                            new Paragraph({
+                                children: [
+                                    new ImageRun({
+                                        type: "png",
+                                        data: new Uint8Array([0]),
+                                        transformation: { width: 96, height: 48 },
+                                        floating: {
+                                            horizontalPosition: {
+                                                relative: HorizontalPositionRelativeFrom.MARGIN,
+                                                align: HorizontalPositionAlign.RIGHT,
+                                            },
+                                            verticalPosition: { relative: VerticalPositionRelativeFrom.PARAGRAPH, offset: 127000 },
+                                            wrap: { type: TextWrappingType.SQUARE, side: TextWrappingSide.LEFT },
+                                            margins: { top: 12700, bottom: 25400, left: 38100, right: 50800 },
+                                        },
+                                    }),
+                                    new TextRun("a"),
+                                ],
+                            }),
+                        ],
+                    },
+                ],
+            });
+            expect(itemsOf(content)[0]).to.deep.equal({
+                type: "drawing",
+                drawing: {
+                    wrap: "square",
+                    side: "left",
+                    width: 72,
+                    height: 36,
+                    effects: { top: 0, bottom: 0, left: 0, right: 0 },
+                    distances: { top: 1, bottom: 2, left: 3, right: 4 },
+                    horizontal: { from: "margin", align: "right" },
+                    vertical: { from: "paragraph", offset: 10 },
+                    mayOverlap: true,
+                },
+            });
+            expect(paragraphOf(content).unsupported).to.equal(undefined);
+        });
+
+        it("should read each wrapping, its sides and distances, and the places and sizes Word 2010 and later give as shares", () => {
+            const anchor = (...children: readonly object[]): object => ({
+                "wp:anchor": [
+                    { _attr: { distT: 12700, distB: 12700, distL: 12700, distR: 12700, simplePos: "0" } },
+                    { "wp:positionH": [{ _attr: { relativeFrom: "page" } }, { "wp:posOffset": ["254000"] }] },
+                    { "wp:positionV": [{ _attr: { relativeFrom: "margin" } }, { "wp:align": ["bottom"] }] },
+                    { "wp:extent": { _attr: { cx: "127000", cy: "254000" } } },
+                    { "wp:effectExtent": { _attr: { l: "12700", t: "25400", r: "38100", b: "50800" } } },
+                    ...children,
+                ],
+            });
+            const drawingOf = (...children: readonly object[]): object =>
+                (itemsOf(readBody([p(drawing(anchor(...children)))]))[0] as { readonly drawing: object }).drawing;
+            // Tight wrapping gives only its distances left and right, and the anchor's are above and below
+            expect(drawingOf({ "wp:wrapTight": [{ _attr: { wrapText: "largest", distL: 25400, distR: 0 } }] })).to.deep.include({
+                wrap: "tight",
+                side: "largest",
+                width: 10,
+                height: 20,
+                effects: { top: 2, bottom: 4, left: 1, right: 3 },
+                distances: { top: 1, bottom: 1, left: 2, right: 0 },
+                horizontal: { from: "page", offset: 20 },
+                vertical: { from: "margin", align: "bottom" },
+            });
+            expect(drawingOf({ "wp:wrapThrough": [{ _attr: { wrapText: "right" } }] })).to.deep.include({ wrap: "through", side: "right" });
+            expect(drawingOf({ "wp:wrapTopAndBottom": {} })).to.deep.include({ wrap: "topAndBottom", side: "bothSides" });
+            // A side Word doesn't have is both
+            expect(drawingOf({ "wp:wrapSquare": { _attr: { wrapText: "bogus" } } })).to.deep.include({ side: "bothSides" });
+            // It may overlap other drawings unless it says it may not
+            expect(drawingOf({ "wp:wrapSquare": {} })).to.deep.include({ mayOverlap: true });
+            const mayNot = itemsOf(
+                readBody([
+                    p(
+                        drawing({
+                            "wp:anchor": [
+                                { _attr: { allowOverlap: "0" } },
+                                { "wp:wrapSquare": {} },
+                                { "wp:positionH": [{ _attr: { relativeFrom: "page" } }, { "wp:posOffset": ["0"] }] },
+                                { "wp:positionV": [{ _attr: { relativeFrom: "page" } }, { "wp:posOffset": ["0"] }] },
+                            ],
+                        }),
+                    ),
+                ]),
+            )[0] as { readonly drawing: object };
+            expect(mayNot.drawing).to.deep.include({ mayOverlap: false });
+            // A place as a share of the width of what it is placed against, in Word's choice for its versions, or as Word
+            // writes it, and sizes as shares
+            const shared = drawingOf(
+                { "wp:wrapSquare": {} },
+                {
+                    "wp:positionH": [
+                        { _attr: { relativeFrom: "margin" } },
+                        {
+                            "mc:AlternateContent": [
+                                { "mc:Choice": [{ _attr: { Requires: "wp14" } }, { "wp14:pctPosHOffset": ["50000"] }] },
+                                { "mc:Fallback": [{ "wp:posOffset": ["0"] }] },
+                            ],
+                        },
+                    ],
+                },
+                { "wp14:sizeRelH": [{ _attr: { relativeFrom: "margin" } }, { "wp14:pctWidth": ["25000"] }] },
+                { "wp14:sizeRelV": [{ _attr: { relativeFrom: "page" } }, { "wp14:pctHeight": ["10000"] }] },
+            );
+            // A size as a share without the share is its own
+            expect(drawingOf({ "wp:wrapSquare": {} }, { "wp14:sizeRelH": [{ _attr: { relativeFrom: "margin" } }] })).not.to.have.property(
+                "relativeWidth",
+            );
+            expect(shared).to.deep.include({
+                horizontal: { from: "page", offset: 20 },
+                relativeWidth: { from: "margin", share: 0.25 },
+                relativeHeight: { from: "page", share: 0.1 },
+            });
+            const percentage = itemsOf(
+                readBody([
+                    p(
+                        drawing({
+                            "wp:anchor": [
+                                { "wp:wrapSquare": {} },
+                                { "wp:positionH": [{ _attr: { relativeFrom: "margin" } }, { "wp14:pctPosHOffset": ["50000"] }] },
+                                {
+                                    "wp:positionV": [
+                                        { _attr: { relativeFrom: "page" } },
+                                        { "mc:AlternateContent": [{ "mc:Fallback": [{ "wp:posOffset": ["12700"] }] }] },
+                                    ],
+                                },
+                            ],
+                        }),
+                    ),
+                ]),
+            )[0] as { readonly drawing: object };
+            expect(percentage.drawing).to.deep.include({
+                horizontal: { from: "margin", share: 0.5 },
+                vertical: { from: "page", offset: 1 },
+                width: 0,
+                effects: { top: 0, bottom: 0, left: 0, right: 0 },
+            });
+        });
+
+        it("should stop at drawings that text flows around placed or wrapped in ways not yet followed, and in table cells and notes", () => {
+            const reasonOf = (anchor: object): string | undefined => paragraphOf(readBody([p(drawing(anchor))])).unsupported;
+            const placed = [
+                { "wp:positionH": [{ _attr: { relativeFrom: "page" } }, { "wp:posOffset": ["0"] }] },
+                { "wp:positionV": [{ _attr: { relativeFrom: "page" } }, { "wp:posOffset": ["0"] }] },
+            ];
+            // Placed by its simple position, it is placed from the page's top left corner by that (`word-stops-drawings.docx` DR15)
+            const simple = readBody([
+                p(
+                    drawing({
+                        "wp:anchor": [
+                            { _attr: { simplePos: "1" } },
+                            { "wp:simplePos": { _attr: { x: 38100, y: 25400 } } },
+                            { "wp:wrapSquare": {} },
+                            ...placed,
+                        ],
+                    }),
+                ),
+            ]);
+            expect(itemsOf(simple)[0]).to.deep.include({ type: "drawing" });
+            expect((itemsOf(simple)[0] as { readonly drawing: FloatingDrawing }).drawing).to.deep.include({
+                horizontal: { from: "page", offset: 3 },
+                vertical: { from: "page", offset: 2 },
+            });
+            expect(reasonOf({ "wp:anchor": [{ "wp:wrapBogus": {} }, ...placed] })).to.equal(
+                "a drawing that text flows around in a way not yet followed",
+            );
+            // One placed by neither an alignment nor an offset, which the schema doesn't allow, is at the start of what it is
+            // placed against
+            expect(reasonOf({ "wp:anchor": [{ "wp:wrapSquare": {} }, placed[1], { "wp:positionH": [] }] })).to.equal(undefined);
+            const unplaced = itemsOf(readBody([p(drawing({ "wp:anchor": [{ "wp:wrapSquare": {} }, placed[0], { "wp:positionV": [] }] }))]));
+            expect((unplaced[0] as { readonly drawing: FloatingDrawing }).drawing.vertical).to.deep.equal({ from: "", offset: 0 });
+            const floating = drawing({ "wp:anchor": [{ "wp:wrapSquare": {} }, ...placed] });
+            const table = {
+                "w:tbl": [
+                    { "w:tblPr": [] },
+                    { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 2000 } } }] },
+                    { "w:tr": [{ "w:tc": [{ "w:tcPr": [{ "w:tcW": { _attr: { "w:w": 2000 } } }] }, p(floating)] }] },
+                ],
+            };
+            const cell = (readBody([table]).blocks[0].block as TableBlock).rows[0].cells[0].blocks[0];
+            expect(cell.unsupported).to.equal("a drawing that text flows around in a table cell, footnote, endnote or text box");
+        });
+
+        it("should read the drawing Word reads of those with a fallback for older versions", () => {
+            const alternate = {
+                "mc:AlternateContent": [
+                    {
+                        "mc:Choice": [
+                            { _attr: { Requires: "wps" } },
+                            { "w:drawing": [{ "wp:inline": [{ "wp:extent": { _attr: { cx: 12700, cy: 12700 } } }] }] },
+                        ],
+                    },
+                    { "mc:Fallback": [{ "w:pict": [] }] },
+                ],
+            };
+            expect(itemsOf(readBody([p(r(alternate))]))).to.deep.equal([{ type: "box", width: 1, height: 1, font: {} }]);
+            expect(itemsOf(readBody([p(r({ "mc:AlternateContent": [{ "mc:Fallback": [] }] }))]))).to.deep.equal([]);
+        });
+    });
+
+    describe("text frames", () => {
+        const framed = (attributes: object, ...children: readonly object[]): object =>
+            p(pPr({ "w:framePr": { _attr: { "w:hAnchor": "margin", "w:vAnchor": "text", ...attributes } } }), ...children);
+        const drawingsOf = (content: DocumentContent, index = 0): readonly FloatingDrawing[] =>
+            itemsOf(content, index).flatMap((item) => (item.type === "drawing" ? [item.drawing] : []));
+
+        it("should take a frame's paragraph out of the text, and anchor it in the next paragraph as a drawing text flows around", () => {
+            const content = readBody([
+                framed(
+                    { "w:w": 2000, "w:h": 1000, "w:x": 100, "w:y": 200, "w:hSpace": 360, "w:vSpace": 288 },
+                    { "w:bookmarkStart": { _attr: { "w:id": 1, "w:name": "inside" } } },
+                    r(t("In the frame")),
+                ),
+                p(r(t("After"))),
+            ]);
+            expect(content.blocks).to.have.length(1);
+            const [drawing] = drawingsOf(content);
+            // With no wrapping given, the text goes beside it on both sides, and a height with no rule is the least it is
+            // (`word-frames.docx` FM1, FM2)
+            expect(drawing).to.deep.include({
+                wrap: "square",
+                side: "bothSides",
+                width: 100,
+                height: 50,
+                effects: { top: 0, bottom: 0, left: 0, right: 0 },
+                distances: { top: 14.4, bottom: 14.4, left: 18, right: 18 },
+                horizontal: { from: "margin", offset: 5 },
+                vertical: { from: "paragraph", offset: 10 },
+            });
+            expect(drawing.frame).to.deep.include({ heightRule: "atLeast", fitsWidth: false });
+            expect(drawing.frame?.blocks.map((block) => block.items.filter(({ type }) => type === "text"))).to.deep.equal([
+                [{ type: "text", text: "In the frame", font: {} }],
+            ]);
+            // Its bookmarks are where its anchor is, as it is on its page, before the drawing and the anchor's text
+            expect(itemsOf(content).map(({ type }) => type)).to.deep.equal(["marker", "drawing", "text"]);
+            expect(itemsOf(content)[0]).to.deep.equal({ type: "marker", name: "inside" });
+        });
+
+        it("should put paragraphs next to each other with the same frame in one frame, and others in frames of their own", () => {
+            const content = readBody([
+                framed({ "w:w": 2000 }, r(t("a"))),
+                framed({ "w:w": 2000 }, r(t("b"))),
+                framed({ "w:w": 3000 }, r(t("c"))),
+                p(r(t("After"))),
+            ]);
+            expect(drawingsOf(content).map(({ frame }) => frame?.blocks.length)).to.deep.equal([2, 1]);
+            expect(drawingsOf(content).map(({ width }) => width)).to.deep.equal([100, 150]);
+        });
+
+        it("should read how the text goes round a frame as Word lays it out", () => {
+            const wrapOf = (wrap: string): string | undefined =>
+                drawingsOf(readBody([framed({ "w:w": 2000, "w:wrap": wrap }, r(t("a"))), p(r(t("b")))]))[0]?.wrap;
+            // Tight, through and automatic wrapping are around it, beside it, and not beside it is above and below it (FM6)
+            expect(["around", "tight", "through", "auto", "notBeside"].map(wrapOf)).to.deep.equal([
+                "square",
+                "square",
+                "square",
+                "square",
+                "topAndBottom",
+            ]);
+            // With none, it is in front of the text and takes no room, but its bookmarks are still where its anchor is (FM6c)
+            const inFront = readBody([
+                framed({ "w:wrap": "none" }, { "w:bookmarkStart": { _attr: { "w:id": 1, "w:name": "in" } } }, r(t("a"))),
+                p(r(t("b"))),
+            ]);
+            expect(itemsOf(inFront).map(({ type }) => type)).to.deep.equal(["marker", "text"]);
+            expect(paragraphOf(readBody([framed({ "w:wrap": "bogus" }, r(t("a"))), p(r(t("b")))])).unsupported).to.equal(
+                "a text frame that text flows around in a way not yet followed",
+            );
+        });
+
+        it("should read a frame a paragraph's style gives it, and stop where it gives another of its own", () => {
+            const styles = {
+                paragraphStyles: [
+                    {
+                        id: "Framed",
+                        name: "Framed",
+                        paragraph: {
+                            frame: {
+                                type: "absolute",
+                                position: { x: 0, y: 0 },
+                                width: 2000,
+                                height: 0,
+                                anchor: { horizontal: "margin", vertical: "text" },
+                            },
+                        },
+                    },
+                ],
+            } as unknown as IPropertiesOptions["styles"];
+            const styled = (frame?: object): object =>
+                p(pPr(value("w:pStyle", "Framed"), ...(frame ? [{ "w:framePr": { _attr: frame } }] : [])), r(t("a")));
+            expect(drawingsOf(readBody([styled(), p(r(t("b")))], { styles }))).to.have.length(1);
+            // Its own frame the same as its style's is that frame
+            const same = { "w:w": 2000, "w:h": 0, "w:x": 0, "w:y": 0, "w:hAnchor": "margin", "w:vAnchor": "text" };
+            expect(drawingsOf(readBody([styled(same), p(r(t("b")))], { styles }))).to.have.length(1);
+            // Its own that says all its style's does is the frame (`word-stops-floats.docx` FR4), and one that says less, with
+            // the rest from the style's or not, isn't known
+            expect(drawingsOf(readBody([styled({ ...same, "w:w": 3000 }), p(r(t("b")))], { styles }))[0].width).to.equal(150);
+            expect(paragraphOf(readBody([styled({ "w:w": 3000, "w:hAnchor": "margin" }), p(r(t("b")))], { styles })).unsupported).to.equal(
+                "a text frame given by both a paragraph and its style",
+            );
+            // Its own that can't be laid out stops for its own reason
+            expect(paragraphOf(readBody([styled({ "w:hAnchor": "cell" }), p(r(t("b")))], { styles })).unsupported).to.equal(
+                "a text frame placed against what isn't followed yet",
+            );
+        });
+
+        it("should anchor a frame before a table at the table, and one before a section's end in its empty paragraph, as Word does", () => {
+            // `word-stops-floats.docx` FR1a to FR1d
+            const table = {
+                "w:tbl": [
+                    { "w:tblPr": [] },
+                    { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 2000 } } }] },
+                    { "w:tr": [{ "w:tc": [p(r(t("a")))] }] },
+                ],
+            };
+            const bookmark = { "w:bookmarkStart": { _attr: { "w:id": 1, "w:name": "inside" } } };
+            const beforeTable = readBody([framed({ "w:vAnchor": "margin" }, bookmark, r(t("a"))), table]).blocks[0].block as TableBlock;
+            expect(beforeTable.unsupported).to.equal(undefined);
+            expect(beforeTable.anchored?.map(({ type }) => type)).to.deep.equal(["marker", "drawing"]);
+            // Placed against the paragraph after it, it is anchored at the table too, against its top (`word-stops-floats2.docx` FB1b)
+            const againstParagraph = readBody([framed({}, r(t("a"))), table]).blocks[0].block as TableBlock;
+            expect(againstParagraph.unsupported).to.equal(undefined);
+            expect(againstParagraph.anchored?.map((item) => (item.type === "drawing" ? item.drawing.vertical : item.type))).to.deep.equal([
+                { from: "paragraph", offset: 0 },
+            ]);
+            // Before a table that text flows around, which is anchored in the paragraph after it, it isn't followed yet
+            const floating = {
+                "w:tbl": [
+                    { "w:tblPr": [{ "w:tblpPr": { _attr: { "w:horzAnchor": "text", "w:vertAnchor": "text" } } }] },
+                    ...table["w:tbl"].slice(1),
+                ],
+            };
+            const beforeFloating = readBody([framed({ "w:vAnchor": "margin" }, r(t("a"))), floating, p(r(t("b")))]);
+            expect(beforeFloating.blocks.map(({ block }) => block.unsupported)).to.deep.equal([
+                "a text frame before a table that text flows around",
+                undefined,
+                undefined,
+            ]);
+            const sectionEnd = readBody([framed({}, r(t("a"))), p(pPr({ "w:sectPr": [] })), p(r(t("b")))]);
+            expect(sectionEnd.blocks[0].block.unsupported).to.equal(undefined);
+            expect(drawingsOf(sectionEnd)).to.have.length(1);
+            expect(paragraphOf(sectionEnd).sectionBreak).to.equal(true);
+            // Its borders beside it keep the text further from it, by their width and space and 1.5 points more, without a
+            // shadow's (`word-stops-floats.docx` FR2a to FR2j)
+            const sides = {
+                "w:pBdr": [
+                    { "w:left": { _attr: { "w:val": "single", "w:sz": 12, "w:space": 4, "w:shadow": 1 } } },
+                    { "w:right": { _attr: { "w:val": "single", "w:sz": 4, "w:space": 0 } } },
+                ],
+            };
+            const withSides = readBody([
+                p(pPr(sides, { "w:framePr": { _attr: { "w:hAnchor": "page", "w:vAnchor": "page" } } }), r(t("a"))),
+                p(r(t("b"))),
+            ]);
+            expect(drawingsOf(withSides)[0].distances).to.deep.equal({ top: 0, bottom: 0, left: 7, right: 2 });
+            // A note's reference in it is where its anchor is, as its note goes on the frame's page (FR5a)
+            expect(
+                itemsOf(readBody([framed({}, r({ "w:footnoteReference": { _attr: { "w:id": 1 } } })), p(r(t("b")))]))[0],
+            ).to.deep.include({ type: "marker" });
+        });
+
+        it("should stop at a frame with nothing after it in its section, with borders, or where it isn't followed yet", () => {
+            // Ending its section itself
+            const ending = readBody([
+                p(pPr({ "w:framePr": { _attr: { "w:hAnchor": "margin", "w:vAnchor": "margin" } } }, { "w:sectPr": [] }), r(t("a"))),
+                p(r(t("b"))),
+            ]);
+            expect(ending.blocks.map(({ block }) => block.unsupported)).to.deep.equal([
+                "a text frame with no paragraph after it in its section",
+                undefined,
+            ]);
+            const atEnd = readBody([p(r(t("before"))), framed({}, r(t("a")))]);
+            expect(atEnd.blocks.map(({ block }) => block.unsupported)).to.deep.equal([
+                undefined,
+                "a text frame with no paragraph after it in its section",
+            ]);
+            // Other borders beside its paragraphs take room in a way not yet followed; a border beside it with a distance from
+            // the text takes its room and the distance (`word-stops-floats2.docx` FB1a)
+            const side = (val: string): object => ({ _attr: { "w:val": val, "w:sz": 4, "w:space": 4 } });
+            const unknownOf = (frame: object, ...paragraphs: readonly object[]): string | undefined =>
+                paragraphOf(
+                    readBody([...paragraphs.map((borders) => p(pPr(borders, { "w:framePr": { _attr: frame } }), r(t("a")))), p(r(t("b")))]),
+                ).unsupported;
+            const page = { "w:hAnchor": "page", "w:vAnchor": "page" };
+            expect(unknownOf({ ...page, "w:hSpace": 100 }, { "w:pBdr": [{ "w:left": side("single") }] })).to.equal(undefined);
+            expect(unknownOf(page, { "w:pBdr": [{ "w:left": side("single") }] }, { "w:pBdr": [{ "w:right": side("single") }] })).to.equal(
+                "a text frame of paragraphs with other borders at their sides",
+            );
+            expect(unknownOf(page, { "w:pBdr": [{ "w:left": side("custom") }] })).to.equal(
+                "a paragraph border of a style not yet followed",
+            );
+            expect(unknownOf(page, { "w:pBdr": [{ "w:right": side("custom") }] })).to.equal(
+                "a paragraph border of a style not yet followed",
+            );
+            expect(paragraphOf(readBody([framed({ "w:hAnchor": "cell" }, r(t("a"))), p(r(t("b")))])).unsupported).to.equal(
+                "a text frame placed against what isn't followed yet",
+            );
+            const cellTable = {
+                "w:tbl": [
+                    { "w:tblPr": [] },
+                    { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 2000 } } }] },
+                    { "w:tr": [{ "w:tc": [framed({}, r(t("a"))), p(r(t("b")))] }] },
+                ],
+            };
+            expect((readBody([cellTable]).blocks[0].block as TableBlock).rows[0].cells[0].blocks[0].unsupported).to.equal(
+                "a text frame in a table cell, header, footer or text box",
+            );
+            // In a footnote, and in an endnote, its paragraph is in the note's text, as one not in a frame
+            // (`word-stops-floats.docx` FR3b, `word-stops-floats2.docx` EN1b)
+            const noted = readContent(
+                {
+                    "w:body": [
+                        p(r({ "w:footnoteReference": { _attr: { "w:id": 1 } } }), r({ "w:endnoteReference": { _attr: { "w:id": 1 } } })),
+                    ],
+                },
+                {
+                    styles: WORD_DEFAULT_STYLES,
+                    headersAndFooters: new Map(),
+                    footnotes: { "w:footnotes": [{ "w:footnote": [{ _attr: { "w:id": 1 } }, framed({}, r(t("a"))), p()] }] },
+                    endnotes: { "w:endnotes": [{ "w:endnote": [{ _attr: { "w:id": 1 } }, framed({}, r(t("a"))), p()] }] },
+                },
+            );
+            const inFootnote = noted.footnotes.get("footnote 1")![0] as ParagraphBlock;
+            expect(inFootnote.unsupported).to.equal(undefined);
+            expect(inFootnote.frame).to.equal(undefined);
+            // In a table cell in a footnote, it stops as in any table cell
+            const cellNoted = readContent(
+                { "w:body": [p(r({ "w:footnoteReference": { _attr: { "w:id": 1 } } }))] },
+                {
+                    styles: WORD_DEFAULT_STYLES,
+                    headersAndFooters: new Map(),
+                    footnotes: { "w:footnotes": [{ "w:footnote": [{ _attr: { "w:id": 1 } }, cellTable, p()] }] },
+                },
+            );
+            expect((cellNoted.footnotes.get("footnote 1")![0] as TableBlock).rows[0].cells[0].blocks[0].unsupported).to.equal(
+                "a text frame in a table cell, header, footer or text box",
+            );
+            expect(noted.endnotes[0].unsupported).to.equal(undefined);
+            expect((noted.endnotes[0] as ParagraphBlock).frame).to.equal(undefined);
+        });
+    });
+
+    describe("VML drawings", () => {
+        /** A VML drawing of a shape of a style, with its attributes and children */
+        const pict = (style: string, children: readonly object[] = [], attributes: object = {}, name = "v:rect"): object =>
+            r({ "w:pict": [{ [name]: [{ _attr: { style, ...attributes } }, ...children] }] });
+        const UNOUTLINED = { stroked: "f" };
+        const SQUARE = { "w10:wrap": { _attr: { type: "square" } } };
+        const reasonOf = (...children: readonly object[]): string | undefined => paragraphOf(readBody([p(...children)])).unsupported;
+        type TextBoxItem = Extract<LayoutItem, { readonly type: "textBox" }>;
+        type DrawingItem = Extract<LayoutItem, { readonly type: "drawing" }>;
+        /** A text box of paragraphs, with the text box's attributes and the shape's, sized to its text unless `fits` is off */
+        const textBox = (
+            text: readonly object[],
+            style = "width:200pt;height:auto",
+            box: object = {},
+            shape: object = {},
+            fits = true,
+        ): object =>
+            pict(
+                style,
+                [
+                    {
+                        "v:textbox": [
+                            { _attr: { ...(fits ? { style: "mso-fit-shape-to-text:t" } : {}), ...box } },
+                            { "w:txbxContent": text },
+                        ],
+                    },
+                ],
+                shape,
+                "v:shape",
+            );
+        const line = [p(r(t("a")))];
+        /** The text box read from a paragraph of these runs */
+        const boxOf = (...children: readonly object[]): TextBoxItem =>
+            itemsOf(readBody([p(...children)])).find((item): item is TextBoxItem => item.type === "textBox")!;
+        /** A text box's width, the room for its text, the room around it, and its own height and the room in it, to two decimals */
+        const sizesOf = (box: TextBoxItem): readonly (number | undefined)[] =>
+            [box.width, box.textWidth, box.room, box.fixed?.height, box.fixed?.inner].map((length) =>
+                length === undefined ? length : Math.round(length * 100) / 100,
+            );
+
+        it("should read a shape in the line as a box of its size and its outline's weight, and stop at pictures", () => {
+            expect(itemsOf(readBody([p(pict("width:100pt;height:50pt", [], UNOUTLINED))]))).to.deep.equal([
+                { type: "box", width: 100, height: 50, font: {} },
+            ]);
+            // A hidden one takes its room, with no outline drawn (`word-vml.docx` VM4)
+            expect(itemsOf(readBody([p(pict("width:1in;height:1in;visibility:hidden"))]))).to.deep.equal([
+                { type: "box", width: 72, height: 72, font: {} },
+            ]);
+            // An outline takes its weight more across and down, 0.72 points unless given (VM1, `word-stops-vml-shapes.docx` VM23a, VM23b)
+            expect(itemsOf(readBody([p(pict("width:100pt;height:20pt"))]))).to.deep.equal([
+                { type: "box", width: 100.72, height: 20.72, font: {} },
+            ]);
+            expect(itemsOf(readBody([p(pict("width:100pt;height:20pt", [], { strokeweight: "3pt" }))]))).to.deep.equal([
+                { type: "box", width: 103, height: 23, font: {} },
+            ]);
+            // A picture is drawn by its image's size, which a document being written has no file of (see the pictures below),
+            // but one that is an object's at its shape's size (`word-stops-vml-objects.docx` VM20e)
+            expect(reasonOf(pict("width:72pt;height:36pt", [{ "v:imagedata": {} }], UNOUTLINED, "v:shape"))).to.equal(
+                "a VML picture whose image isn't a part of the document",
+            );
+            expect(
+                itemsOf(readBody([p(pict("width:72pt;height:36pt", [{ "v:imagedata": {} }], { ...UNOUTLINED, "o:ole": "" }, "v:shape"))])),
+            ).to.deep.equal([{ type: "box", width: 72, height: 36, font: {} }]);
+            // Lengths in pixels, and in no unit, which is pixels too (VM29a, VM29c)
+            expect(itemsOf(readBody([p(pict("width:96px;height:36pt", [], UNOUTLINED))]))).to.deep.equal([
+                { type: "box", width: 72, height: 36, font: {} },
+            ]);
+            expect(itemsOf(readBody([p(pict("width:100;height:20", [], UNOUTLINED))]))).to.deep.equal([
+                { type: "box", width: 75, height: 15, font: {} },
+            ]);
+            // One with no size is 50 points square (VM29d), and one with only one of them isn't known
+            expect(itemsOf(readBody([p(pict("", [], UNOUTLINED))]))).to.deep.equal([{ type: "box", width: 50, height: 50, font: {} }]);
+            expect(reasonOf(pict("width:72pt", [], UNOUTLINED))).to.equal(
+                "a VML drawing with a width but no height, or a height but no width",
+            );
+            expect(reasonOf(pict("width:72pt;height:2em", [], UNOUTLINED))).to.equal(
+                "a VML drawing with a length in units not yet followed",
+            );
+            expect(reasonOf(pict("width:2em;height:36pt", [], UNOUTLINED))).to.equal(
+                "a VML drawing with a length in units not yet followed",
+            );
+            expect(reasonOf(pict("width:72pt;height:36pt", [], { strokeweight: "2em" }))).to.equal(
+                "a VML drawing with a length in units not yet followed",
+            );
+            // A picture's size in units not followed isn't known either
+            expect(reasonOf(pict("width:2em;height:36pt", [{ "v:imagedata": {} }], UNOUTLINED, "v:shape"))).to.equal(
+                "a VML drawing with a length in units not yet followed",
+            );
+            // A drawing with no shape, such as a shape type alone, draws nothing (`word-stops-vml-shape-type.docx` VM29e)
+            expect(itemsOf(readBody([p(r({ "w:pict": [{ "v:shapetype": [] }] }))]))).to.deep.equal([]);
+            // In hidden text, it takes no room, and in text with a border, which Word hasn't been seen with, it stops
+            expect(itemsOf(readBody([p(r(rPr({ "w:vanish": {} }), { "w:pict": [] }))]))).to.deep.equal([]);
+            const bordered = rPr({ "w:bdr": { _attr: { "w:val": "single", "w:sz": 4, "w:space": 0 } } });
+            expect(reasonOf(r(bordered, { "w:pict": [] }))).to.equal("a VML drawing in text with a border");
+        });
+
+        it("should read a group of shapes in the line as a box of its size, and stop at one with an outline or that text flows around (VM29f)", () => {
+            const rect = (left: number, attributes: object = UNOUTLINED): object => ({
+                "v:rect": [{ _attr: { style: `position:absolute;left:${left};top:0;width:90;height:50`, ...attributes } }],
+            });
+            const group = (style: string, ...shapes: readonly object[]): object =>
+                r({ "w:pict": [{ "v:group": [{ _attr: { style } }, ...shapes] }] });
+            expect(itemsOf(readBody([p(group("width:200pt;height:50pt", rect(0), rect(110)))]))).to.deep.equal([
+                { type: "box", width: 200, height: 50, font: {} },
+            ]);
+            expect(reasonOf(group("width:200pt;height:50pt", rect(0), rect(110, {})))).to.equal("a VML group of shapes with an outline");
+            expect(reasonOf(group("position:absolute;width:200pt;height:50pt", SQUARE, rect(0)))).to.equal(
+                "a VML group of shapes that text flows around",
+            );
+        });
+
+        it("should read docx's text box in the line as a box sized to its text, with Word's insets and its outline", () => {
+            const content = readWritten({
+                sections: [
+                    {
+                        children: [
+                            new Paragraph({
+                                children: [
+                                    new TextRun("Before "),
+                                    new Textbox({
+                                        children: [
+                                            new Paragraph({ children: [new Bookmark({ id: "inside", children: [new TextRun("In")] })] }),
+                                        ],
+                                        style: { width: "200pt", height: "auto" },
+                                    }),
+                                ],
+                            }),
+                            new Textbox({
+                                children: [new Paragraph("Hidden")],
+                                style: { width: "100pt", height: "100pt", visibility: "hidden" },
+                            }),
+                        ],
+                    },
+                ],
+            });
+            const [, marker, box] = itemsOf(content);
+            expect(marker).to.deep.equal({ type: "marker", name: "inside" });
+            // As wide as it is with its outline, and its text in the room its insets and its outline leave, with the insets and
+            // the outline inside the box and in the line above and below it (VM1 to VM5, `word-stops-floats2.docx` TX1a to TX1k)
+            expect(box).to.deep.include({ type: "textBox", font: {} });
+            expect(sizesOf(box as TextBoxItem)).to.deep.equal([200.72, 184.88, 8.64, undefined, undefined]);
+            expect(((box as TextBoxItem).blocks[0] as ParagraphBlock).items).to.deep.include({ type: "text", text: "In", font: {} });
+            // Sized to its text whatever height it gives, with no outline drawn when it is hidden (VM3, VM4)
+            expect(sizesOf(itemsOf(content, 1)[0] as TextBoxItem)).to.deep.equal([100, 84.88, 7.92, undefined, undefined]);
+        });
+
+        it("should read a text box Word doesn't size to its text, or with insets or an outline of its own, as Word sizes them (VM25a to VM25e)", () => {
+            expect(reasonOf(textBox(line))).to.equal(undefined);
+            // One Word doesn't size to its text is as tall as it says, its outline and half a point more, with the room its text
+            // has in it (`word-stops-vml-text-boxes.docx` VM25a)
+            expect(sizesOf(boxOf(textBox(line, "width:200pt;height:100pt", {}, {}, false)))).to.deep.equal([
+                200.72, 184.88, 9.14, 101.22, 92.08,
+            ]);
+            expect(reasonOf(textBox(line, "width:200pt;height:auto", {}, {}, false))).to.equal(
+                "a VML drawing with a length that isn't a number",
+            );
+            // Its insets, "left,top,right,bottom", each Word's when it isn't given (VM25b, VM25c)
+            expect(sizesOf(boxOf(textBox(line, undefined, { inset: "0,0,0,0" })))).to.deep.equal([
+                200.72,
+                199.28,
+                1.44,
+                undefined,
+                undefined,
+            ]);
+            expect(sizesOf(boxOf(textBox(line, undefined, { inset: "10pt,10pt,10pt,10pt" })))).to.deep.equal([
+                200.72,
+                179.28,
+                21.44,
+                undefined,
+                undefined,
+            ]);
+            expect(sizesOf(boxOf(textBox(line, undefined, { inset: "0,,10pt" })))).to.deep.equal([
+                200.72,
+                189.28,
+                8.64,
+                undefined,
+                undefined,
+            ]);
+            expect(reasonOf(textBox(line, undefined, { inset: "2em" }))).to.equal("a VML drawing with a length in units not yet followed");
+            // An outline of its own takes its weight inside the box and in the line, and the line is half a point taller again,
+            // as it is with no outline (VM25d, VM25e)
+            expect(sizesOf(boxOf(textBox(line, undefined, {}, { strokeweight: "3pt" })))).to.deep.equal([
+                203,
+                182.6,
+                13.7,
+                undefined,
+                undefined,
+            ]);
+            expect(sizesOf(boxOf(textBox(line, undefined, {}, UNOUTLINED)))).to.deep.equal([200, 185.6, 7.7, undefined, undefined]);
+            expect(reasonOf(textBox(line, "height:auto"))).to.equal("a VML drawing with no size");
+            expect(reasonOf(textBox(line, "width:200pt", {}, {}, false))).to.equal("a VML drawing with no size");
+            expect(reasonOf(textBox(line, "width:auto"))).to.equal("a VML drawing with a length that isn't a number");
+        });
+
+        it("should leave a footnote referred to in a text box out, with its note, and stop at the footnotes after it and at endnotes (VM26a)", () => {
+            const noted = [p(r(t("a")), r({ "w:footnoteReference": { _attr: { "w:id": 1 } } }))];
+            expect((boxOf(textBox(noted)).blocks[0] as ParagraphBlock).items).to.deep.equal([{ type: "text", text: "a", font: {} }]);
+            // Whether Word counts it in the numbers of the footnotes after it hasn't been seen
+            const after = readBody([p(textBox(noted)), p(r({ "w:footnoteReference": { _attr: { "w:id": 2 } } }))]);
+            expect(paragraphOf(after, 1).unsupported).to.equal("a footnote after one in a text box");
+            const before = readBody([p(r({ "w:footnoteReference": { _attr: { "w:id": 2 } } })), p(textBox(noted))]);
+            expect(before.blocks.map(({ block }) => block.unsupported)).to.deep.equal([undefined, undefined]);
+            expect(reasonOf(textBox([p(r({ "w:endnoteReference": { _attr: { "w:id": 1 } } }))]))).to.equal("an endnote in a text box");
+        });
+
+        it("should number a list in a text box from 1, apart from the text's lists, and stop at one with paragraphs of its list before it (VM26b)", () => {
+            const numbering = { config: [{ reference: "list", levels: [{ level: 0, format: LevelFormat.DECIMAL, text: "%1." }] }] };
+            const item = (text: string): Paragraph => new Paragraph({ numbering: { reference: "list", level: 0 }, text });
+            const box = (...children: readonly Paragraph[]): Textbox =>
+                new Textbox({ children: [...children], style: { width: "200pt", height: "auto" } });
+            const numbersOf = (blocks: TextBoxItem["blocks"]): readonly string[] =>
+                blocks.map((block) => (block.type === "paragraph" ? (block.items[0] as { readonly text: string }).text : ""));
+            const content = readWritten({ numbering, sections: [{ children: [box(item("a"), item("b")), item("c")] }] });
+            const inBox = itemsOf(content).find((one): one is TextBoxItem => one.type === "textBox")!;
+            expect(numbersOf(inBox.blocks)).to.deep.equal(["1.", "2."]);
+            expect(numbersOf([paragraphOf(content, 1)])).to.deep.equal(["1."]);
+            // Whether Word numbers on from the text's paragraphs of the list, or another box's, hasn't been seen
+            const after = readWritten({ numbering, sections: [{ children: [item("a"), box(item("b"))] }] });
+            expect(paragraphOf(after, 1).unsupported).to.equal("a list in a text box with paragraphs of its list before it");
+            const twice = readWritten({ numbering, sections: [{ children: [box(item("a")), box(item("b"))] }] });
+            expect(paragraphOf(twice, 1).unsupported).to.equal("a list in a text box with paragraphs of its list before it");
+        });
+
+        it("should stop at a text box with a drawing or a frame in it, or a paragraph that can't be laid out", () => {
+            // A text box in a text box Word wouldn't open (`word-stops-vml-nested.docx`)
+            expect(reasonOf(textBox([p(pict("width:1pt;height:1pt", [], UNOUTLINED))]))).to.equal(
+                "a VML drawing in the line of a text box",
+            );
+            expect(reasonOf(textBox([p(pict("width:2em;height:1pt", [], UNOUTLINED))]))).to.equal(
+                "a VML drawing in the line of a text box",
+            );
+            expect(
+                reasonOf(textBox([p(pPr({ "w:framePr": { _attr: { "w:hAnchor": "page", "w:vAnchor": "page" } } }), r(t("a")))])),
+            ).to.equal("a text frame in a table cell, header, footer or text box");
+            const anchor = { "wp:anchor": [{ "wp:wrapSquare": {} }] };
+            expect(reasonOf(textBox([p(r({ "w:drawing": [anchor] }))]))).to.equal(
+                "a drawing that text flows around in a table cell, footnote, endnote or text box",
+            );
+            expect(reasonOf(textBox([p(r({ "w:ruby": [] }))]))).to.equal("a phonetic guide, or its base, with other than text in it");
+        });
+
+        it("should leave out a shape placed on the page with no wrapping, and read one that text flows around as a drawing", () => {
+            const placed = "position:absolute;margin-left:10pt;margin-top:20pt;width:100pt;height:72pt";
+            expect(itemsOf(readBody([p(pict(placed))]))).to.deep.equal([]);
+            expect(itemsOf(readBody([p(pict(placed, [{ "w10:wrap": { _attr: { type: "none" } } }]))]))).to.deep.equal([]);
+            const [item] = itemsOf(readBody([p(pict(placed, [SQUARE], UNOUTLINED))]));
+            expect(item).to.deep.include({ type: "drawing" });
+            expect((item as DrawingItem).drawing).to.deep.include({
+                wrap: "square",
+                width: 100,
+                height: 72,
+                effects: { top: 0, bottom: 0, left: 0, right: 0 },
+                distances: { top: 0, bottom: 0, left: 9, right: 9 },
+                horizontal: { from: "column", offset: 10 },
+                vertical: { from: "paragraph", offset: 20 },
+            });
+            // With an outline, the room it takes beside it (VM24a, VM24b), and wrapped tightly, the text nearer on the right (VM27a)
+            const [outlined] = itemsOf(readBody([p(pict(placed, [SQUARE]))]));
+            expect((outlined as DrawingItem).drawing.effects).to.deep.equal({ top: 0.36, bottom: 0.36, left: 0, right: 1 });
+            const [tight] = itemsOf(readBody([p(pict(placed, [{ "w10:wrap": { _attr: { type: "tight" } } }], UNOUTLINED))]));
+            expect((tight as DrawingItem).drawing).to.deep.include({ wrap: "square", distances: { top: 0, bottom: 0, left: 9, right: 8 } });
+        });
+
+        it("should read a text box that text flows around as a drawing sized to its text, and stop at one Word doesn't size (VM24c)", () => {
+            const placed = "position:absolute;margin-left:144pt;margin-top:18pt;width:100pt;height:100pt";
+            const floatingBox = (fits: boolean, ...content: readonly object[]): object =>
+                pict(
+                    placed,
+                    [SQUARE, { "v:textbox": [{ _attr: fits ? { style: "mso-fit-shape-to-text:t" } : {} }, { "w:txbxContent": content }] }],
+                    {},
+                    "v:shape",
+                );
+            const bookmark = { "w:bookmarkStart": { _attr: { "w:id": 0, "w:name": "inside" } } };
+            const items = itemsOf(readBody([p(floatingBox(true, p(bookmark, r(t("a")))))]));
+            expect(items.map(({ type }) => type)).to.deep.equal(["marker", "drawing"]);
+            const { drawing } = items[1] as DrawingItem;
+            expect(drawing).to.deep.include({ width: 100, height: 100, effects: { top: 0.36, bottom: 0.36, left: 0, right: 1 } });
+            // Its text in its insets and its outline, which it is as tall as
+            expect(drawing.frame).to.deep.include({ heightRule: "auto", fitsWidth: false });
+            expect(Object.values(drawing.frame!.inset!).map((length) => Math.round(length * 100) / 100)).to.deep.equal([
+                7.56, 7.56, 3.96, 3.96,
+            ]);
+            expect(drawing.frame!.blocks[0].items).to.deep.include({ type: "text", text: "a", font: {} });
+            expect(reasonOf(floatingBox(false, p(r(t("a")))))).to.equal("a text box that text flows around not sized to its text");
+            const table = {
+                "w:tbl": [
+                    { "w:tblPr": [] },
+                    { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 2000 } } }] },
+                    { "w:tr": [{ "w:tc": [{ "w:tcPr": [{ "w:tcW": { _attr: { "w:w": 2000 } } }] }, p(r(t("c")))] }] },
+                ],
+            };
+            expect(reasonOf(floatingBox(true, table))).to.equal("a table in a text box that text flows around");
+            expect(reasonOf(floatingBox(true, p(r({ "w:ruby": [] }))))).to.equal(
+                "a phonetic guide, or its base, with other than text in it",
+            );
+            const boxWith = (style: string, box: object = {}): object =>
+                pict(
+                    `${placed};${style}`,
+                    [
+                        SQUARE,
+                        { "v:textbox": [{ _attr: { style: "mso-fit-shape-to-text:t", ...box } }, { "w:txbxContent": [p(r(t("a")))] }] },
+                    ],
+                    {},
+                    "v:shape",
+                );
+            expect(reasonOf(boxWith("", { inset: "2em" }))).to.equal("a VML drawing with a length in units not yet followed");
+            expect(reasonOf(boxWith("rotation:30"))).to.equal("a turned VML drawing that text flows around");
+            // With no outline, no room for one beside it, and its text in its insets alone
+            const plain = pict(
+                placed,
+                [SQUARE, { "v:textbox": [{ _attr: { style: "mso-fit-shape-to-text:t" } }, { "w:txbxContent": [p(r(t("a")))] }] }],
+                UNOUTLINED,
+                "v:shape",
+            );
+            const [plainItem] = itemsOf(readBody([p(plain)]));
+            expect((plainItem as DrawingItem).drawing.effects).to.deep.equal({ top: 0, bottom: 0, left: 0, right: 0 });
+            expect((plainItem as DrawingItem).drawing.frame?.inset).to.deep.equal({ left: 7.2, right: 7.2, top: 3.6, bottom: 3.6 });
+        });
+
+        it("should read a picture in the line as a box of its shape's size, 33 points at most for one of a pixel, as Word draws it (VM20, VM30)", () => {
+            const PICTURE_TYPE = { "v:shapetype": [{ _attr: { id: "_x0000_t75", stroked: "f", filled: "f" } }] };
+            /** A picture as Word writes one: a shape of Word's type for pictures, with its image's relationship */
+            const picture = (style: string, id: string | null = "rId1", attributes: object = {}): object =>
+                r({
+                    "w:pict": [
+                        PICTURE_TYPE,
+                        {
+                            "v:shape": [
+                                { _attr: { style, type: "#_x0000_t75", ...attributes } },
+                                { "v:imagedata": { _attr: id === null ? {} : { "r:id": id } } },
+                            ],
+                        },
+                    ],
+                });
+            const pixel = { width: 1, height: 1 };
+            const wide = { width: 100, height: 50 };
+            /** The sizes of the images the body refers to, by the ids of its relationships to them */
+            const images = (...sizes: readonly (readonly [string, ImageSize | undefined])[]): DocumentParts["pictures"] => ({
+                body: new Map(sizes),
+            });
+            // In Word 2013's compatibility mode, as a document without settings is read as Word 2007's, where VML drawings stop
+            const settings = {
+                "w:settings": [{ "w:compat": [{ "w:compatSetting": { _attr: { "w:name": "compatibilityMode", "w:val": 15 } } }] }],
+            };
+            const read = (elements: readonly unknown[], parts: Partial<DocumentParts>, options: ReadOptions = {}): DocumentContent =>
+                readContent(
+                    { "w:body": elements },
+                    { styles: WORD_DEFAULT_STYLES, settings, headersAndFooters: new Map(), ...parts },
+                    options,
+                );
+            const drawnOf = (element: object, pictures = images(["rId1", wide])): readonly LayoutItem[] | string | undefined => {
+                const paragraph = paragraphOf(read([p(element)], { pictures }));
+                return paragraph.unsupported ?? paragraph.items;
+            };
+            const box = (width: number, height: number): LayoutItem => ({ type: "box", width, height, font: {} });
+            // A picture of 100 by 50 pixels is its shape's size, in shapes of 20 to 150 points (`word-stops-vml-pictures2.docx` VM30b
+            // to VM30h), with no outline, as Word's type for pictures has none
+            expect(drawnOf(picture("width:72pt;height:36pt"))).to.deep.equal([box(72, 36)]);
+            expect(drawnOf(picture("width:20pt;height:20pt"))).to.deep.equal([box(20, 20)]);
+            expect(drawnOf(picture("width:150pt;height:75pt"))).to.deep.equal([box(150, 75)]);
+            // One of a pixel is 33 points at most across and down (`word-vml.docx` VM8, `word-stops-vml-pictures.docx` VM20a to
+            // VM20d, VM20f, VM30a), whether its file says it is 96 dots to the inch or nothing
+            expect(drawnOf(picture("width:72pt;height:36pt"), images(["rId1", pixel]))).to.deep.equal([box(33, 33)]);
+            expect(drawnOf(picture("width:20pt;height:20pt"), images(["rId1", pixel]))).to.deep.equal([box(20, 20)]);
+            expect(drawnOf(picture("width:40pt;height:20pt"), images(["rId1", pixel]))).to.deep.equal([box(33, 20)]);
+            expect(drawnOf(picture("width:72pt;height:36pt"), images(["rId1", { ...pixel, density: 96.012 }]))).to.deep.equal([
+                box(33, 33),
+            ]);
+            // Past 33 points a pixel, a picture of another resolution, or of more pixels, hasn't been seen
+            expect(drawnOf(picture("width:72pt;height:36pt"), images(["rId1", { ...pixel, density: 300 }]))).to.equal(
+                "a VML picture drawn past 33 points a pixel of its image",
+            );
+            expect(drawnOf(picture("width:72pt;height:36pt"), images(["rId1", { width: 2, height: 2 }]))).to.equal(
+                "a VML picture drawn past 33 points a pixel of its image",
+            );
+            expect(drawnOf(picture("width:66pt;height:36pt"), images(["rId1", { width: 2, height: 1 }]))).to.deep.equal([box(66, 33)]);
+            expect(drawnOf(picture("width:60pt;height:100pt"), images(["rId1", { width: 2, height: 2 }]))).to.equal(
+                "a VML picture drawn past 33 points a pixel of its image",
+            );
+            // An outline of the shape's own takes its room, as a shape's does
+            expect(drawnOf(picture("width:72pt;height:36pt", "rId1", { stroked: "t", strokeweight: "2pt" }))).to.deep.equal([box(74, 38)]);
+            // An image the document has no part for, or none the picture refers to, or in a format whose size isn't read
+            expect(drawnOf(picture("width:72pt;height:36pt", "rId2"))).to.equal("a VML picture whose image isn't a part of the document");
+            expect(drawnOf(picture("width:72pt;height:36pt", null))).to.equal("a VML picture whose image isn't a part of the document");
+            expect(drawnOf(picture("width:72pt;height:36pt"), images(["rId1", undefined]))).to.equal(
+                "a VML picture whose image isn't a PNG, JPEG, GIF or BMP",
+            );
+            // One with no size of its own hasn't been seen
+            expect(drawnOf(picture(""))).to.equal("a VML picture with no size of its own");
+            // Guessing, a picture that stops the layout takes its shape's size
+            expect(itemsOf(read([p(picture("width:72pt;height:36pt", "rId2"))], { pictures: images() }, { guess: true }))).to.deep.include(
+                box(72, 36),
+            );
+            // In a header, and in a footnote or endnote, the images are the part's own
+            const header = read([p(r(t("a"))), { "w:sectPr": [{ "w:headerReference": { _attr: { "r:id": "rId1" } } }] }], {
+                headersAndFooters: new Map([["rId1", [p(picture("width:72pt;height:36pt"))]]]),
+                pictures: { body: new Map([["rId1", pixel]]), headersAndFooters: new Map([["rId1", new Map([["rId1", wide]])]]) },
+            });
+            expect((header.sections[0].headers.default![0] as ParagraphBlock).items).to.deep.equal([box(72, 36)]);
+            const noted = read(
+                [p(r({ "w:footnoteReference": { _attr: { "w:id": 1 } } }), r({ "w:endnoteReference": { _attr: { "w:id": 1 } } }))],
+                {
+                    footnotes: { "w:footnotes": [{ "w:footnote": [{ _attr: { "w:id": 1 } }, p(picture("width:72pt;height:36pt"))] }] },
+                    endnotes: { "w:endnotes": [{ "w:endnote": [{ _attr: { "w:id": 1 } }, p(picture("width:66pt;height:36pt"))] }] },
+                    pictures: {
+                        body: new Map([["rId1", pixel]]),
+                        footnotes: new Map([["rId1", wide]]),
+                        endnotes: new Map([["rId1", { width: 2, height: 1 }]]),
+                    },
+                },
+            );
+            expect((noted.footnotes.get("footnote 1")![0] as ParagraphBlock).items).to.deep.include(box(72, 36));
+            expect(noted.endnotes.flatMap((block) => (block as ParagraphBlock).items)).to.deep.include(box(66, 33));
+        });
+
+        it("should stop at a shape that text flows around where Word's way with it isn't known", () => {
+            const placed = "position:absolute;width:100pt;height:72pt";
+            expect(reasonOf(pict(placed, [SQUARE, { "v:imagedata": {} }], UNOUTLINED, "v:shape"))).to.equal(
+                "a VML picture placed on the page that text flows around",
+            );
+            expect(reasonOf(pict("position:absolute;width:100pt", [SQUARE], UNOUTLINED))).to.equal(
+                "a VML drawing with a width but no height, or a height but no width",
+            );
+            expect(reasonOf(pict(`${placed};rotation:30`, [SQUARE], UNOUTLINED))).to.equal("a turned VML drawing that text flows around");
+            const table = {
+                "w:tbl": [
+                    { "w:tblPr": [] },
+                    { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 2000 } } }] },
+                    {
+                        "w:tr": [
+                            { "w:tc": [{ "w:tcPr": [{ "w:tcW": { _attr: { "w:w": 2000 } } }] }, p(pict(placed, [SQUARE], UNOUTLINED))] },
+                        ],
+                    },
+                ],
+            };
+            expect((readBody([table]).blocks[0].block as TableBlock).rows[0].cells[0].blocks[0].unsupported).to.equal(
+                "a drawing that text flows around in a table cell, footnote, endnote or text box",
+            );
+        });
+
+        it("should read a shape in a header that text flows around, which the body's text goes round, and one in its line as in the body", () => {
+            const headerOf = (...children: readonly object[]): readonly unknown[] => {
+                const file = new File({ sections: [{ headers: { default: new Header({ children: [] }) }, children: [] }] });
+                const [wrapper] = file.Headers;
+                // eslint-disable-next-line functional/immutable-data
+                wrapper.View.prepForXml = (): IXmlableObject => ({ "w:hdr": [p(...children)] });
+                const id = `rId${wrapper.View.ReferenceId}`;
+                const content = readDocument(
+                    { "w:body": [{ "w:sectPr": [{ "w:headerReference": { _attr: { "r:id": id } } }] }] } as IXmlableObject,
+                    contextOf(file),
+                );
+                return content.sections[0].headers.default!.map((block) =>
+                    block.type === "paragraph" ? (block.unsupported ?? block.items.map(({ type }) => type)) : block,
+                );
+            };
+            // word-vml.docx VM13: placed against the page, as a drawing of the page the body's text goes round
+            const onPage = "position:absolute;margin-top:216pt;width:100pt;height:72pt;mso-position-vertical-relative:page";
+            expect(headerOf(pict(onPage, [SQUARE], UNOUTLINED))).to.deep.equal([["drawing"]]);
+            // Against its paragraph, as it is when it doesn't say, as a DrawingML one (word-stops-edges.docx DH2a)
+            expect(headerOf(pict("position:absolute;width:100pt;height:72pt", [SQUARE], UNOUTLINED))).to.deep.equal([["drawing"]]);
+            // In the header's line, it takes the room it takes in the body's (`word-stops-vml-header.docx` VM22a to VM22c)
+            expect(headerOf(pict("width:100pt;height:72pt", [], UNOUTLINED))).to.deep.equal([["box"]]);
+            expect(headerOf(textBox(line))).to.deep.equal([["textBox"]]);
+            // A text box that text flows around in a header, against its paragraph, which Word has been seen with only as a
+            // picture
+            const floatingBox = pict(
+                "position:absolute;width:100pt;height:72pt",
+                [SQUARE, { "v:textbox": [{ _attr: { style: "mso-fit-shape-to-text:t" } }, { "w:txbxContent": line }] }],
+                {},
+                "v:shape",
+            );
+            expect(headerOf(floatingBox)).to.deep.equal([
+                "a text box that text flows around in a header or footer, placed against its paragraph or line",
+            ]);
+            const boxAt = (style: string): object =>
+                pict(
+                    `position:absolute;width:100pt;height:72pt;${style}`,
+                    [SQUARE, { "v:textbox": [{ _attr: { style: "mso-fit-shape-to-text:t" } }, { "w:txbxContent": line }] }],
+                    {},
+                    "v:shape",
+                );
+            expect(headerOf(boxAt("mso-position-vertical-relative:line"))).to.deep.equal([
+                "a text box that text flows around in a header or footer, placed against its paragraph or line",
+            ]);
+            // Against the page, as a picture there
+            expect(headerOf(boxAt("margin-top:216pt;mso-position-vertical-relative:page"))).to.deep.equal([["drawing"]]);
+        });
+    });
+
+    describe("fields", () => {
+        it("should read the results of fields, not their instructions", () => {
+            const content = readBody([
+                p(field("begin"), instruction("AUTHOR"), field("separate"), r(t("Ann")), field("end"), r(t(" after"))),
+            ]);
+            expect(textOf(content)).to.equal("Ann after");
+        });
+
+        it("should read a page reference's result as the page of its bookmark, across paragraphs and inside other fields", () => {
+            const content = readBody([
+                p(
+                    field("begin"),
+                    instruction("TOC \\o"),
+                    field("separate"),
+                    r(t("Entry")),
+                    field("begin"),
+                    instruction("PAGEREF _Toc1 \\h"),
+                ),
+                p(field("separate"), r(t("99")), field("end"), field("end")),
+            ]);
+            expect(textOf(content, 0)).to.equal("Entry");
+            expect(itemsOf(content, 1)).to.deep.equal([{ type: "pageReference", bookmark: "_Toc1", font: {} }]);
+        });
+
+        it("should read page references with \\p and in formats of their own, and stop at those whose text in Word isn't known", () => {
+            const reference = (text: string): object => p(field("begin"), instruction(text), field("separate"), r(t("?")), field("end"));
+            const content = readBody([
+                reference("PAGEREF a \\p \\h"),
+                reference("PAGEREF a \\* roman"),
+                reference('PAGEREF "a" \\* MERGEFORMAT \\*Arabic \\* Upper'),
+                reference("PAGEREF"),
+                reference('PAGEREF a \\# "#,##0" \\* Lower'),
+                reference("PAGEREF a \\p \\* Arabic"),
+                reference("PAGEREF b \\p \\* FirstCap \\*"),
+                // Word's text for these isn't known
+                reference("PAGEREF a \\* BahtText"),
+                reference("PAGEREF a \\* roman \\* Ordinal"),
+                reference('PAGEREF a \\# "0.#"'),
+                reference("PAGEREF a \\# 0 \\#0"),
+                reference('PAGEREF a \\* roman \\# "00"'),
+                reference("PAGEREF a \\* Caps"),
+                reference("PAGEREF a \\* Upper \\* Lower"),
+                reference("PAGEREF a \\p \\* BahtText"),
+            ]);
+            // Where its bookmark is from it, from the page of the marker at it, and the order of the markers
+            expect(itemsOf(content, 0)).to.deep.equal([
+                { type: "marker", name: "field 1" },
+                { type: "pageReference", bookmark: "a", font: {}, relative: "field 1" },
+            ]);
+            expect(itemsOf(content, 1)).to.deep.equal([
+                { type: "pageReference", bookmark: "a", font: {}, format: { numberFormat: "roman" } },
+            ]);
+            expect(itemsOf(content, 2)).to.deep.equal([
+                { type: "pageReference", bookmark: "a", font: {}, format: { numberFormat: "Arabic", capitals: "upper" } },
+            ]);
+            // A page reference without a bookmark is read as it is written
+            expect(textOf(content, 3)).to.equal("?");
+            expect(itemsOf(content, 4)).to.deep.equal([
+                { type: "pageReference", bookmark: "a", font: {}, format: { picture: "#,##0", capitals: "lower" } },
+            ]);
+            // With a number format, one with \p writes the bookmark's page's number (word-page-fields.docx PF3c)
+            expect(itemsOf(content, 5)).to.deep.equal([
+                { type: "pageReference", bookmark: "a", font: {}, format: { numberFormat: "Arabic" } },
+            ]);
+            expect(itemsOf(content, 6)).to.deep.equal([
+                { type: "marker", name: "field 3" },
+                { type: "pageReference", bookmark: "b", font: {}, relative: "field 3", format: { capitals: "firstcap" } },
+            ]);
+            expect([7, 8, 9, 10, 11, 12, 13, 14].map((index) => paragraphOf(content, index).unsupported)).to.deep.equal([
+                "a number in a field format not yet written",
+                "a number in a field format not yet written",
+                "a number written with a picture not yet written",
+                "a number written with a picture not yet written",
+                "a number in a field format not yet written",
+                "a number in a field format not yet written",
+                "a number in a field format not yet written",
+                "a number in a field format not yet written",
+            ]);
+            // Each page reference with \p is counted, by its bookmark, whatever it writes
+            expect(Object.fromEntries(content.relativeReferences)).to.deep.equal({ a: ["field 1", "field 2", "field 4"], b: ["field 3"] });
+        });
+
+        it("should stop at a picture with a decimal point where the document's settings give another decimal symbol", () => {
+            const reference = p(field("begin"), instruction('PAGEREF a \\# "0.00"'), field("separate"), r(t("?")), field("end"));
+            // Word wrote a full stop as the decimal point (`word-stops-numbers.ts` NF3a)
+            expect(paragraphOf(readWithSettings([reference], [])).items).to.deep.equal([
+                { type: "pageReference", bookmark: "a", font: {}, format: { picture: "0.00" } },
+            ]);
+            expect(paragraphOf(readWithSettings([reference], [value("w:decimalSymbol", ".")])).unsupported).to.equal(undefined);
+            // Whether it reads one where the settings give a comma hasn't been seen, but text in quotes is only text
+            expect(paragraphOf(readWithSettings([reference], [value("w:decimalSymbol", ",")])).unsupported).to.equal(
+                "a number written with a picture not yet written",
+            );
+            const quoted = p(field("begin"), instruction("PAGEREF a \\# \"0'.'\""), field("separate"), r(t("?")), field("end"));
+            expect(paragraphOf(readWithSettings([quoted], [value("w:decimalSymbol", ",")])).unsupported).to.equal(undefined);
+        });
+
+        it("should read the results of NUMPAGES and SECTIONPAGES fields as the numbers of pages they show", () => {
+            const content = readBody([
+                p(field("begin"), instruction("NUMPAGES \\* MERGEFORMAT"), field("separate"), r(t("9")), field("end")),
+                p({ "w:fldSimple": [{ _attr: { "w:instr": "SECTIONPAGES" } }, r(t("3"))] }),
+                p(field("begin"), instruction("NUMPAGES \\* roman \\p"), field("separate"), r(t("ix")), field("end")),
+                p(field("begin"), instruction("SECTIONPAGES \\* DBNUM1"), field("separate"), r(t("3")), field("end")),
+            ]);
+            expect(itemsOf(content, 0)).to.deep.equal([{ type: "pageCount", scope: "document", font: {} }]);
+            expect(itemsOf(content, 1)).to.deep.equal([{ type: "pageCount", scope: "section", font: {} }]);
+            expect(itemsOf(content, 2)).to.deep.equal([
+                { type: "pageCount", scope: "document", font: {}, format: { numberFormat: "roman" } },
+            ]);
+            expect(paragraphOf(content, 3).unsupported).to.equal("a number in a field format not yet written");
+        });
+
+        it("should read PAGE and SECTION fields and page number blocks in the body as the numbers of the page and section they are on", () => {
+            const content = readBody(
+                [
+                    p(field("begin"), instruction("PAGE"), field("separate"), field("end")),
+                    p({ "w:fldSimple": [{ _attr: { "w:instr": 'PAGE \\# "00"' } }, r(t("?"))] }),
+                    p(r({ "w:pgNum": {} })),
+                    p(field("begin"), instruction("SECTION \\* ALPHABETIC"), field("separate"), r(t("?")), field("end")),
+                    p(field("begin"), instruction("PAGE \\* Hebrew1"), field("separate"), r(t("?")), field("end")),
+                    // In hidden text, the field shows nothing
+                    p(
+                        field("begin"),
+                        instruction("PAGE"),
+                        r(rPr({ "w:vanish": {} }), { "w:fldChar": { _attr: { "w:fldCharType": "separate" } } }),
+                        field("end"),
+                    ),
+                    p(r(rPr({ "w:vanish": {} }), { "w:pgNum": {} })),
+                    p(pPr(value("w:pStyle", "Hidden")), { "w:fldSimple": [{ _attr: { "w:instr": "SECTION" } }] }),
+                ],
+                { styles: { paragraphStyles: [{ id: "Hidden", name: "Hidden", run: { vanish: true } }] } },
+            );
+            expect(itemsOf(content, 0)).to.deep.equal([
+                { type: "marker", name: "field 1" },
+                { type: "pageNumber", field: "field 1", font: {} },
+            ]);
+            expect(itemsOf(content, 1)).to.deep.equal([
+                { type: "marker", name: "field 2" },
+                { type: "pageNumber", field: "field 2", font: {}, format: { picture: "00" } },
+            ]);
+            expect(itemsOf(content, 2)).to.deep.equal([
+                { type: "marker", name: "field 3" },
+                { type: "pageNumber", field: "field 3", font: {} },
+            ]);
+            // In the body, a section's number is that of the section it is in
+            expect(itemsOf(content, 3)).to.deep.equal([{ type: "sectionNumber", font: {}, format: { numberFormat: "ALPHABETIC" } }]);
+            expect(paragraphOf(content, 4).unsupported).to.equal("a number in a field format not yet written");
+            expect([5, 6, 7].map((index) => itemsOf(content, index))).to.deep.equal([[], [], []]);
+        });
+
+        it("should stop at a date or time in the body, which Word writes when it opens the document, and read one in a header as it is written", () => {
+            const date = (text: string): object =>
+                p(field("begin"), instruction(text), field("separate"), r(t("1 January 2000")), field("end"));
+            const content = readBody([
+                date('DATE \\@ "d MMMM yyyy"'),
+                p({ "w:fldSimple": [{ _attr: { "w:instr": "TIME" } }, r(t("12:00"))] }),
+                p(r({ "w:dayLong": {} }, { "w:monthLong": {} }, { "w:yearLong": {} })),
+                p(r({ "w:dayShort": {} }, { "w:monthShort": {} }, { "w:yearShort": {} })),
+                // A field in another's instruction isn't shown, nor is a date in it
+                p(
+                    field("begin"),
+                    instruction("IF "),
+                    field("begin"),
+                    instruction("DATE"),
+                    field("separate"),
+                    field("end"),
+                    field("separate"),
+                    r(t("shown")),
+                    field("end"),
+                ),
+            ]);
+            expect([0, 1, 2, 3].map((index) => paragraphOf(content, index).unsupported)).to.deep.equal(
+                Array.from({ length: 4 }, () => "a date or time, which Word writes when it opens the document"),
+            );
+            expect(textOf(content, 4)).to.equal("shown");
+            const [header] = Object.values(
+                readContent(
+                    { "w:body": [{ "w:sectPr": [{ "w:headerReference": { _attr: { "r:id": "rId1" } } }] }] },
+                    {
+                        styles: WORD_DEFAULT_STYLES,
+                        headersAndFooters: new Map([["rId1", [date("DATE"), p(r(t("on "), { "w:dayLong": {} }))]]]),
+                    },
+                ).sections[0].headers,
+            );
+            expect(header.map((block) => textOf({ ...content, blocks: [{ block, section: 0 }] }))).to.deep.equal(["1 January 2000", "on "]);
+        });
+
+        it("should read a date, or a field in a format not yet written, in hidden text as nothing, as hidden text takes no room", () => {
+            const hidden = rPr({ "w:vanish": {} });
+            const content = readBody(
+                [
+                    p(
+                        field("begin"),
+                        instruction("DATE"),
+                        r(hidden, { "w:fldChar": { _attr: { "w:fldCharType": "separate" } } }),
+                        field("end"),
+                    ),
+                    p(
+                        field("begin"),
+                        instruction("PAGE \\* BahtText"),
+                        r(hidden, { "w:fldChar": { _attr: { "w:fldCharType": "separate" } } }),
+                        field("end"),
+                    ),
+                    p(r(hidden, { "w:dayLong": {} })),
+                    // Its mark shown, as a hidden one would join it to the paragraph after it
+                    p(pPr(value("w:pStyle", "Hidden"), rPr(value("w:vanish", "false"))), {
+                        "w:fldSimple": [{ _attr: { "w:instr": "TIME" } }],
+                    }),
+                ],
+                { styles: { paragraphStyles: [{ id: "Hidden", name: "Hidden", run: { vanish: true } }] } },
+            );
+            expect([0, 1, 2, 3].map((index) => paragraphOf(content, index))).to.satisfy((paragraphs: readonly ParagraphBlock[]) =>
+                paragraphs.every(({ items, unsupported }) => items.length === 0 && unsupported === undefined),
+            );
+        });
+
+        it("should read PAGE, SECTION and page references with \\p in headers as they are written, and those in notes where their references are", () => {
+            const fieldOf = (text: string): object =>
+                p(field("begin"), instruction(text), field("separate"), r(t("written")), field("end"));
+            const fields = [fieldOf("PAGE"), fieldOf("SECTION \\* roman"), fieldOf("PAGEREF a \\p"), p(r({ "w:pgNum": {} }))];
+            const content = readContent(
+                {
+                    "w:body": [
+                        p(r({ "w:footnoteReference": { _attr: { "w:id": 1 } } })),
+                        { "w:sectPr": [{ "w:headerReference": { _attr: { "r:id": "rId1" } } }] },
+                    ],
+                },
+                {
+                    styles: WORD_DEFAULT_STYLES,
+                    headersAndFooters: new Map([["rId1", fields]]),
+                    footnotes: { "w:footnotes": [{ "w:footnote": [{ _attr: { "w:id": 1 } }, ...fields] }] },
+                },
+            );
+            const header = content.sections[0].headers.default!;
+            expect(header.map((block) => textOf({ ...content, blocks: [{ block, section: 0 }] }))).to.deep.equal([
+                "written",
+                "written",
+                "written",
+                "",
+            ]);
+            // In a footnote, the page and section are its reference's, which the markers at them are placed with. A page
+            // reference with \p in one writes "on page" and its bookmark's page (`word-page-fields.docx` PF8f, PF8g), and isn't
+            // counted with those of the body
+            const note = content.footnotes.get("footnote 1")!;
+            expect(note.map((block) => (block as ParagraphBlock).items.filter((item) => item.type !== "text"))).to.deep.equal([
+                [
+                    { type: "marker", name: "field 1" },
+                    { type: "pageNumber", field: "field 1", font: {} },
+                ],
+                [
+                    { type: "marker", name: "field 2" },
+                    { type: "sectionNumber", field: "field 2", font: {}, format: { numberFormat: "roman" } },
+                ],
+                [{ type: "pageReference", bookmark: "a", font: {}, inNote: true }],
+                [
+                    { type: "marker", name: "field 3" },
+                    { type: "pageNumber", field: "field 3", font: {} },
+                ],
+            ]);
+            expect(note[2].unsupported).to.equal(undefined);
+            expect(content.relativeReferences.size).to.equal(0);
+        });
+
+        it("should ignore field characters and instructions outside a field", () => {
+            const content = readBody([p(field("separate"), instruction("PAGEREF a"), r(t("text")), field("end"))]);
+            expect(textOf(content)).to.equal("text");
+        });
+
+        it("should read a simple field that is a page reference as the page of its bookmark, and others as their result", () => {
+            const content = readBody([
+                p({ "w:fldSimple": [{ _attr: { "w:instr": "PAGEREF target" } }, r(t("9"))] }),
+                p({ "w:fldSimple": [{ _attr: { "w:instr": "AUTHOR" } }, r(t("Ann"))] }),
+            ]);
+            expect(itemsOf(content, 0)).to.deep.equal([{ type: "pageReference", bookmark: "target", font: {} }]);
+            expect(textOf(content, 1)).to.equal("Ann");
+        });
+    });
+
+    describe("lists", () => {
+        const numbering = {
+            config: [
+                {
+                    reference: "list",
+                    levels: [
+                        {
+                            level: 0,
+                            format: LevelFormat.DECIMAL,
+                            text: "%1.",
+                            style: { paragraph: { indent: { left: 720, hanging: 360 } } },
+                        },
+                        {
+                            level: 1,
+                            format: LevelFormat.LOWER_LETTER,
+                            text: "%1.%2",
+                            suffix: LevelSuffix.SPACE,
+                            style: { run: { bold: true } },
+                        },
+                        { level: 2, format: LevelFormat.UPPER_ROMAN, text: "", suffix: LevelSuffix.NOTHING },
+                        { level: 3, format: LevelFormat.THAI_COUNTING, text: "%4", alignment: AlignmentType.START },
+                        // A level without a format is in decimal
+                        { level: 4, text: "%5.%7" },
+                    ],
+                },
+            ],
+        };
+        const item = (level: number, text: string): Paragraph =>
+            new Paragraph({ numbering: { reference: "list", level }, children: [new TextRun(text)] });
+
+        it("should write each paragraph's number, and indent it as its level says", () => {
+            const content = readWritten({
+                numbering,
+                sections: [{ children: [item(0, "one"), item(1, "a"), item(1, "b"), item(0, "two"), item(1, "a again")] }],
+            });
+            expect(
+                [0, 1, 2, 3, 4].map((index) => itemsOf(content, index).map((part) => (part.type === "text" ? part.text : part.type))),
+            ).to.deep.equal([
+                ["1.", "tab", "one"],
+                ["1.a", " ", "a"],
+                ["1.b", " ", "b"],
+                ["2.", "tab", "two"],
+                ["2.a", " ", "a again"],
+            ]);
+            expect(paragraphOf(content).format).to.deep.include({ indentLeft: 36, firstLineIndent: -18 });
+            expect(itemsOf(content, 1)[0]).to.deep.equal({ type: "text", text: "1.a", font: { bold: true, listNumber: "number" } });
+            // Word draws the space after a number in Arial (word-lists.docx LJ4), and a tab or space takes no room in its line
+            expect(itemsOf(content, 1)[1]).to.deep.equal({
+                type: "text",
+                text: " ",
+                font: { bold: true, font: "Arial", listNumber: "separator" },
+            });
+            expect(itemsOf(content, 0)[1]).to.deep.equal({ type: "tab", font: { listNumber: "separator" } });
+        });
+
+        it("should write nothing for a level without text or suffix, Thai words to 5, and leave out a level of one that doesn't exist", () => {
+            const content = readWritten({
+                numbering,
+                sections: [{ children: [item(2, "none"), ...[1, 2, 3, 4, 5, 6].map((count) => item(3, `${count}`)), item(4, "missing")] }],
+            });
+            expect(textOf(content, 0)).to.equal("none");
+            expect(paragraphOf(content, 0).unsupported).to.equal(undefined);
+            // stops2/word-stops-lists.ts NF6: Word wrote 1 to 5 in Thai words, and the layout stops past them
+            expect(textOf(content, 1)).to.equal("หนึ่ง1");
+            expect(textOf(content, 5)).to.equal("ห้า5");
+            expect(paragraphOf(content, 5).unsupported).to.equal(undefined);
+            expect(paragraphOf(content, 6).unsupported).to.equal("a list number in a format not yet written");
+            // LI1: Word leaves out a level whose text writes the number of a level the list doesn't have, as though it weren't
+            // there: no number, nor the level's indent
+            expect(textOf(content, 7)).to.equal("missing");
+            expect(paragraphOf(content, 7).unsupported).to.equal(undefined);
+            expect(paragraphOf(content, 7).format).to.not.have.property("indentLeft");
+        });
+
+        it("should write no number for a list or level that doesn't exist", () => {
+            const content = readBody([
+                p(pPr({ "w:numPr": [value("w:ilvl", 0), value("w:numId", 99)] }), r(t("a"))),
+                p(pPr({ "w:numPr": [value("w:ilvl", 7), value("w:numId", "{list-0}")] }), r(t("b"))),
+            ]);
+            expect(textOf(content, 0)).to.equal("a");
+            expect(textOf(content, 1)).to.equal("b");
+        });
+
+        it("should find a list by its number, as well as by the placeholder docx writes", () => {
+            // Every document has docx's bulleted list, number 1
+            const content = readBody([p(pPr({ "w:numPr": [value("w:ilvl", 0), value("w:numId", 1)] }), r(t("a")))]);
+            expect(itemsOf(content).map((part) => part.type)).to.deep.equal(["text", "tab", "text"]);
+            expect(textOf(content).endsWith("a")).to.equal(true);
+        });
+
+        it("should write no number for a placeholder of a list that doesn't exist", () => {
+            const content = readContent(
+                { "w:body": [p(pPr({ "w:numPr": [value("w:ilvl", 0), value("w:numId", "{list-0}")] }), r(t("Item")))] },
+                { styles: WORD_DEFAULT_STYLES, otherListIds: new Map([["{list-0}", "1"]]), headersAndFooters: new Map() },
+            );
+            expect(textOf(content)).to.equal("Item");
+        });
+    });
+
+    describe("lists in Word's numbering", () => {
+        const abstractNum = (id: number, ...children: readonly unknown[]): object => ({
+            "w:abstractNum": [{ _attr: { "w:abstractNumId": id } }, ...children],
+        });
+        const lvl = (index: number, ...children: readonly unknown[]): object => ({
+            "w:lvl": [{ _attr: { "w:ilvl": index } }, ...children],
+        });
+        const num = (id: number, definition: number, ...overrides: readonly unknown[]): object => ({
+            "w:num": [{ _attr: { "w:numId": id } }, value("w:abstractNumId", definition), ...overrides],
+        });
+        const lvlOverride = (index: number, ...children: readonly unknown[]): object => ({
+            "w:lvlOverride": [{ _attr: { "w:ilvl": index } }, ...children],
+        });
+        /** A decimal level, "%1." at level 0 and "%1.%2." at level 1, with more of its properties */
+        const decimal = (index: number, ...children: readonly unknown[]): object =>
+            lvl(
+                index,
+                value("w:start", 1),
+                value("w:numFmt", "decimal"),
+                value("w:lvlText", Array.from({ length: index + 1 }, (_, at) => `%${at + 1}.`).join("")),
+                ...children,
+            );
+        const listItem = (id: number, level: number, text: string): object =>
+            p(pPr({ "w:numPr": [value("w:ilvl", level), value("w:numId", id)] }), r(t(text)));
+        /** Reads a body with the lists in the numbering */
+        const readLists = (numbering: readonly object[], body: readonly object[]): DocumentContent =>
+            readContent(
+                { "w:body": body },
+                { styles: WORD_DEFAULT_STYLES, headersAndFooters: new Map(), numbering: { "w:numbering": numbering } },
+            );
+        const numbersOf = (content: DocumentContent): readonly string[] =>
+            content.blocks.map(({ block }) => {
+                const [first] = (block as ParagraphBlock).items;
+                return first.type === "text" ? first.text : "";
+            });
+
+        it("should note how a number is aligned at the start of its line, as Word lines it up (word-watertight-text.docx TX21)", () => {
+            const aligned = (jc?: string): ParagraphBlock =>
+                paragraphOf(
+                    readLists(
+                        [abstractNum(0, decimal(0, ...(jc === undefined ? [] : [value("w:lvlJc", jc)]))), num(1, 0)],
+                        [listItem(1, 0, "item")],
+                    ),
+                );
+            expect(aligned("right").numberAlignment).to.equal("right");
+            expect(aligned("end").numberAlignment).to.equal("right");
+            expect(aligned("center").numberAlignment).to.equal("center");
+            for (const jc of [undefined, "left", "start"]) {
+                expect(aligned(jc).numberAlignment).to.equal(undefined);
+                expect(aligned(jc).unsupported).to.equal(undefined);
+            }
+            // stops2/word-stops-lists2.ts LI18a to LI18d: the schema's other paragraph alignments, which Word lines up to the
+            // left, the right or the centre, but for the medium and high kashidas, which haven't been seen
+            for (const jc of ["distribute", "lowKashida"]) {
+                expect(aligned(jc).numberAlignment).to.equal(undefined);
+                expect(aligned(jc).unsupported).to.equal(undefined);
+            }
+            expect(aligned("numTab").numberAlignment).to.equal("right");
+            expect(aligned("thaiDistribute").numberAlignment).to.equal("center");
+            for (const jc of ["mediumKashida", "highKashida", "bogus"]) {
+                expect(aligned(jc).unsupported).to.equal("a list number aligned in a way not yet followed");
+            }
+            // A level with no number has nothing to align
+            const empty = readLists(
+                [abstractNum(0, lvl(0, value("w:numFmt", "bullet"), value("w:lvlText", ""), value("w:lvlJc", "right"))), num(1, 0)],
+                [listItem(1, 0, "item")],
+            );
+            expect(paragraphOf(empty).numberAlignment).to.equal(undefined);
+        });
+
+        it("should read bullets that are pictures as nothing, and the room Word 6 gave numbers, as Word lays them out", () => {
+            const read = (...children: readonly unknown[]): ParagraphBlock =>
+                paragraphOf(readLists([abstractNum(0, ...children), num(1, 0)], [listItem(1, 0, "item")]));
+            // stops2/word-stops-lists2.ts LI20a, LI20b: Word draws no picture, and the text is at the tab's stop
+            const pictures = read(lvl(0, value("w:numFmt", "bullet"), value("w:lvlText", ""), value("w:lvlPicBulletId", 0)));
+            expect(pictures.unsupported).to.equal(undefined);
+            expect(pictures.items.map(({ type }) => type)).to.deep.equal(["tab", "text"]);
+            // LI19a, LI19b: the space and indent Word 6 gave the number, in points
+            const legacy = (attributes: object): object => ({ "w:legacy": { _attr: { "w:legacy": 1, ...attributes } } });
+            const numbered = read(decimal(0, legacy({ "w:legacySpace": 120, "w:legacyIndent": 360 })));
+            expect(numbered.unsupported).to.equal(undefined);
+            expect(numbered.numberLegacy).to.deep.equal({ space: 6, indent: 18 });
+            expect(read(decimal(0, legacy({}))).numberLegacy).to.deep.equal({ space: 0, indent: 0 });
+            expect(read(decimal(0, { "w:legacy": { _attr: { "w:legacy": 0 } } }))).to.not.have.property("numberLegacy");
+            // With a space after the number, or the number aligned otherwise than to the left, Word hasn't been seen
+            const unseen = "a list numbered as Word 6 numbered lists with a space or nothing after its number, or not aligned to the left";
+            expect(read(decimal(0, legacy({}), value("w:suff", "space"))).unsupported).to.equal(unseen);
+            expect(read(decimal(0, legacy({}), value("w:lvlJc", "right"))).unsupported).to.equal(unseen);
+        });
+
+        it("should number a list defined by a list style with the levels of the definition the style's list is made from, as the standard has it", () => {
+            // word-stops-numbers.docx LI10: definition 1 takes its levels from the list style ListStyle (w:numStyleLink), whose
+            // list, 2, is made from definition 2, which names the style (w:styleLink) and has the levels
+            const listStyle = (...more: readonly object[]): object => ({
+                "w:style": [
+                    { _attr: { "w:type": "numbering", "w:styleId": "ListStyle" } },
+                    { "w:pPr": [{ "w:numPr": [value("w:numId", 2)] }] },
+                    ...more,
+                ],
+            });
+            const letters = lvl(0, value("w:start", 1), value("w:numFmt", "upperLetter"), value("w:lvlText", "%1)"));
+            const linked = (style: object | undefined, ...ownList: readonly object[]): DocumentContent =>
+                readContent(
+                    { "w:body": [listItem(1, 0, "one"), listItem(1, 0, "two"), listItem(2, 0, "three")] },
+                    {
+                        styles: { ...WORD_DEFAULT_STYLES, styles: readTextStyles({ "w:styles": style ? [style] : [] }).styles },
+                        headersAndFooters: new Map(),
+                        numbering: {
+                            "w:numbering": [
+                                abstractNum(1, value("w:numStyleLink", "ListStyle")),
+                                abstractNum(2, value("w:styleLink", "ListStyle"), letters),
+                                num(1, 1),
+                                num(2, 2, ...ownList),
+                            ],
+                        },
+                    },
+                );
+            // Its lists count together with the style's own
+            expect(numbersOf(linked(listStyle()))).to.deep.equal(["A)", "B)", "C)"]);
+            // A style that isn't found, or isn't a list style, and a list of the style's that gives levels of its own
+            const reasonOf = (content: DocumentContent): string | undefined => paragraphOf(content).unsupported;
+            expect(reasonOf(linked(undefined))).to.equal("a list defined by a list style that isn't found");
+            expect(reasonOf(linked({ "w:style": [{ _attr: { "w:type": "paragraph", "w:styleId": "ListStyle" } }] }))).to.equal(
+                "a list defined by a list style that isn't found",
+            );
+            expect(reasonOf(linked(listStyle(), lvlOverride(0, value("w:startOverride", 3))))).to.equal(
+                "a list defined by a list style whose own list gives levels of its own",
+            );
+        });
+
+        it("should start a level again after the level it gives, or never, as the schema has it (w:lvlRestart)", () => {
+            const content = readLists(
+                [abstractNum(0, decimal(0), decimal(1, value("w:lvlRestart", 0)), decimal(2, value("w:lvlRestart", 1))), num(1, 0)],
+                [0, 1, 1, 2, 0, 1, 2, 1, 2].map((level, index) => listItem(1, level, `item ${index}`)),
+            );
+            // Level 1 never starts again, and level 2 starts again after level 0 but not level 1
+            expect(numbersOf(content)).to.deep.equal(["1.", "1.1.", "1.2.", "1.2.1.", "2.", "2.3.", "2.3.1.", "2.4.", "2.4.2."]);
+        });
+
+        it("should start a level again after any level above it when it gives itself or a level below it", () => {
+            const content = readLists(
+                [abstractNum(0, decimal(0), decimal(1, value("w:lvlRestart", 2)), decimal(2, value("w:lvlRestart", 5))), num(1, 0)],
+                [0, 1, 2, 1, 2, 0, 1].map((level, index) => listItem(1, level, `item ${index}`)),
+            );
+            expect(numbersOf(content)).to.deep.equal(["1.", "1.1.", "1.1.1.", "1.2.", "1.2.1.", "2.", "2.1."]);
+        });
+
+        it("should write every level's number in decimal in a legal level's text (w:isLgl)", () => {
+            const content = readLists(
+                [
+                    abstractNum(
+                        0,
+                        lvl(0, value("w:start", 1), value("w:numFmt", "upperRoman"), value("w:lvlText", "%1.")),
+                        lvl(1, value("w:start", 1), value("w:numFmt", "lowerLetter"), { "w:isLgl": {} }, value("w:lvlText", "%1.%2")),
+                    ),
+                    num(1, 0),
+                ],
+                [listItem(1, 0, "one"), listItem(1, 1, "a"), listItem(1, 1, "b")],
+            );
+            expect(numbersOf(content)).to.deep.equal(["I.", "1.1", "1.2"]);
+        });
+
+        it("should count lists made from one definition on from one another, as Word counts them (word-lists.docx LO1, LO8, LO9)", () => {
+            const content = readLists(
+                [abstractNum(0, decimal(0)), abstractNum(1, decimal(0)), num(1, 0), num(2, 0), num(3, 1), num(4, 0, lvlOverride(0))],
+                [
+                    [1, "a"],
+                    [1, "b"],
+                    [2, "c"],
+                    [2, "d"],
+                    [3, "other"],
+                    [1, "e"],
+                    [4, "f"],
+                ].map(([id, text]) => listItem(id as number, 0, text as string)),
+            );
+            // The list of the other definition counts on its own, and an override that gives nothing starts nothing again
+            expect(numbersOf(content)).to.deep.equal(["1.", "2.", "3.", "4.", "1.", "5.", "6."]);
+        });
+
+        it("should start a level at a list's own first number at its first paragraph of the level, once (LO2 to LO6)", () => {
+            const content = readLists(
+                [
+                    abstractNum(0, decimal(0), decimal(1)),
+                    num(1, 0),
+                    num(2, 0, lvlOverride(0, value("w:startOverride", 1))),
+                    num(3, 0, lvlOverride(1, value("w:startOverride", 4))),
+                    num(4, 0, lvlOverride(0, value("w:startOverride", 7)), { "w:lvlOverride": [value("w:startOverride", 9)] }),
+                ],
+                (
+                    [
+                        [1, 0],
+                        [1, 0],
+                        [2, 1],
+                        [2, 0],
+                        [2, 0],
+                        [1, 0],
+                        [2, 0],
+                        [3, 1],
+                        [3, 1],
+                        [1, 1],
+                        [4, 0],
+                        [4, 0],
+                    ] as const
+                ).map(([id, level], index) => listItem(id, level, `item ${index}`)),
+            );
+            expect(numbersOf(content)).to.deep.equal([
+                "1.",
+                "2.",
+                // List 2's first paragraph is at level 1, so its level 0 starts again only at its first paragraph of level 0
+                "2.1.",
+                "1.",
+                "2.",
+                "3.",
+                "4.",
+                // List 3 starts level 1 at 4, and list 1 goes on from it
+                "4.4.",
+                "4.5.",
+                "4.6.",
+                "7.",
+                "8.",
+            ]);
+        });
+
+        it("should start a list again with a level it gives, at the level's own first number, and go on in the other lists' formats (LO7)", () => {
+            const content = readLists(
+                [
+                    abstractNum(0, decimal(0)),
+                    num(1, 0),
+                    num(2, 0, lvlOverride(0, lvl(0, value("w:start", 3), value("w:numFmt", "upperRoman"), value("w:lvlText", "%1)")))),
+                ],
+                [listItem(1, 0, "a"), listItem(1, 0, "b"), listItem(2, 0, "c"), listItem(2, 0, "d"), listItem(1, 0, "e")],
+            );
+            expect(numbersOf(content)).to.deep.equal(["1.", "2.", "III)", "IV)", "5."]);
+        });
+
+        it("should show a level not counted yet at its first number, and stop where its list starts it at another (LR4)", () => {
+            const content = readLists(
+                [
+                    abstractNum(0, lvl(0, value("w:start", 3), value("w:numFmt", "decimal"), value("w:lvlText", "%1.")), decimal(1)),
+                    num(1, 0),
+                    num(2, 0, lvlOverride(0, value("w:startOverride", 3))),
+                    num(3, 0, lvlOverride(0, value("w:startOverride", 5))),
+                ],
+                [listItem(1, 1, "a"), listItem(2, 1, "b"), listItem(3, 1, "c")],
+            );
+            expect(numbersOf(content)).to.deep.equal(["3.1.", "3.2.", "3.3."]);
+            expect(content.blocks.map(({ block }) => (block as ParagraphBlock).unsupported)).to.deep.equal([
+                undefined,
+                undefined,
+                "a list number of a level not counted yet, which its list starts at a number of its own",
+            ]);
+        });
+
+        it("should write a number in its paragraph mark's formatting, but for what its level gives it (LF1 to LF6)", () => {
+            const content = readLists(
+                [abstractNum(0, decimal(0)), abstractNum(1, decimal(0, rPr(value("w:sz", 16)))), num(1, 0), num(2, 1)],
+                [
+                    p(pPr({ "w:numPr": [value("w:ilvl", 0), value("w:numId", 1)] }, rPr(value("w:sz", 40))), r(t("mark 20"))),
+                    p(pPr({ "w:numPr": [value("w:ilvl", 0), value("w:numId", 1)] }), r(rPr({ "w:b": {} }), t("text bold"))),
+                    p(pPr({ "w:numPr": [value("w:ilvl", 0), value("w:numId", 2)] }, rPr(value("w:sz", 40))), r(t("level 8"))),
+                ],
+            );
+            const fontOfNumber = (index: number): object => (itemsOf(content, index)[0] as { readonly font: object }).font;
+            expect(fontOfNumber(0)).to.deep.include({ size: 20, listNumber: "number" });
+            expect(fontOfNumber(1)).to.not.have.property("bold");
+            expect(fontOfNumber(2)).to.deep.include({ size: 8 });
+        });
+
+        it("should stop at a number with a border, but not at a centred one followed by a space, or one with emphasis marks or raised", () => {
+            const stopsAt = (level: object, mark: readonly object[] = []): string | undefined =>
+                paragraphOf(
+                    readLists(
+                        [abstractNum(0, level), num(1, 0)],
+                        [p(pPr({ "w:numPr": [value("w:ilvl", 0), value("w:numId", 1)] }, rPr(...mark)), r(t("item")))],
+                    ),
+                ).unsupported;
+            // stops2/word-stops-lists.ts LI3a, LI4b, LI4c
+            expect(stopsAt(decimal(0, value("w:suff", "space"), value("w:lvlJc", "center")))).to.equal(undefined);
+            expect(stopsAt(decimal(0, value("w:suff", "space"), value("w:lvlJc", "right")))).to.equal(undefined);
+            expect(stopsAt(decimal(0), [value("w:em", "dot")])).to.equal(undefined);
+            expect(stopsAt(decimal(0), [value("w:position", 6)])).to.equal(undefined);
+            // A bullet of the run's high ANSI font, where the level gives a font for ASCII alone, is in the document's; one of
+            // characters of both fonts hasn't been seen
+            const bullet = (text: string, ...fonts: readonly object[]): object =>
+                lvl(0, value("w:numFmt", "bullet"), value("w:lvlText", text), {
+                    "w:rPr": [{ "w:rFonts": { _attr: { "w:ascii": "Symbol", ...Object.assign({}, ...fonts) } } }],
+                });
+            const numberOf = (level: object): { readonly font?: object } =>
+                itemsOf(
+                    readLists(
+                        [abstractNum(0, level), num(1, 0)],
+                        [p(pPr({ "w:numPr": [value("w:ilvl", 0), value("w:numId", 1)] }), r(t("item")))],
+                    ),
+                )[0] as { readonly font?: object };
+            expect(numberOf(bullet("\u2022", { "w:hAnsi": "Calibri" })).font).to.deep.equal({ font: "Calibri", listNumber: "number" });
+            expect(numberOf(bullet("\u2022")).font).to.deep.equal({ font: "Symbol", listNumber: "number" });
+            expect(numberOf(bullet("1.", { "w:hAnsi": "Calibri" })).font).to.deep.equal({ font: "Symbol", listNumber: "number" });
+            expect(stopsAt(bullet("\u2022 1.", { "w:hAnsi": "Calibri" }))).to.equal(
+                "a list number of characters of both the font for ASCII and the high ANSI font of its run",
+            );
+            // With the hint for East Asian text, a bullet is in the East Asian font, where the run has one (HA1a to HA1c)
+            expect(numberOf(bullet("\u2022", { "w:hint": "eastAsia", "w:eastAsia": "SimSun" })).font).to.deep.equal({
+                font: "SimSun",
+                listNumber: "number",
+            });
+            expect(stopsAt(bullet("\u2022 1.", { "w:hint": "eastAsia", "w:eastAsia": "SimSun" }))).to.equal(
+                "a list number of characters of both the font for ASCII and the high ANSI font of its run",
+            );
+            expect(stopsAt(bullet("\u2022", { "w:hint": "eastAsia" }))).to.equal(
+                "a character Word draws in the East Asian font of a run with the hint for East Asian text (w:hint), such as a curly quote, in a run whose East Asian font isn't one, such as Calibri",
+            );
+            // LI4a, stops2/word-stops-lists2.ts LI13a to LI13d: a number in a border, whose box the lines are laid out with
+            // (see line-breaking.ts), the border on its tab too
+            const bordered = readLists(
+                [
+                    abstractNum(0, decimal(0, { "w:rPr": [{ "w:bdr": { _attr: { "w:val": "single", "w:sz": 4, "w:space": 0 } } }] })),
+                    num(1, 0),
+                ],
+                [p(pPr({ "w:numPr": [value("w:ilvl", 0), value("w:numId", 1)] }), r(t("item")))],
+            );
+            expect(paragraphOf(bordered).unsupported).to.equal(undefined);
+            const [numberItem, tabItem] = itemsOf(bordered) as readonly { readonly font?: { readonly border?: object } }[];
+            expect(numberItem.font?.border).to.deep.include({ room: 0.5 });
+            expect(tabItem.font?.border).to.deep.equal(numberItem.font?.border);
+        });
+
+        it("should leave out a level aligned both, as Word does, and number the list's other levels", () => {
+            // stops2/word-stops-list-definitions.docx LI11: no number, nor the level's indent; stops2/word-stops-lists2.ts
+            // LI15: the paragraphs of the level below numbered 1) and 2)
+            const both = readLists(
+                [abstractNum(0, decimal(0, value("w:lvlJc", "both")), decimal(1)), num(1, 0)],
+                [listItem(1, 0, "item"), listItem(1, 1, "other"), listItem(1, 1, "another")],
+            );
+            expect(textOf(both, 0)).to.equal("item");
+            expect(paragraphOf(both, 0).unsupported).to.equal(undefined);
+            expect(paragraphOf(both, 0).format).to.not.have.property("indentLeft");
+            expect(paragraphOf(both, 0)).to.not.have.property("list");
+            expect([1, 2].map((index) => textOf(both, index))).to.deep.equal([".1.other", ".2.another"]);
+            expect([1, 2].map((index) => paragraphOf(both, index).unsupported)).to.deep.equal([undefined, undefined]);
+        });
+
+        it("should write nothing for a level Word leaves out, which starts the levels below it again, as Word does", () => {
+            // stops2/word-stops-lists.docx LI1: "%1.%3." in a list of 2 levels is left out, and "%1.%2." under it is ".1."
+            const missing = (index: number): object =>
+                lvl(index, value("w:start", 1), value("w:numFmt", "decimal"), value("w:lvlText", "%1.%3."));
+            const definition = [abstractNum(0, missing(0), decimal(1)), num(1, 0)];
+            const content = readLists(definition, [listItem(1, 0, "one"), listItem(1, 1, "one one"), listItem(1, 0, "two")]);
+            expect([0, 1, 2].map((index) => textOf(content, index))).to.deep.equal(["one", ".1.one one", "two"]);
+            expect([0, 1, 2].map((index) => paragraphOf(content, index).unsupported)).to.deep.equal([undefined, undefined, undefined]);
+            // Paragraphs of the level below counted after it are certain: 1 and 2 after a left-out heading
+            const after = readLists(definition, [listItem(1, 0, "left out"), listItem(1, 1, "a"), listItem(1, 1, "b")]);
+            expect([1, 2].map((index) => textOf(after, index))).to.deep.equal([".1.a", ".2.b"]);
+            expect([1, 2].map((index) => paragraphOf(after, index).unsupported)).to.deep.equal([undefined, undefined]);
+            // stops2/word-stops-lists2.ts LI14: a paragraph of the level left out starts the levels below it again, as a
+            // paragraph of any level does: 1) either side of it
+            const again = readLists(definition, [listItem(1, 1, "a"), listItem(1, 0, "left out"), listItem(1, 1, "b")]);
+            expect([0, 2].map((index) => textOf(again, index))).to.deep.equal([".1.a", ".1.b"]);
+            expect(paragraphOf(again, 2).unsupported).to.equal(undefined);
+            const deeper = readLists(
+                [abstractNum(0, lvl(0, value("w:lvlText", "%1.%4.")), decimal(1), decimal(2)), num(1, 0)],
+                [listItem(1, 1, "a"), listItem(1, 0, "left out"), listItem(1, 2, "deeper"), listItem(1, 1, "b")],
+            );
+            expect([2, 3].map((index) => textOf(deeper, index))).to.deep.equal([".1.1.deeper", ".1.b"]);
+            expect([2, 3].map((index) => paragraphOf(deeper, index).unsupported)).to.deep.equal([undefined, undefined]);
+            // A level counted at or above the one left out starts those below it again, as it does any
+            const restarted = readLists(
+                [abstractNum(0, decimal(0), lvl(1, value("w:lvlText", "%1.%4.")), decimal(2)), num(1, 0)],
+                [listItem(1, 2, "a"), listItem(1, 1, "left out"), listItem(1, 0, "b"), listItem(1, 2, "c")],
+            );
+            expect(paragraphOf(restarted, 3).unsupported).to.equal(undefined);
+        });
+
+        it("should number a list with the levels it gives in place of its definition's", () => {
+            const content = readLists(
+                [
+                    abstractNum(0, decimal(0)),
+                    num(1, 0, lvlOverride(0, lvl(0, value("w:start", 3), value("w:numFmt", "upperRoman"), value("w:lvlText", "%1)")))),
+                ],
+                [listItem(1, 0, "one"), listItem(1, 0, "two")],
+            );
+            expect(numbersOf(content)).to.deep.equal(["III)", "IV)"]);
+        });
+    });
+
+    describe("lists given by styles", () => {
+        const numbering = {
+            config: [
+                {
+                    reference: "chapters",
+                    levels: [
+                        { level: 0, format: LevelFormat.DECIMAL, text: "Chapter %1" },
+                        { level: 1, format: LevelFormat.UPPER_LETTER, text: "%1.%2", style: { style: "Linked" } },
+                    ],
+                },
+            ],
+        };
+
+        it("should number a paragraph in its style's list, at the level the style gives, and note the number of a heading", () => {
+            const content = readWritten({
+                numbering,
+                styles: {
+                    paragraphStyles: [
+                        { id: "Heading1", name: "Heading 1", paragraph: { numbering: { reference: "chapters", level: 0 } } },
+                        { id: "Heading2", name: "heading 2", paragraph: { numbering: { reference: "chapters", level: 1 } } },
+                        { id: "Based", name: "Based", basedOn: "Heading2" },
+                    ],
+                },
+                sections: [
+                    {
+                        children: [
+                            new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun("Start")] }),
+                            new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun("Part")] }),
+                            new Paragraph({ style: "Based", children: [new TextRun("Based")] }),
+                            new Paragraph({ heading: HeadingLevel.HEADING_3, children: [new TextRun("Unnumbered")] }),
+                        ],
+                    },
+                ],
+            });
+            expect([0, 1, 2, 3].map((index) => textOf(content, index))).to.deep.equal([
+                "Chapter 1Start",
+                "1.APart",
+                "1.BBased",
+                "Unnumbered",
+            ]);
+            // A heading is one of Word's by its style's name, in any case. As a chapter number, its number is its level's text
+            // from the first number to the last
+            expect([0, 1, 2, 3].map((index) => paragraphOf(content, index).heading)).to.deep.equal([
+                { level: 1, chapter: "1" },
+                { level: 2, chapter: "1.A" },
+                undefined,
+                { level: 3 },
+            ]);
+        });
+
+        it("should number a paragraph of a style that gives no level at the level that is for the style, or the first", () => {
+            const style = (id: string, numPr: string): string =>
+                `<w:style w:type="paragraph" w:styleId="${id}"><w:name w:val="${id}"/><w:pPr><w:numPr>${numPr}</w:numPr></w:pPr></w:style>`;
+            const content = readWritten({
+                numbering,
+                externalStyles: `<w:styles xmlns:w="main">${style("Linked", '<w:numId w:val="{chapters-0}"/>')}${style(
+                    "Unlinked",
+                    '<w:numId w:val="{chapters-0}"/>',
+                )}</w:styles>`,
+                sections: [
+                    {
+                        children: [
+                            new Paragraph({ style: "Unlinked", children: [new TextRun("first")] }),
+                            new Paragraph({ style: "Linked", children: [new TextRun("linked")] }),
+                        ],
+                    },
+                ],
+            });
+            expect([0, 1].map((index) => textOf(content, index))).to.deep.equal(["Chapter 1first", "1.Alinked"]);
+        });
+
+        it("should take a style's list and level each from the nearest style that gives it", () => {
+            const style = (id: string, basedOn: string, numPr: string): string =>
+                `<w:style w:type="paragraph" w:styleId="${id}"><w:name w:val="${id}"/>${basedOn ? `<w:basedOn w:val="${basedOn}"/>` : ""}<w:pPr><w:numPr>${numPr}</w:numPr></w:pPr></w:style>`;
+            const content = readWritten({
+                numbering,
+                externalStyles: `<w:styles xmlns:w="main">${style("Base", "", '<w:ilvl w:val="0"/><w:numId w:val="{chapters-0}"/>')}${style(
+                    "Derived",
+                    "Base",
+                    '<w:ilvl w:val="1"/>',
+                )}</w:styles>`,
+                sections: [
+                    {
+                        children: [
+                            new Paragraph({ style: "Base", children: [new TextRun("base")] }),
+                            new Paragraph({ style: "Derived", children: [new TextRun("derived")] }),
+                        ],
+                    },
+                ],
+            });
+            // The derived style's level, in the list of the style it is based on
+            expect([0, 1].map((index) => textOf(content, index))).to.deep.equal(["Chapter 1base", "1.Aderived"]);
+        });
+
+        it("should number a paragraph that gives its own level in its style's list, and in its own list when it gives one", () => {
+            const content = readBody(
+                [
+                    p(pPr(value("w:pStyle", "Heading1"), { "w:numPr": [value("w:ilvl", 1)] }), r(t("own level"))),
+                    p(pPr(value("w:pStyle", "Heading1"), { "w:numPr": [value("w:numId", 0)] }), r(t("no list"))),
+                ],
+                {
+                    numbering,
+                    styles: {
+                        paragraphStyles: [
+                            { id: "Heading1", name: "heading 1", paragraph: { numbering: { reference: "chapters", level: 0 } } },
+                        ],
+                    },
+                },
+            );
+            expect([0, 1].map((index) => textOf(content, index))).to.deep.equal(["1.Aown level", "no list"]);
+            // Word passes over a heading numbered by itself, or taken out of its style's list, as a chapter heading
+            expect([0, 1].map((index) => paragraphOf(content, index).heading)).to.deep.equal([{ level: 1, chapter: "1.A" }, { level: 1 }]);
+        });
+    });
+
+    describe("tables", () => {
+        const cell = (properties: readonly unknown[], ...paragraphs: readonly object[]): object => ({
+            "w:tc": [{ "w:tcPr": properties }, ...paragraphs],
+        });
+
+        it("should read each cell's width from the grid of a table laid out fixed, less its margins, and its rows' heights and borders", () => {
+            const content = readBody([
+                {
+                    "w:tbl": [
+                        {
+                            "w:tblPr": [
+                                { "w:tblLayout": { _attr: { "w:type": "fixed" } } },
+                                { "w:tblCellMar": [{ "w:top": { _attr: { "w:w": 20 } } }, { "w:left": { _attr: { "w:w": 100 } } }] },
+                                {
+                                    "w:tblBorders": [
+                                        { "w:top": { _attr: { "w:val": "single", "w:sz": 8 } } },
+                                        { "w:insideH": { _attr: { "w:val": "nil", "w:sz": 8 } } },
+                                        { "w:bottom": { _attr: { "w:val": "double" } } },
+                                    ],
+                                },
+                            ],
+                        },
+                        {
+                            "w:tblGrid": [
+                                { "w:gridCol": { _attr: { "w:w": 2000 } } },
+                                { "w:gridCol": { _attr: { "w:w": 4000 } } },
+                                { "w:gridCol": {} },
+                            ],
+                        },
+                        {
+                            "w:tr": [
+                                { "w:trPr": [{ "w:trHeight": { _attr: { "w:val": 400, "w:hRule": "exact" } } }, { "w:tblHeader": {} }] },
+                                cell(
+                                    [
+                                        value("w:gridSpan", 2),
+                                        { "w:tcMar": [{ "w:bottom": { _attr: { "w:w": 40 } } }, { "w:end": { _attr: { "w:w": 60 } } }] },
+                                    ],
+                                    p(r(t("wide"))),
+                                ),
+                            ],
+                        },
+                        {
+                            "w:sdt": [
+                                {
+                                    "w:sdtContent": [
+                                        { "w:tr": [{ "w:trPr": [value("w:gridBefore", 1)] }, cell([{ "w:vMerge": {} }], p())] },
+                                    ],
+                                },
+                            ],
+                        },
+                        {
+                            "w:customXml": [
+                                {
+                                    "w:tr": [
+                                        cell([{ "w:vMerge": { _attr: { "w:val": "restart" } } }], p()),
+                                        { "w:sdt": [{ "w:sdtContent": [cell([], p())] }] },
+                                        { "w:customXml": [cell([], p())] },
+                                    ],
+                                },
+                            ],
+                        },
+                        { "w:tr": [{ "w:trPr": [{ "w:trHeight": { _attr: { "w:val": 300 } } }] }, cell([])] },
+                        { "w:tr": [{ "w:trPr": [{ "w:trHeight": { _attr: { "w:val": 300, "w:hRule": "auto" } } }] }] },
+                    ],
+                },
+            ]);
+            const { rows } = content.blocks[0].block as TableBlock;
+            expect(
+                rows.map(({ cells, height, header, borderTop, borderBottom }) => ({
+                    cells: cells.length,
+                    height,
+                    header,
+                    borderTop,
+                    borderBottom,
+                })),
+            ).to.deep.equal([
+                { cells: 1, height: { value: 20, rule: "exact" }, header: true, borderTop: 1, borderBottom: 0 },
+                { cells: 1, height: undefined, header: false, borderTop: 0, borderBottom: 0 },
+                { cells: 3, height: undefined, header: false, borderTop: 0, borderBottom: 0 },
+                // A height without a rule is the least the row can be, as Word writes it
+                { cells: 1, height: { value: 15, rule: "atLeast" }, header: false, borderTop: 0, borderBottom: 0 },
+                // A border without a width is none
+                { cells: 0, height: undefined, header: false, borderTop: 0, borderBottom: 0 },
+            ]);
+            expect(rows[0].cells[0]).to.deep.include({ width: 300 - 5 - 3, marginTop: 1, marginBottom: 2 });
+            // After the column it skips, the cell is in the second column
+            expect(rows[1].cells[0]).to.deep.include({ column: 1, width: 200 - 5 - 5.4, verticalMerge: "continue" });
+            expect(rows[2].cells.map(({ column, width, verticalMerge }) => ({ column, width, verticalMerge }))).to.deep.equal([
+                { column: 0, width: 100 - 5 - 5.4, verticalMerge: "restart" },
+                { column: 1, width: 200 - 5 - 5.4, verticalMerge: undefined },
+                // The third column has no width
+                { column: 2, width: -10.4, verticalMerge: undefined },
+            ]);
+        });
+
+        it("should read a cell's width from its own properties without a grid, and the paragraphs in it in the table's style", () => {
+            const content = readBody(
+                [
+                    {
+                        "w:tbl": [
+                            { "w:tblPr": [value("w:tblStyle", "Boxed")] },
+                            { "w:tr": [cell([{ "w:tcW": { _attr: { "w:w": 3000, "w:type": "dxa" } } }], p(r(t("in a table"))))] },
+                        ],
+                    },
+                ],
+                { styles: { paragraphStyles: [{ id: "Boxed", name: "Boxed", run: { size: 16 } }] } },
+            );
+            const [first] = (content.blocks[0].block as TableBlock).rows[0].cells;
+            expect(first.width).to.equal(150 - 10.8);
+            // Boxed is a paragraph style, not a table style, so it doesn't format the text
+            expect((first.blocks[0] as ParagraphBlock).items).to.deep.equal([{ type: "text", text: "in a table", font: {} }]);
+        });
+
+        it("should give cells the margins of the table's style, or the default table style, or none as Word does", () => {
+            const marginsOf = (options: Partial<IPropertiesOptions>, style?: string): readonly number[] => {
+                const [first] = (
+                    readBody(
+                        [
+                            {
+                                "w:tbl": [
+                                    { "w:tblPr": style ? [value("w:tblStyle", style)] : [] },
+                                    { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 2000 } } }] },
+                                    { "w:tr": [cell([], p(r(t("a"))))] },
+                                ],
+                            },
+                        ],
+                        options,
+                    ).blocks[0].block as TableBlock
+                ).rows[0].cells;
+                return [Math.round((100 - first.width) * 10) / 10, first.marginTop];
+            };
+            const padded = `<w:style w:type="table" w:styleId="Padded"><w:basedOn w:val="TableNormal"/><w:tblPr><w:tblCellMar><w:top w:w="50" w:type="dxa"/><w:left w:w="200" w:type="dxa"/></w:tblCellMar></w:tblPr></w:style>`;
+            // docx's Normal Table: 5.4 points on the left and right
+            expect(marginsOf({})).to.deep.equal([10.8, 0]);
+            // A table style's margins, over those of the style it is based on
+            expect(marginsOf({ externalStyles: `<w:styles xmlns:w="main">${padded}</w:styles>` }, "Padded")).to.deep.equal([15.4, 2.5]);
+            // A table style that doesn't give margins, or no default table style: none
+            const bare = `<w:styles xmlns:w="main"><w:style w:type="table" w:styleId="TableNormal"><w:name w:val="Normal Table"/></w:style></w:styles>`;
+            expect(marginsOf({ externalStyles: bare }, "TableNormal")).to.deep.equal([0, 0]);
+            expect(marginsOf({ externalStyles: bare })).to.deep.equal([0, 0]);
+        });
+
+        it("should even out the rows of a table that give a column different widths, as Word does", () => {
+            const tableOf = (
+                properties: readonly object[],
+                ...rows: readonly (readonly (readonly [number | undefined, number?])[])[]
+            ): TableBlock =>
+                readBody([
+                    {
+                        "w:tbl": [
+                            { "w:tblPr": properties },
+                            { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 1000 } } }, { "w:gridCol": { _attr: { "w:w": 2000 } } }] },
+                            ...rows.map((cells) => ({
+                                "w:tr": cells.map(([width, span]) =>
+                                    cell(
+                                        [
+                                            ...(width === undefined ? [] : [{ "w:tcW": { _attr: { "w:w": width, "w:type": "dxa" } } }]),
+                                            ...(span === undefined ? [] : [value("w:gridSpan", span)]),
+                                        ],
+                                        p(r(t("a"))),
+                                    ),
+                                ),
+                            })),
+                        ],
+                    },
+                ]).blocks[0].block as TableBlock;
+            const unsupported = "a table whose rows give a column different widths";
+            const ownWidth = { "w:tblW": { _attr: { "w:w": 4000, "w:type": "dxa" } } };
+            const fixed = { "w:tblLayout": { _attr: { "w:type": "fixed" } } };
+            // The first column 1000 twips wide in one row, and 3000 in the next. Word makes it as wide as the widest, then
+            // fits the columns to the table's width, laid out fixed or not, or to the room without one (word-watertight-stops.docx
+            // SP14, word-table-widths.docx TW1 to TW6)
+            const uneven: readonly (readonly (readonly [number | undefined, number?])[])[] = [
+                [[1000], [2000]],
+                [[3000], [2000]],
+            ];
+            expect(tableOf([ownWidth], ...uneven).widen).to.deep.equal({ width: 200, uneven: true });
+            expect(tableOf([ownWidth], ...uneven).unsupported).to.equal(undefined);
+            expect(tableOf([ownWidth, fixed], ...uneven).widen).to.deep.equal({ width: 200, uneven: true, fixed: true });
+            expect(tableOf([], ...uneven).widen).to.deep.equal({ uneven: true });
+            expect(tableOf([fixed], ...uneven).widen).to.deep.equal({ uneven: true, fixed: true });
+            // A cell of a table laid out fixed without a width of its own has the grid's
+            expect(tableOf([ownWidth, fixed], [[1000], [2000]], [[3000], [undefined]]).widen).to.deep.equal({
+                width: 200,
+                uneven: true,
+                fixed: true,
+            });
+            // A table laid out fixed is fitted to its own width in twips when its rows aren't as wide (TW8, TW10), and kept
+            // when they are
+            expect(tableOf([ownWidth, fixed], [[1000], [2000]]).widen).to.deep.equal({ width: 200, fixed: true });
+            expect(tableOf([ownWidth, fixed], [[1000], [3000]]).widen).to.equal(undefined);
+            expect(tableOf([fixed], [[1000], [2000]]).widen).to.equal(undefined);
+            // With space between its cells too (word-stops-long-words.docx LW5c), but not laid out fixed
+            const spacing = { "w:tblCellSpacing": { _attr: { "w:w": 20, "w:type": "dxa" } } };
+            expect(tableOf([ownWidth, spacing], ...uneven).widen).to.deep.equal({ width: 200, uneven: true });
+            expect(tableOf([ownWidth, spacing, fixed], ...uneven).unsupported).to.equal(unsupported);
+            // With a share of the width too (word-stops-long-words2.docx LW6d to LW6f)
+            expect(tableOf([{ "w:tblW": { _attr: { "w:w": 5000, "w:type": "pct" } } }], ...uneven).widen).to.deep.equal({
+                share: 1,
+                uneven: true,
+            });
+            // Nor a table of a share of more than the width it is in (word-stops-long-words.docx LW1h, LW1i, LW5a, LW5b, LW5f)
+            expect(tableOf([{ "w:tblW": { _attr: { "w:w": 250000, "w:type": "pct" } } }], [[1000], [2000]]).unsupported).to.equal(
+                "a table whose width is a share of more than the width it is in",
+            );
+            // And with a row that starts past the first column, its width before it as a cell's (LW7a, LW7b), but not where it
+            // doesn't say how wide in twips
+            const skipping = (properties: readonly object[]): TableBlock =>
+                readBody([
+                    {
+                        "w:tbl": [
+                            { "w:tblPr": [ownWidth] },
+                            { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 1000 } } }, { "w:gridCol": { _attr: { "w:w": 2000 } } }] },
+                            {
+                                "w:tr": [
+                                    cell([{ "w:tcW": { _attr: { "w:w": 1000 } } }], p()),
+                                    cell([{ "w:tcW": { _attr: { "w:w": 2000 } } }], p()),
+                                ],
+                            },
+                            {
+                                "w:tr": [
+                                    { "w:trPr": [value("w:gridBefore", 1), ...properties] },
+                                    cell([{ "w:tcW": { _attr: { "w:w": 3000 } } }], p()),
+                                ],
+                            },
+                        ],
+                    },
+                ]).blocks[0].block as TableBlock;
+            const before = skipping([{ "w:wBefore": { _attr: { "w:w": 1500, "w:type": "dxa" } } }]);
+            expect([before.unsupported, before.widen, before.rows[1].before]).to.deep.equal([undefined, { width: 200, uneven: true }, 75]);
+            expect(skipping([]).unsupported).to.equal(unsupported);
+            expect(skipping([{ "w:wBefore": { _attr: { "w:w": 1500, "w:type": "pct" } } }]).unsupported).to.equal(unsupported);
+            // A cell over both columns as wide as the two, and widths a twip apart from rounding, agree
+            const even = tableOf([], [[1000], [2000]], [[3000, 2]], [[1001], [2000]]);
+            expect(even.unsupported).to.equal(undefined);
+            expect(even.widen).to.deep.equal({});
+        });
+
+        it("should lay a cell out at its own width in twips rather than the grid's, as Word does", () => {
+            const widths = (width: object): readonly number[] =>
+                (
+                    readBody([
+                        {
+                            "w:tbl": [
+                                { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 1000 } } }, { "w:gridCol": { _attr: { "w:w": 2000 } } }] },
+                                { "w:tr": [cell([{ "w:tcW": { _attr: width } }], p(r(t("a")))), cell([], p(r(t("b"))))] },
+                            ],
+                        },
+                    ]).blocks[0].block as TableBlock
+                ).rows[0].cells.map((tableCell) => Math.round(tableCell.width + 10.8));
+            expect(widths({ "w:w": 3000, "w:type": "dxa" })).to.deep.equal([150, 100]);
+            // Without a type, a width is in twips
+            expect(widths({ "w:w": 3000 })).to.deep.equal([150, 100]);
+            // A percentage is of the table's width, which the grid already has
+            expect(widths({ "w:w": 2500, "w:type": "pct" })).to.deep.equal([50, 100]);
+        });
+
+        it("should size the columns of a table whose cells don't all have widths to their text, within its own width", () => {
+            const tableOf = (tableProperties: readonly object[], ...widths: readonly (object | undefined)[]): TableBlock =>
+                readBody([
+                    {
+                        "w:tbl": [
+                            { "w:tblPr": tableProperties },
+                            { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 1000 } } }, { "w:gridCol": { _attr: { "w:w": 2000 } } }] },
+                            { "w:tr": widths.map((width) => cell(width ? [{ "w:tcW": { _attr: width } }] : [], p(r(t("a"))))) },
+                        ],
+                    },
+                ]).blocks[0].block as TableBlock;
+            const tableWidth = (attributes: object): readonly object[] => [{ "w:tblW": { _attr: attributes } }];
+            // A cell with no width, or a width of nothing
+            expect(tableOf([], { "w:w": 3000 }, undefined).fit).to.deep.equal({});
+            expect(tableOf([], { "w:w": 3000 }, { "w:w": 0, "w:type": "auto" }).fit).to.deep.equal({});
+            // With the table's width in twips, or as a share of the width it is in
+            expect(tableOf(tableWidth({ "w:w": 9000, "w:type": "dxa" })).fit).to.equal(undefined);
+            expect(tableOf(tableWidth({ "w:w": 9000, "w:type": "dxa" }), undefined).fit).to.deep.equal({ width: 450 });
+            expect(tableOf(tableWidth({ "w:w": 2500, "w:type": "pct" }), undefined).fit).to.deep.equal({ share: 0.5 });
+            expect(tableOf(tableWidth({ "w:w": "50%", "w:type": "pct" }), undefined).fit).to.deep.equal({ share: 0.5 });
+            expect(tableOf(tableWidth({ "w:w": 0, "w:type": "auto" }), undefined).fit).to.deep.equal({});
+            expect(tableOf(tableWidth({ "w:type": "pct" }), undefined).fit).to.deep.equal({});
+            // Every cell with a width, or a table laid out fixed, which Word lays out at the grid's widths
+            expect(tableOf([], { "w:w": 3000 }, { "w:w": 2500, "w:type": "pct" }).fit).to.equal(undefined);
+            expect(tableOf([], { "w:w": 3000 }, { "w:type": "pct" }).fit).to.deep.equal({});
+            expect(tableOf([{ "w:tblLayout": { _attr: { "w:type": "fixed" } } }], undefined).fit).to.equal(undefined);
+            // Every cell with a width, which Word widens a column of for a word longer than its cells give it, unless the
+            // table is laid out fixed
+            expect(tableOf([], { "w:w": 3000 }, { "w:w": 2500, "w:type": "pct" }).widen).to.deep.equal({});
+            expect(tableOf(tableWidth({ "w:w": 9000, "w:type": "dxa" }), { "w:w": 3000 }).widen).to.deep.equal({ width: 450 });
+            expect(tableOf([], { "w:w": 3000 }, undefined).widen).to.equal(undefined);
+            expect(tableOf([{ "w:tblLayout": { _attr: { "w:type": "fixed" } } }], { "w:w": 3000 }).widen).to.equal(undefined);
+            // The cells keep the widths they give themselves, and their margins either side, to be sized by
+            expect(
+                tableOf([], { "w:w": 3000 }, undefined).rows[0].cells.map(({ ownWidth, marginLeft, marginRight }) => ({
+                    ownWidth,
+                    marginLeft,
+                    marginRight,
+                })),
+            ).to.deep.equal([
+                { ownWidth: 150, marginLeft: 5.4, marginRight: 5.4 },
+                { ownWidth: undefined, marginLeft: 5.4, marginRight: 5.4 },
+            ]);
+        });
+
+        it("should read the columns a cell is across and the table's side borders, to size a table given no widths by", () => {
+            const tableOf = (properties: readonly object[], ...rows: readonly (readonly object[])[]): TableBlock =>
+                readBody([
+                    {
+                        "w:tbl": [
+                            { "w:tblPr": properties },
+                            { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 1000 } } }, { "w:gridCol": { _attr: { "w:w": 2000 } } }] },
+                            ...rows.map((cells) => ({ "w:tr": cells })),
+                        ],
+                    },
+                ]).blocks[0].block as TableBlock;
+            const inner = { "w:tbl": [{ "w:tr": [cell([], p(r(t("inner"))))] }] };
+            const borders = {
+                "w:tblBorders": [
+                    { "w:left": { _attr: { "w:val": "single", "w:sz": 4 } } },
+                    { "w:right": { _attr: { "w:val": "single", "w:sz": 12 } } },
+                ],
+            };
+            const sized = tableOf([borders], [cell([value("w:gridSpan", 2)], p(r(t("a"))))], [cell([], inner, p()), cell([], p())]);
+            // Neither a cell across columns nor a table in a cell stops the layout. The cell keeps the columns it is across,
+            // and those of one column have none written
+            expect(sized).to.deep.include({ fit: {}, borderLeft: 0.5, borderRight: 1.5 });
+            expect(sized.unsupported).to.equal(undefined);
+            expect(sized.rows.map(({ cells }) => cells.map(({ column, span }) => ({ column, span })))).to.deep.equal([
+                [{ column: 0, span: 2 }],
+                [
+                    { column: 0, span: undefined },
+                    { column: 1, span: undefined },
+                ],
+            ]);
+            expect(tableOf([]).borderLeft).to.equal(0);
+            // A table whose cells all have widths has its columns widened for long words as it is laid out, merged across
+            // them or not
+            const width = { "w:tcW": { _attr: { "w:w": 3000 } } };
+            expect(tableOf([], [cell([width, value("w:gridSpan", 2)], p(r(t("a"))))]).widen).to.deep.equal({});
+            expect(tableOf([], [cell([width], p(r(t("a")))), cell([width], p(r(t("b"))))]).widen).to.deep.equal({});
+        });
+
+        // Reading 40000 rows takes about 4.5 seconds on CI's runners, near the 5 a test is given
+        it(
+            "should stop at a table given no widths of more columns than Word's 63, rather than count each of them",
+            { timeout: 30_000 },
+            () => {
+                const across = (span: number): TableBlock =>
+                    readBody([{ "w:tbl": [{ "w:tr": [cell([value("w:gridSpan", span)], p(r(t("a"))))] }] }]).blocks[0].block as TableBlock;
+                expect(across(63).unsupported).to.equal(undefined);
+                expect(across(2 ** 32).unsupported).to.equal("a table given no widths of more than 63 columns");
+                // Counted row by row, so a table of more rows than a function takes arguments is read
+                const tall = readBody([{ "w:tbl": Array.from({ length: 40000 }, () => ({ "w:tr": [cell([]), cell([]), cell([])] })) }]);
+                expect((tall.blocks[0].block as TableBlock).rows).to.have.length(40000);
+            },
+        );
+
+        it("should read the paragraphs in content controls and custom XML in a cell", () => {
+            const content = readBody([
+                {
+                    "w:tbl": [
+                        {
+                            "w:tr": [
+                                {
+                                    "w:tc": [
+                                        { "w:sdt": [{ "w:sdtContent": [p(r(t("controlled")))] }] },
+                                        { "w:customXml": [p(r(t("custom")))] },
+                                        { "w:bookmarkEnd": {} },
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ]);
+            const [first] = (content.blocks[0].block as TableBlock).rows[0].cells;
+            expect(
+                first.blocks.map((block) =>
+                    (block as ParagraphBlock).items.map((item) => (item.type === "text" ? item.text : "")).join(""),
+                ),
+            ).to.deep.equal(["controlled", "custom"]);
+        });
+
+        it("should mark a table with something unsupported in a cell as unsupported", () => {
+            const content = readBody([{ "w:tbl": [{ "w:tr": [{ "w:tc": [p({ "m:oMath": [{ "m:f": [] }] })] }] }] }]);
+            expect((content.blocks[0].block as TableBlock).unsupported).to.equal("a part of an equation with nothing in it");
+            // An equation outside a paragraph too
+            const outside = readBody([{ "w:tbl": [{ "w:tr": [{ "w:tc": [{ "m:oMath": [] }] }] }] }]);
+            expect((outside.blocks[0].block as TableBlock).unsupported).to.equal("an equation");
+        });
+
+        it("should read where a table that text flows around is, and stop where it can't be followed", () => {
+            const floatOf = (attributes: object, ...properties: readonly object[]): TableBlock =>
+                readBody([
+                    { "w:tbl": [{ "w:tblPr": [{ "w:tblpPr": { _attr: attributes } }, ...properties] }, { "w:tr": [cell([], p())] }] },
+                    p(),
+                ]).blocks[0].block as TableBlock;
+            // Placed as a drawing is: against the column or the paragraph after it for text, the margins or the page, at a
+            // distance in twips or lined up with it, the text kept from it by its distances
+            const placed = floatOf({
+                "w:horzAnchor": "text",
+                "w:vertAnchor": "text",
+                "w:tblpX": 400,
+                "w:tblpY": -200,
+                "w:leftFromText": 180,
+                "w:rightFromText": 200,
+                "w:topFromText": 20,
+                "w:bottomFromText": 40,
+            });
+            expect(placed.unsupported).to.equal(undefined);
+            expect(placed.float).to.deep.equal({
+                horizontal: { from: "column", offset: 20 },
+                vertical: { from: "paragraph", offset: -10 },
+                distances: { top: 1, bottom: 2, left: 9, right: 10 },
+                mayOverlap: true,
+            });
+            const lined = floatOf(
+                { "w:horzAnchor": "margin", "w:vertAnchor": "page", "w:tblpXSpec": "right", "w:tblpYSpec": "bottom", "w:tblpX": 400 },
+                value("w:tblOverlap", "never"),
+            );
+            // Word keeps the text beside it at least half a point from it: half a point with no distance given
+            // (`word-stops-compat2-15.docx` CN9) and with one under half a point, and the distance given from half a point
+            // (`word-stops-float-distance.docx` FD1a to FD1f)
+            expect(lined.float).to.deep.equal({
+                horizontal: { from: "margin", align: "right" },
+                vertical: { from: "page", align: "bottom" },
+                distances: { top: 0, bottom: 0, left: 0.5, right: 0.5 },
+                mayOverlap: false,
+            });
+            expect(floatOf({ "w:leftFromText": 9 }).float!.distances).to.deep.equal({ top: 0, bottom: 0, left: 0.5, right: 0.5 });
+            expect(floatOf({ "w:rightFromText": "0.4pt", "w:leftFromText": 15 }).float!.distances).to.deep.equal({
+                top: 0,
+                bottom: 0,
+                left: 0.75,
+                right: 0.5,
+            });
+            expect(floatOf({ "w:rightFromText": 10, "w:leftFromText": 0, "w:topFromText": 5 }).float!.distances).to.deep.equal({
+                top: 0.25,
+                bottom: 0,
+                left: 0.5,
+                right: 0.5,
+            });
+            expect(floatOf({ "w:horzAnchor": "page", "w:vertAnchor": "margin" }, value("w:tblOverlap", "overlap")).float).to.deep.include({
+                horizontal: { from: "page", offset: 0 },
+                vertical: { from: "margin", offset: 0 },
+                mayOverlap: true,
+            });
+            // Without what it is placed against, Word places it against the column across the page and the margins down it
+            // (`word-stops-floats.docx` FT7a, FT7b, `word-stops-floats2.docx` CO1a)
+            expect(floatOf({ "w:vertAnchor": "text", "w:tblpX": 2000 }).float).to.deep.include({
+                horizontal: { from: "column", offset: 100 },
+            });
+            expect(floatOf({ "w:horzAnchor": "text", "w:tblpY": 1500 }).float).to.deep.include({
+                vertical: { from: "margin", offset: 75 },
+            });
+            expect(floatOf({ "w:horzAnchor": "bogus", "w:vertAnchor": "text" }).unsupported).to.equal(
+                "a table that text flows around placed against what isn't followed yet",
+            );
+            // At the end of the body, Word adds an empty paragraph after it, which it is anchored in (FT1e)
+            const last = readBody([
+                p(r(t("a"))),
+                {
+                    "w:tbl": [
+                        { "w:tblPr": [{ "w:tblpPr": { _attr: { "w:horzAnchor": "text", "w:vertAnchor": "text" } } }] },
+                        { "w:tr": [cell([], p())] },
+                    ],
+                },
+            ]);
+            expect(last.blocks.map(({ block }) => block.type)).to.deep.equal(["paragraph", "table", "paragraph"]);
+            expect(paragraphOf(last, 2).items).to.deep.equal([]);
+            // On its section's grid, as the section's other paragraphs are
+            const onGrid = readBody([
+                p(r(t("a"))),
+                {
+                    "w:tbl": [
+                        { "w:tblPr": [{ "w:tblpPr": { _attr: { "w:horzAnchor": "text", "w:vertAnchor": "text" } } }] },
+                        { "w:tr": [cell([], p())] },
+                    ],
+                },
+                { "w:sectPr": [{ "w:docGrid": { _attr: { "w:type": "lines", "w:linePitch": 360 } } }] },
+            ]);
+            expect(paragraphOf(onGrid, 2).grid).to.deep.equal({ linePitch: 18 });
+            // Lined up inline against the text, it is at the top of the paragraph after it (FT7c); against the margins or the
+            // page, and lined up in a way the schema doesn't have, it isn't followed yet
+            expect(floatOf({ "w:horzAnchor": "text", "w:vertAnchor": "text", "w:tblpYSpec": "inline" }).float).to.deep.include({
+                vertical: { from: "paragraph", align: "top" },
+            });
+            const lining = "a table that text flows around lined up in a way not yet followed";
+            expect(floatOf({ "w:horzAnchor": "text", "w:vertAnchor": "margin", "w:tblpYSpec": "inline" }).unsupported).to.equal(lining);
+            expect(floatOf({ "w:horzAnchor": "text", "w:vertAnchor": "text", "w:tblpXSpec": "top" }).unsupported).to.equal(lining);
+            // In a table cell, a header or an endnote, where Word puts it otherwise or hasn't been seen, it isn't followed yet,
+            // and in a footnote, it is a table that doesn't float (`word-stops-floats.docx` FT6c)
+            const floating = {
+                "w:tbl": [
+                    { "w:tblPr": [{ "w:tblpPr": { _attr: { "w:horzAnchor": "text", "w:vertAnchor": "text" } } }] },
+                    { "w:tr": [cell([], p())] },
+                ],
+            };
+            const inCell = readBody([{ "w:tbl": [{ "w:tr": [cell([], floating, p())] }] }]).blocks[0].block as TableBlock;
+            const unsupported = "a table that text flows around in a table cell, header or footer";
+            expect(inCell.rows[0].cells[0].blocks[0].unsupported).to.equal(unsupported);
+            const content = readContent(
+                {
+                    "w:body": [
+                        p(r({ "w:footnoteReference": { _attr: { "w:id": 1 } } })),
+                        { "w:sectPr": [{ "w:headerReference": { _attr: { "r:id": "rId1" } } }] },
+                    ],
+                },
+                {
+                    styles: WORD_DEFAULT_STYLES,
+                    headersAndFooters: new Map([["rId1", [floating, p()]]]),
+                    footnotes: { "w:footnotes": [{ "w:footnote": [{ _attr: { "w:id": 1 } }, floating, p()] }] },
+                    endnotes: { "w:endnotes": [{ "w:endnote": [{ _attr: { "w:id": 1 } }, floating, p()] }] },
+                },
+            );
+            expect(content.sections[0].headers.default![0].unsupported).to.equal(unsupported);
+            const inFootnote = content.footnotes.get("footnote 1")![0] as TableBlock;
+            expect(inFootnote.unsupported).to.equal(undefined);
+            expect(inFootnote.float).to.equal(undefined);
+            // In a table cell in a footnote, it stops as in any table cell
+            const cellNoted = readContent(
+                { "w:body": [p(r({ "w:footnoteReference": { _attr: { "w:id": 1 } } }))] },
+                {
+                    styles: WORD_DEFAULT_STYLES,
+                    headersAndFooters: new Map(),
+                    footnotes: {
+                        "w:footnotes": [
+                            { "w:footnote": [{ _attr: { "w:id": 1 } }, { "w:tbl": [{ "w:tr": [cell([], floating, p())] }] }, p()] },
+                        ],
+                    },
+                },
+            );
+            expect((cellNoted.footnotes.get("footnote 1")![0] as TableBlock).rows[0].cells[0].blocks[0].unsupported).to.equal(unsupported);
+            const endnoted = readContent(
+                { "w:body": [p(r({ "w:endnoteReference": { _attr: { "w:id": 1 } } }))] },
+                {
+                    styles: WORD_DEFAULT_STYLES,
+                    headersAndFooters: new Map(),
+                    endnotes: { "w:endnotes": [{ "w:endnote": [{ _attr: { "w:id": 1 } }, floating, p()] }] },
+                },
+            );
+            // In an endnote too, it is laid out in the note's text, as a table that doesn't float (`word-stops-floats2.docx` EN1a)
+            const inEndnote = endnoted.endnotes[0] as TableBlock;
+            expect(inEndnote.unsupported).to.equal(undefined);
+            expect(inEndnote.float).to.equal(undefined);
+        });
+
+        it("should read cells whose text doesn't wrap or that fit their text to them, and a row in an HTML division", () => {
+            const tableOf = (table: readonly unknown[], row: readonly unknown[], ...cells: readonly (readonly unknown[])[]): TableBlock =>
+                readBody([
+                    {
+                        "w:tbl": [
+                            { "w:tblPr": table },
+                            { "w:tblGrid": [2000, 2000, 2000].map((twips) => ({ "w:gridCol": { _attr: { "w:w": twips } } })) },
+                            { "w:tr": [{ "w:trPr": row }, ...cells.map((properties) => cell(properties, p()))] },
+                        ],
+                    },
+                ]).blocks[0].block as TableBlock;
+            const unsupportedOf = (
+                table: readonly unknown[],
+                row: readonly unknown[],
+                ...cells: readonly (readonly unknown[])[]
+            ): unknown => tableOf(table, row, ...cells).unsupported;
+            const width = { "w:tcW": { _attr: { "w:w": 2000, "w:type": "dxa" } } };
+            expect(unsupportedOf([], [], [])).to.equal(undefined);
+            // word-stops-pages.docx DV1b: moved across by the division's margin, as wide and tall as it is without
+            expect(unsupportedOf([], [value("w:divId", 3)], [])).to.equal(undefined);
+            // word-stops-tables.docx TS7a, TS7b, word-stops-tables2.docx TS12a to TS12c: in a table sized to its text, and in
+            // one whose cells all have widths, which sizes its columns by it
+            const unwrapped = tableOf([], [], [{ "w:noWrap": {} }]);
+            expect([unwrapped.unsupported, unwrapped.rows[0].cells[0].noWrap]).to.deep.equal([undefined, true]);
+            expect(unsupportedOf([], [], [width, { "w:noWrap": {} }])).to.equal(undefined);
+            expect(tableOf([], [], [value("w:noWrap", "false")]).rows[0].cells[0].noWrap).to.equal(undefined);
+            // TS8, TS13a, TS13b: text fitted to its cell, a line to each paragraph
+            expect(unsupportedOf([], [], [{ "w:tcFitText": {} }])).to.equal(undefined);
+            const fitted = tableOf([], [], [width, { "w:tcFitText": {} }]);
+            expect([fitted.unsupported, fitted.rows[0].cells[0].fitText]).to.deep.equal([undefined, true]);
+        });
+
+        it("should read cells merged across columns as old versions of Word wrote them as one cell across them, as Word does", () => {
+            // word-stops-tables.docx TS6: a cell that goes on from the one before it (w:hMerge) adds its columns and width
+            const width = (twips: number): object => ({ "w:tcW": { _attr: { "w:w": twips, "w:type": "dxa" } } });
+            const merged = readBody([
+                {
+                    "w:tbl": [
+                        { "w:tblGrid": [1000, 2000, 3000].map((twips) => ({ "w:gridCol": { _attr: { "w:w": twips } } })) },
+                        {
+                            "w:tr": [
+                                { "w:bookmarkStart": { _attr: { "w:id": 1, "w:name": "before" } } },
+                                cell([width(1000), value("w:hMerge", "restart")], p(r(t("a")))),
+                                { "w:bookmarkStart": { _attr: { "w:id": 2, "w:name": "across" } } },
+                                cell([width(2000), { "w:hMerge": {} }], p()),
+                                cell([width(3000)], p(r(t("b")))),
+                            ],
+                        },
+                    ],
+                },
+            ]).blocks[0].block as TableBlock;
+            expect(merged.unsupported).to.equal(undefined);
+            expect(merged.rows[0].cells.map(({ column, span, ownWidth }) => [column, span, ownWidth])).to.deep.equal([
+                [0, 2, 150],
+                [2, undefined, 150],
+            ]);
+            // The bookmarks before the cell it goes on from start in the first
+            const names = merged.rows[0].cells[0].blocks.flatMap((block) =>
+                block.type === "paragraph" ? block.items.flatMap((item) => (item.type === "marker" ? [item.name] : [])) : [],
+            );
+            expect(names).to.deep.equal(["before", "across"]);
+            // One with text of its own
+            const withText = readBody([
+                {
+                    "w:tbl": [{ "w:tr": [cell([value("w:hMerge", "restart")], p()), cell([value("w:hMerge", "continue")], p(r(t("b"))))] }],
+                },
+            ]).blocks[0].block as TableBlock;
+            expect(withText.unsupported).to.equal(
+                "cells merged across columns as old versions of Word wrote them, with text after the first",
+            );
+        });
+
+        describe("formatting", () => {
+            const border = (side: string, size: number, style = "single"): object => ({
+                [`w:${side}`]: { _attr: { "w:val": style, "w:sz": size } },
+            });
+            const styles = (...definitions: readonly string[]): Partial<IPropertiesOptions> => ({
+                externalStyles: `<w:styles xmlns:w="main">${definitions.join("")}</w:styles>`,
+            });
+            const tableStyle = (id: string, content: string): string =>
+                `<w:style w:type="table" w:styleId="${id}"><w:name w:val="${id}"/>${content}</w:style>`;
+            /** A table of one-cell rows, each of a paragraph of its number */
+            const tableOf = (
+                properties: readonly unknown[],
+                rows: readonly (readonly unknown[])[],
+                options: Partial<IPropertiesOptions> = {},
+            ): TableBlock =>
+                readBody(
+                    [
+                        {
+                            "w:tbl": [
+                                { "w:tblPr": properties },
+                                { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 2000 } } }] },
+                                ...rows.map((cellProperties, index) => ({ "w:tr": [cell(cellProperties, p(r(t(`row ${index + 1}`))))] })),
+                            ],
+                        },
+                    ],
+                    options,
+                ).blocks[0].block as TableBlock;
+            const bordersOf = ({ rows }: TableBlock): readonly (readonly [number, number])[] =>
+                rows.map(({ borderTop, borderBottom }) => [borderTop, borderBottom]);
+
+            it("should take a table's borders from its style, side by side, and from itself over them, as Word does", () => {
+                // word-watertight-tables.docx TB2a: borders only the style has make the rows as tall as the table's own do
+                const bordered = tableStyle(
+                    "Bordered",
+                    `<w:tblPr><w:tblBorders><w:top w:val="single" w:sz="24"/><w:bottom w:val="single" w:sz="24"/><w:insideH w:val="single" w:sz="24"/></w:tblBorders></w:tblPr>`,
+                );
+                const fromStyle = tableOf([value("w:tblStyle", "Bordered")], [[], [], []], styles(bordered));
+                expect(bordersOf(fromStyle)).to.deep.equal([
+                    [3, 0],
+                    [3, 0],
+                    [3, 3],
+                ]);
+                // TB2b: the table's own, here over the style's
+                const own = tableOf(
+                    [value("w:tblStyle", "Bordered"), { "w:tblBorders": [border("insideH", 8), border("bottom", 0, "nil")] }],
+                    [[], []],
+                    styles(bordered),
+                );
+                expect(bordersOf(own)).to.deep.equal([
+                    [3, 0],
+                    [1, 0],
+                ]);
+            });
+
+            it("should count a border between two rows once, the wider of the cells' borders there, each its own or the table's", () => {
+                // word-watertight-tables.docx TB3: cells' 3-point top and bottom borders make each row 3 points taller
+                const cells = [border("top", 24), border("bottom", 24)];
+                expect(bordersOf(tableOf([], [[{ "w:tcBorders": cells }], [{ "w:tcBorders": cells }]]))).to.deep.equal([
+                    [3, 0],
+                    [3, 3],
+                ]);
+                // The wider of two cells' own (word-table-formats.docx BC2)
+                const table = { "w:tblBorders": [border("top", 24), border("insideH", 24), border("bottom", 24)] };
+                const mixed = tableOf([table], [[{ "w:tcBorders": [border("bottom", 8)] }], [{ "w:tcBorders": [border("top", 16)] }], []]);
+                expect(bordersOf(mixed)).to.deep.equal([
+                    [3, 0],
+                    [2, 0],
+                    [3, 3],
+                ]);
+                // A cell's narrower border, nil or none beside the table's border on the cell above (BC3 to BC5)
+                for (const top of [border("top", 4), border("top", 8, "nil"), border("top", 8, "none")]) {
+                    expect(bordersOf(tableOf([table], [[], [{ "w:tcBorders": [top] }]]))).to.deep.equal([
+                        [3, 0],
+                        [3, 3],
+                    ]);
+                }
+                // A border's space adds to the room it takes (word-table-formats.docx BS31)
+                const spaced = { "w:tblBorders": [{ "w:top": { _attr: { "w:val": "single", "w:sz": 12, "w:space": 10 } } }] };
+                expect(bordersOf(tableOf([spaced], [[]]))).to.deep.equal([[11.5, 0]]);
+            });
+
+            it("should keep a cell's text its margin, or half the border beside it when that is more, from its edges", () => {
+                // word-table-formats.docx BC7 to BC9: 6-point borders left and right of a cell beside text
+                const sides = { "w:tcBorders": [border("left", 48), border("right", 48)] };
+                const margins = (left: number): object => ({
+                    "w:tcMar": [{ "w:left": { _attr: { "w:w": left } } }, { "w:right": { _attr: { "w:w": left } } }],
+                });
+                const [narrow] = tableOf([], [[sides, margins(0)]]).rows[0].cells;
+                expect([narrow.marginLeft, narrow.marginRight, narrow.width]).to.deep.equal([3, 3, 94]);
+                const [wide] = tableOf([], [[sides, margins(108)]]).rows[0].cells;
+                expect([wide.marginLeft, wide.marginRight, Math.round(wide.width * 10) / 10]).to.deep.equal([5.4, 5.4, 89.2]);
+            });
+
+            it("should stop at borders whose room Word's PDFs haven't shown", () => {
+                expect(tableOf([{ "w:tblBorders": [border("insideH", 10, "wave")] }], [[], []]).unsupported).to.equal(
+                    "a table border in a style not yet followed",
+                );
+                const sides = tableOf([{ "w:tblBorders": [border("left", 10, "wave"), border("right", 10, "wave")] }], [[]]);
+                expect([sides.unsupported, sides.borderLeft, sides.borderRight]).to.deep.equal([
+                    "a table border in a style not yet followed",
+                    0,
+                    0,
+                ]);
+            });
+
+            it("should make room for the wider of two cells' borders of different styles that meet, whichever Word draws", () => {
+                // word-stops-table-borders.docx TB3d: a dotted border of 1.5 points below a single one of half a point, which
+                // Word draws, takes 1.5 points
+                const meeting = tableOf(
+                    [],
+                    [[{ "w:tcBorders": [border("bottom", 4)] }], [{ "w:tcBorders": [border("top", 12, "dotted")] }]],
+                );
+                expect([meeting.unsupported, meeting.rows[1].borderTop]).to.deep.equal([undefined, 1.5]);
+                // Beside text with no margin, each cell's text is kept from half its own border, whichever Word draws
+                // (word-stops-table-borders2.docx BT1a to BT1d)
+                const noMargin = { _attr: { "w:w": 0, "w:type": "dxa" } };
+                const beside = readBody([
+                    {
+                        "w:tbl": [
+                            { "w:tblPr": [{ "w:tblCellMar": [{ "w:left": noMargin }, { "w:right": noMargin }] }] },
+                            { "w:tblGrid": [2000, 2000].map((width) => ({ "w:gridCol": { _attr: { "w:w": width } } })) },
+                            {
+                                "w:tr": [
+                                    cell([{ "w:tcBorders": [border("right", 4)] }], p()),
+                                    cell([{ "w:tcBorders": [border("left", 24, "dotted")] }], p()),
+                                ],
+                            },
+                        ],
+                    },
+                ]).blocks[0].block as TableBlock;
+                expect(beside.unsupported).to.equal(undefined);
+                expect(beside.rows[0].cells.map(({ marginLeft, marginRight, width }) => [marginLeft, marginRight, width])).to.deep.equal([
+                    [0, 0.25, 99.75],
+                    [1.5, 0, 98.5],
+                ]);
+            });
+
+            it("should put space between cells around each cell, and inside the table's edges, as Word does", () => {
+                // word-watertight-tables.docx TB4: 100 twips between cells put 200 between each row's text and the next's, and
+                // between the table's edges and its first and last rows' text, and make the text of the first and last cell of
+                // a row 300 twips narrower, and of the others 200, as margins do
+                const spacing = { "w:tblCellSpacing": { _attr: { "w:w": 100, "w:type": "dxa" } } };
+                const spaced = readBody([
+                    {
+                        "w:tbl": [
+                            { "w:tblPr": [spacing, { "w:tblBorders": [border("top", 0, "nil")] }] },
+                            { "w:tblGrid": [2000, 2000, 2000].map((width) => ({ "w:gridCol": { _attr: { "w:w": width } } })) },
+                            ...[0, 1].map(() => ({ "w:tr": [cell([], p()), cell([], p()), cell([], p())] })),
+                        ],
+                    },
+                ]).blocks[0].block as TableBlock;
+                expect(bordersOf(spaced)).to.deep.equal([
+                    [10, 5],
+                    [5, 10],
+                ]);
+                expect(spaced.cellSpacing).to.equal(5);
+                // docx's Normal Table gives cells 5.4 points on the left and right
+                const tenths = (length: number): number => Math.round(length * 10) / 10;
+                expect(
+                    spaced.rows[0].cells.map(({ width, marginLeft, marginRight }) => [width, marginLeft, marginRight].map(tenths)),
+                ).to.deep.equal([
+                    [100 - 10.8 - 15, 15.4, 10.4],
+                    [100 - 10.8 - 10, 10.4, 10.4],
+                    [100 - 10.8 - 15, 10.4, 15.4],
+                ]);
+                // A table whose cells have widths keeps its width, its own or its cells', laid out fixed or not, and its columns
+                // are narrowed for the space (word-table-formats2.docx CS9, CS10, CS14)
+                const given = readBody([
+                    {
+                        "w:tbl": [
+                            { "w:tblPr": [spacing, { "w:tblLayout": { _attr: { "w:type": "fixed" } } }] },
+                            {
+                                "w:tr": [
+                                    cell([{ "w:tcW": { _attr: { "w:w": 2000, "w:type": "dxa" } } }], p()),
+                                    cell([{ "w:tcW": { _attr: { "w:w": 4000 } } }], p()),
+                                ],
+                            },
+                        ],
+                    },
+                ]).blocks[0].block as TableBlock;
+                expect(given.widen).to.deep.equal({ width: 300 });
+                // Each cell as wide as it is with its room for the space: the space on each side, and inside the table's edges
+                expect(given.rows[0].cells.map(({ ownWidth }) => ownWidth)).to.deep.equal([115, 215]);
+            });
+
+            it("should lay out space between cells as a share of the table's width as none, and a row's own as the table's", () => {
+                const spacing = (attributes: object): object => ({ "w:tblCellSpacing": { _attr: attributes } });
+                const spacedTable = (properties: readonly unknown[], ...rows: readonly (readonly unknown[])[]): TableBlock =>
+                    readBody([
+                        {
+                            "w:tbl": [
+                                { "w:tblPr": properties },
+                                { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 2000 } } }] },
+                                ...(rows.length > 0 ? rows : [[]]).map((row) => ({
+                                    "w:tr": [{ "w:trPr": row }, cell([{ "w:tcW": { _attr: { "w:w": 2000, "w:type": "dxa" } } }], p())],
+                                })),
+                            ],
+                        },
+                    ]).blocks[0].block as TableBlock;
+                const read = ({ unsupported, cellSpacing }: TableBlock): readonly unknown[] => [unsupported, cellSpacing];
+                expect(read(spacedTable([spacing({ "w:w": 100, "w:type": "nil" })]))).to.deep.equal([undefined, undefined]);
+                // word-stops-table-borders.docx TB6a, TB6b: Word lays out a table whose space between cells is 2% or 5% of its
+                // width without any
+                expect(read(spacedTable([spacing({ "w:w": 100, "w:type": "pct" })]))).to.deep.equal([undefined, undefined]);
+                // TB6c, TB6d: rows with space of their own have it, at the table's edges too, over the table's
+                expect(read(spacedTable([spacing({ "w:w": 40 })], [spacing({ "w:w": 100 })], [spacing({ "w:w": 100 })]))).to.deep.equal([
+                    undefined,
+                    5,
+                ]);
+                expect(read(spacedTable([], [spacing({ "w:w": 100 })]))).to.deep.equal([undefined, 5]);
+                // word-table-formats2.docx CS11, TB5: borders left and right of cells are followed
+                expect(read(spacedTable([spacing({ "w:w": 100 }), { "w:tblBorders": [border("left", 4)] }]))).to.deep.equal([undefined, 5]);
+            });
+
+            it("should stop at space between cells that Word's PDFs haven't shown: another type, a row's share, rows that differ", () => {
+                const spacing = (attributes: object): object => ({ "w:tblCellSpacing": { _attr: attributes } });
+                const tableWith = (
+                    properties: readonly unknown[],
+                    cellProperties: readonly unknown[],
+                    ...rows: readonly (readonly unknown[])[]
+                ): TableBlock =>
+                    readBody([
+                        {
+                            "w:tbl": [
+                                { "w:tblPr": properties },
+                                { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 2000 } } }] },
+                                ...rows.map((row) => ({ "w:tr": [{ "w:trPr": row }, cell(cellProperties, p())] })),
+                            ],
+                        },
+                    ]).blocks[0].block as TableBlock;
+                const unsupportedOf = (properties: readonly unknown[], ...rows: readonly (readonly unknown[])[]): string | undefined =>
+                    tableWith(properties, [], ...rows).unsupported;
+                expect(unsupportedOf([spacing({ "w:w": 100, "w:type": "other" })], [])).to.equal(
+                    "space between table cells of a width that isn't in twips",
+                );
+                expect(unsupportedOf([], [spacing({ "w:w": 100, "w:type": "pct" })])).to.equal(
+                    "space between a table row's cells as a share of the table's width",
+                );
+                // Space of the type auto is none (word-stops-table-borders2.docx BT5d, BT5e)
+                const auto = tableWith([spacing({ "w:w": 100, "w:type": "auto" })], [], []);
+                expect([auto.unsupported, auto.cellSpacing]).to.deep.equal([undefined, undefined]);
+                // Rows of different space are followed in a table whose cells have widths, of a width of its own (BT5a, BT5b),
+                // each row's own around its cells and the table's columns as wide as with the first row's
+                const width = [{ "w:tblW": { _attr: { "w:w": 2000, "w:type": "dxa" } } }];
+                const cellWidth = [{ "w:tcW": { _attr: { "w:w": 2000, "w:type": "dxa" } } }];
+                const differing = tableWith(width, cellWidth, [spacing({ "w:w": 40 })], [spacing({ "w:w": 100 })]);
+                expect(differing.unsupported).to.equal(undefined);
+                expect(differing.rows.map(({ borderTop, cells }) => [borderTop, cells[0].marginLeft, cells[0].ownWidth])).to.deep.equal([
+                    [4, 9.4, 108],
+                    [5, 15.4, 108],
+                ]);
+                expect(tableWith([], cellWidth, [spacing({ "w:w": 40 })], [spacing({ "w:w": 100 })]).unsupported).to.equal(
+                    "table rows with different space between their cells, in a table sized to its text or with no width of its own",
+                );
+                expect(unsupportedOf(width, [spacing({ "w:w": 40 })], [spacing({ "w:w": 100 })])).to.equal(
+                    "table rows with different space between their cells, in a table sized to its text or with no width of its own",
+                );
+                // Nor a row with none beside rows with some
+                expect(unsupportedOf([], [spacing({ "w:w": 100 })], [])).to.equal(
+                    "table rows with space between their cells beside rows without",
+                );
+                // A deleted row's space doesn't count, as it takes no room (word-tracked-tables.docx MK14h)
+                const deleted = { "w:del": { _attr: { "w:id": 1 } } };
+                expect(unsupportedOf([spacing({ "w:w": 100 })], [], [deleted, spacing({ "w:w": 0 })])).to.equal(undefined);
+                expect(unsupportedOf([], [deleted, spacing({ "w:w": 100 })], [spacing({ "w:w": 40 })])).to.equal(undefined);
+                // Borders above and below, and a table sized to its text, are followed (CS1 to CS3, CS5, CS6)
+                expect(unsupportedOf([spacing({ "w:w": 100 }), { "w:tblBorders": [border("top", 4), border("insideH", 4)] }], [])).to.equal(
+                    undefined,
+                );
+            });
+
+            it("should read text that runs up or down a cell, and a cell whose mark takes no room", () => {
+                const { rows, unsupported } = tableOf(
+                    [],
+                    [
+                        [value("w:textDirection", "btLr"), { "w:hideMark": {} }],
+                        [value("w:textDirection", "lrTb"), value("w:hideMark", "false")],
+                        [value("w:textDirection", "tbRl")],
+                    ],
+                );
+                expect(rows.map(({ cells }) => [cells[0].vertical, cells[0].hideMark])).to.deep.equal([
+                    [true, true],
+                    [undefined, undefined],
+                    [true, undefined],
+                ]);
+                // A row of only text running up or down is as tall as a line of its mark (word-table-formats.docx VT1)
+                expect(unsupported).to.equal(undefined);
+                // word-stops-vertical-cells.docx TV6a to TV6c: down with East Asian characters upright, as text running down,
+                // and across with them on their side, as text across
+                const directions = tableOf(
+                    [],
+                    ["tbRlV", "tbLrV", "lrTbV", "rlV", "tbV"].map((direction) => [value("w:textDirection", direction)]),
+                );
+                expect([directions.unsupported, ...directions.rows.map(({ cells }) => cells[0].vertical)]).to.deep.equal([
+                    undefined,
+                    true,
+                    true,
+                    undefined,
+                    true,
+                    undefined,
+                ]);
+                expect(tableOf([], [[value("w:textDirection", "sideways")]]).unsupported).to.equal(
+                    "text in a table cell in a direction not yet followed",
+                );
+                const upTable = (...blocks: readonly object[]): TableBlock =>
+                    readBody([{ "w:tbl": [{ "w:tr": [cell([value("w:textDirection", "btLr")], ...blocks)] }] }]).blocks[0]
+                        .block as TableBlock;
+                // A picture in it, as text (TV5c)
+                expect(
+                    upTable(p(r(t("a")), r({ "w:drawing": [{ "wp:inline": [{ "wp:extent": { _attr: { cx: 9525, cy: 9525 } } }] }] })))
+                        .unsupported,
+                ).to.equal(undefined);
+                // Marks of different sizes, and a mark larger than its text, as a row of only such cells is as tall as a line of
+                // its last (word-stops-vertical-cells2.docx VC5a to VC5h), but not a table in it (TV5d)
+                expect(upTable(p(r(t("a"))), p(pPr(rPr(value("w:sz", 40))), r(t("b")))).unsupported).to.equal(undefined);
+                expect(upTable(p(pPr(rPr(value("w:sz", 40))), r(rPr(value("w:sz", 22)), t("b")))).unsupported).to.equal(undefined);
+                expect(upTable({ "w:tbl": [] }, p()).unsupported).to.equal("text running up or down a table cell with a table in it");
+                // Nor, in a row of only such cells, a last mark in a font whose lines running up Word's PDFs haven't shown
+                const aptos = rPr({ "w:rFonts": { _attr: { "w:ascii": "Aptos", "w:hAnsi": "Aptos" } } });
+                const reason = "a table row of only text running up or down, whose mark is in a font whose lines Word's PDFs haven't shown";
+                expect(upTable(p(r(t("a"))), p(pPr(aptos), r(t("b")))).unsupported).to.equal(reason);
+                expect(upTable(p(pPr(aptos), r(t("a"))), p(r(t("b")))).unsupported).to.equal(undefined);
+                // A text box in it, which Word hasn't been seen to lay out there
+                const textBox = r({
+                    "w:pict": [
+                        {
+                            "v:shape": [
+                                { _attr: { style: "width:100pt;height:50pt", stroked: "f" } },
+                                { "v:textbox": [{ _attr: { style: "mso-fit-shape-to-text:t" } }, { "w:txbxContent": [p(r(t("in")))] }] },
+                            ],
+                        },
+                    ],
+                });
+                expect(upTable(p(r(t("a")), textBox)).unsupported).to.equal("text running up or down a table cell with a text box in it");
+            });
+
+            it("should stop at text running up or down a cell of a table sized to its text in a cell of one, or that text flows around", () => {
+                const reason = "text that runs up or down a cell of a table sized to its text, in a table cell or that text flows around";
+                // In a font whose lines running up Word's PDFs haven't shown, so how wide Word makes it isn't known
+                const aptos = rPr({ "w:rFonts": { _attr: { "w:ascii": "Aptos", "w:hAnsi": "Aptos" } } });
+                const up = { "w:tbl": [{ "w:tr": [cell([value("w:textDirection", "btLr")], p(r(aptos, t("a"))))] }] };
+                const outer = (inner: object, properties: readonly object[] = []): TableBlock =>
+                    readBody([{ "w:tbl": [{ "w:tblPr": properties }, { "w:tr": [cell([], inner, p())] }] }]).blocks[0].block as TableBlock;
+                expect(outer(up).unsupported).to.equal(reason);
+                // In Times New Roman, the font when none is given, it is known (word-stops-vertical-cells2.docx VC1b)
+                expect(outer({ "w:tbl": [{ "w:tr": [cell([value("w:textDirection", "btLr")], p(r(t("a"))))] }] }).unsupported).to.equal(
+                    undefined,
+                );
+                // In a table laid out fixed, which its width doesn't change
+                expect(outer(up, [{ "w:tblLayout": { _attr: { "w:type": "fixed" } } }]).unsupported).to.equal(undefined);
+                const floating = readBody([
+                    {
+                        "w:tbl": [
+                            { "w:tblPr": [{ "w:tblpPr": { _attr: { "w:horzAnchor": "page", "w:vertAnchor": "page" } } }] },
+                            ...up["w:tbl"],
+                        ],
+                    },
+                    p(),
+                ]).blocks[0].block as TableBlock;
+                expect(floating.unsupported).to.equal(reason);
+            });
+
+            it("should read a table's indent from its style or itself, and lay out one that is a share of the width as none", () => {
+                const indented = tableStyle("Indented", `<w:tblPr><w:tblInd w:w="2000" w:type="dxa"/></w:tblPr>`);
+                expect(tableOf([value("w:tblStyle", "Indented")], [[]], styles(indented)).indent).to.equal(100);
+                expect(tableOf([{ "w:tblInd": { _attr: { "w:w": -500, "w:type": "dxa" } } }], [[]]).indent).to.equal(-25);
+                expect(tableOf([{ "w:tblInd": { _attr: { "w:w": 500, "w:type": "nil" } } }], [[]]).indent).to.equal(undefined);
+                // word-stops-tables2.docx TS11a, TS11b
+                expect(tableOf([{ "w:tblInd": { _attr: { "w:w": 500, "w:type": "pct" } } }], [[]]).indent).to.equal(undefined);
+                expect(tableOf([{ "w:tblInd": { _attr: { "w:w": 500, "w:type": "auto" } } }], [[]]).unsupported).to.equal(
+                    "a table indent of a type not yet followed",
+                );
+            });
+
+            it("should apply a table style's first row's formatting to it where the table turns it on, as Word does", () => {
+                // word-watertight-stops.docx SP19: a table style's 16-point first row, where Normal has no size of its own
+                const firstRow = tableStyle(
+                    "FirstRow",
+                    `<w:tblStylePr w:type="firstRow"><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:tblStylePr>`,
+                );
+                const look = (on: boolean): object => ({
+                    "w:tblLook": { _attr: { "w:firstRow": on ? 1 : 0, "w:noHBand": 1, "w:noVBand": 1 } },
+                });
+                const fontsOf = (table: TableBlock): readonly unknown[] =>
+                    table.rows.map(({ cells }) => ((cells[0].blocks[0] as ParagraphBlock).items[0] as { readonly font: unknown }).font);
+                expect(fontsOf(tableOf([value("w:tblStyle", "FirstRow"), look(true)], [[], []], styles(firstRow)))).to.deep.equal([
+                    { size: 16, bold: true },
+                    {},
+                ]);
+                // SP19b: off
+                expect(fontsOf(tableOf([value("w:tblStyle", "FirstRow"), look(false)], [[], []], styles(firstRow)))).to.deep.equal([
+                    {},
+                    {},
+                ]);
+                // Word's default as w:val, as Word 2007 writes it: the first row and column, and bands of rows
+                const old = { "w:tblLook": { _attr: { "w:val": "04A0" } } };
+                expect(fontsOf(tableOf([value("w:tblStyle", "FirstRow"), old], [[], []], styles(firstRow)))).to.deep.equal([
+                    { size: 16, bold: true },
+                    {},
+                ]);
+            });
+
+            it("should apply the parts of a table style for some cells as Word does, with the borders and margins they give", () => {
+                // word-table-formats.docx CF1 to CF9, word-table-formats2.docx CF10 to CF14
+                const parts = tableStyle(
+                    "Parts",
+                    `<w:tblStylePr w:type="wholeTable"><w:rPr><w:sz w:val="20"/></w:rPr></w:tblStylePr><w:tblStylePr w:type="lastRow"><w:rPr><w:sz w:val="32"/></w:rPr><w:tcPr><w:tcBorders><w:top w:val="single" w:sz="24"/></w:tcBorders><w:tcMar><w:top w:w="200" w:type="dxa"/></w:tcMar></w:tcPr></w:tblStylePr><w:tblStylePr w:type="band1Horz"><w:tcPr><w:shd w:val="clear" w:fill="EEEEEE"/></w:tcPr></w:tblStylePr>`,
+                );
+                const sizesOf = (table: TableBlock): readonly unknown[] =>
+                    table.rows.map(
+                        ({ cells }) =>
+                            ((cells[0].blocks[0] as ParagraphBlock).items[0] as { readonly font: { readonly size?: number } }).font.size,
+                    );
+                const all = { "w:tblLook": { _attr: { "w:firstRow": 1, "w:lastRow": 1, "w:noHBand": 0, "w:noVBand": 1 } } };
+                const laidOut = tableOf(
+                    [value("w:tblStyle", "Parts"), all],
+                    [[], [], [{ "w:tcMar": [{ "w:top": { _attr: { "w:w": 100 } } }] }]],
+                    styles(parts),
+                );
+                // Word doesn't apply wholeTable, and a cell's own margins are over a part's
+                expect(sizesOf(laidOut)).to.deep.equal([undefined, undefined, 16]);
+                expect(laidOut.rows.map(({ borderTop }) => borderTop)).to.deep.equal([0, 0, 3]);
+                expect(laidOut.rows[2].cells[0].marginTop).to.equal(5);
+                expect(laidOut.unsupported).to.equal(undefined);
+                // A table that doesn't say turns on its first row and column and its bands of rows, as Word's default does
+                expect(sizesOf(tableOf([value("w:tblStyle", "Parts")], [[], [], []], styles(parts)))).to.deep.equal([
+                    undefined,
+                    undefined,
+                    undefined,
+                ]);
+            });
+
+            it("should stop at the parts of a table style for some cells that give properties of the table, its rows or cells not followed", () => {
+                const unsupportedOf = (properties: string): string | undefined =>
+                    tableOf(
+                        [value("w:tblStyle", "Parts"), { "w:tblLook": { _attr: { "w:firstRow": 1 } } }],
+                        [[], []],
+                        styles(tableStyle("Parts", `<w:tblStylePr w:type="firstRow">${properties}</w:tblStylePr>`)),
+                    ).unsupported;
+                expect(unsupportedOf(`<w:trPr><w:tblCellSpacing w:w="40"/></w:trPr>`)).to.equal(
+                    "a table style's formatting for some of its cells",
+                );
+                // Keeping its first row whole, which Word follows (word-stops-tables2.docx TS10b)
+                expect(unsupportedOf(`<w:trPr><w:cantSplit/></w:trPr>`)).to.equal(undefined);
+                expect(unsupportedOf(`<w:tcPr><w:textDirection w:val="btLr"/></w:tcPr>`)).to.equal(
+                    "a table style's formatting for some of its cells",
+                );
+                expect(unsupportedOf(`<w:tcPr><w:vAlign w:val="center"/></w:tcPr>`)).to.equal(undefined);
+            });
+
+            it("should give a row's cells its own table borders and margins, as Word does, and stop at its other table properties", () => {
+                // word-stops-tables.docx TS4: a middle row's own top, bottom and inside borders of 1.5 points and margins
+                // of 300 twips: its inside border between its cells, and its margins
+                const margin = (side: string): object => ({ [`w:${side}`]: { _attr: { "w:w": 300, "w:type": "dxa" } } });
+                const exceptions = readBody([
+                    {
+                        "w:tbl": [
+                            { "w:tblPr": [{ "w:tblBorders": [border("insideH", 4), border("insideV", 4)] }] },
+                            { "w:tblGrid": [2000, 2000].map((width) => ({ "w:gridCol": { _attr: { "w:w": width } } })) },
+                            { "w:tr": [cell([], p()), cell([], p())] },
+                            {
+                                "w:tr": [
+                                    {
+                                        "w:tblPrEx": [
+                                            { "w:tblBorders": [border("top", 12), border("bottom", 12), border("insideV", 12)] },
+                                            { "w:tblCellMar": [margin("left"), margin("right")] },
+                                        ],
+                                    },
+                                    cell([], p()),
+                                    cell([], p()),
+                                ],
+                            },
+                            { "w:tr": [cell([], p()), cell([], p())] },
+                        ],
+                    },
+                ]).blocks[0].block as TableBlock;
+                expect(exceptions.unsupported).to.equal(undefined);
+                expect(bordersOf(exceptions)).to.deep.equal([
+                    [0, 0],
+                    [0.5, 0],
+                    [0.5, 0],
+                ]);
+                expect(exceptions.rows[1].cells.map(({ marginLeft, marginRight }) => [marginLeft, marginRight])).to.deep.equal([
+                    [15, 15],
+                    [15, 15],
+                ]);
+                // Without margins, its inside border is half of it in from its cells' text
+                const noMargins = readBody([
+                    {
+                        "w:tbl": [
+                            { "w:tblPr": [{ "w:tblCellMar": [{ "w:left": { _attr: { "w:w": 0, "w:type": "dxa" } } }] }] },
+                            { "w:tblGrid": [2000, 2000].map((width) => ({ "w:gridCol": { _attr: { "w:w": width } } })) },
+                            { "w:tr": [{ "w:tblPrEx": [{ "w:tblBorders": [border("insideV", 48)] }] }, cell([], p()), cell([], p())] },
+                        ],
+                    },
+                ]).blocks[0].block as TableBlock;
+                expect(noMargins.rows[0].cells.map(({ marginLeft }) => marginLeft)).to.deep.equal([0, 3]);
+                const indented = readBody([
+                    {
+                        "w:tbl": [
+                            { "w:tr": [{ "w:tblPrEx": [{ "w:tblInd": { _attr: { "w:w": 100, "w:type": "dxa" } } }] }, cell([], p())] },
+                        ],
+                    },
+                ]).blocks[0].block as TableBlock;
+                expect(indented.unsupported).to.equal("a table row with table properties of its own");
+                // With space between its cells, the table's borders go around the space (word-stops-table-borders.docx TB5),
+                // and a row's own are its cells', as its margins are (word-stops-table-borders2.docx BT6b: an inside border of a
+                // double line of 0.75 points between them keeps the second cell's text 2.25 points further in)
+                const spaced = (exception: object): TableBlock =>
+                    readBody([
+                        {
+                            "w:tbl": [
+                                { "w:tblPr": [{ "w:tblCellSpacing": { _attr: { "w:w": 40, "w:type": "dxa" } } }] },
+                                { "w:tblGrid": [2000, 2000].map((width) => ({ "w:gridCol": { _attr: { "w:w": width } } })) },
+                                { "w:tr": [{ "w:tblPrEx": [exception] }, cell([], p()), cell([], p())] },
+                            ],
+                        },
+                    ]).blocks[0].block as TableBlock;
+                const inside = spaced({ "w:tblBorders": [border("insideV", 6, "double")] });
+                expect(inside.unsupported).to.equal(undefined);
+                expect(inside.rows[0].cells.map(({ marginLeft, marginRight }) => [marginLeft, marginRight])).to.deep.equal([
+                    [5.4 + 4, 5.4 + 2 + 2.25],
+                    [5.4 + 2 + 2.25, 5.4 + 4],
+                ]);
+                expect(spaced({ "w:tblCellMar": [margin("left")] }).unsupported).to.equal(undefined);
+            });
+
+            it("should follow a table style's cell margins and ignore its row height, as Word does, and stop at its other row and cell formatting", () => {
+                const shaded = tableStyle(
+                    "Shaded",
+                    `<w:trPr><w:jc w:val="center"/></w:trPr><w:tcPr><w:shd w:val="clear" w:fill="EEEEEE"/></w:tcPr>`,
+                );
+                expect(tableOf([value("w:tblStyle", "Shaded")], [[]], styles(shaded)).unsupported).to.equal(undefined);
+                // word-stops-tables.docx TS5a, TS5b: a height of at least 800 twips for its rows, which Word ignores, and
+                // cell margins of 200 above and below, which it follows
+                const rows = tableStyle(
+                    "Rows",
+                    `<w:trPr><w:trHeight w:val="800" w:hRule="atLeast"/></w:trPr><w:tcPr><w:tcMar><w:top w:w="200" w:type="dxa"/></w:tcMar></w:tcPr>`,
+                );
+                const styled = tableOf([value("w:tblStyle", "Rows")], [[]], styles(rows));
+                expect([styled.unsupported, styled.rows[0].height, styled.rows[0].cells[0].marginTop]).to.deep.equal([
+                    undefined,
+                    undefined,
+                    10,
+                ]);
+                // Keeping its rows whole (word-stops-tables2.docx TS10a)
+                const kept = tableStyle("Kept", `<w:trPr><w:cantSplit/></w:trPr>`);
+                const keptRows = tableOf([value("w:tblStyle", "Kept")], [[], []], styles(kept));
+                expect([keptRows.unsupported, ...keptRows.rows.map(({ cantSplit }) => cantSplit)]).to.deep.equal([undefined, true, true]);
+                // Not its other row properties
+                const justified = tableStyle("Justified", `<w:trPr><w:jc w:val="center"/><w:tblCellSpacing w:w="40"/></w:trPr>`);
+                expect(tableOf([value("w:tblStyle", "Justified")], [[]], styles(justified)).unsupported).to.equal(
+                    "a table style with formatting of its rows or cells",
+                );
+            });
+
+            it("should give a row the height of a part of its table style for it, and ignore the part's space between cells, as Word does", () => {
+                // word-stops-tables.docx TS1a: a first row of at least 1000 twips
+                const tall = tableStyle(
+                    "Tall",
+                    `<w:tblStylePr w:type="firstRow"><w:trPr><w:trHeight w:val="1000" w:hRule="atLeast"/></w:trPr></w:tblStylePr>`,
+                );
+                const styled = tableOf([value("w:tblStyle", "Tall")], [[], []], styles(tall));
+                expect([styled.unsupported, styled.rows[0].height, styled.rows[1].height]).to.deep.equal([
+                    undefined,
+                    { value: 50, rule: "atLeast" },
+                    undefined,
+                ]);
+                // Its own over the part's
+                const own = readBody(
+                    [
+                        {
+                            "w:tbl": [
+                                { "w:tblPr": [value("w:tblStyle", "Tall")] },
+                                {
+                                    "w:tr": [
+                                        { "w:trPr": [{ "w:trHeight": { _attr: { "w:val": 400, "w:hRule": "exact" } } }] },
+                                        cell([], p()),
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                    styles(tall),
+                ).blocks[0].block as TableBlock;
+                expect(own.rows[0].height).to.deep.equal({ value: 20, rule: "exact" });
+                // TS1c: the first row's space between cells, which Word ignores
+                const spaced = tableStyle(
+                    "Spaced",
+                    `<w:tblStylePr w:type="firstRow"><w:tblPr><w:tblCellSpacing w:w="60" w:type="dxa"/></w:tblPr></w:tblStylePr>`,
+                );
+                const ignored = tableOf([value("w:tblStyle", "Spaced")], [[]], styles(spaced));
+                expect([ignored.unsupported, ignored.cellSpacing]).to.deep.equal([undefined, undefined]);
+                // A height in a part for a column, and a part's row kept whole, which Word hasn't been seen to follow
+                const column = tableStyle(
+                    "Column",
+                    `<w:tblStylePr w:type="firstCol"><w:trPr><w:trHeight w:val="1000"/></w:trPr></w:tblStylePr>`,
+                );
+                const look = { "w:tblLook": { _attr: { "w:firstColumn": 1 } } };
+                expect(tableOf([value("w:tblStyle", "Column"), look], [[]], styles(column)).unsupported).to.equal(
+                    "a table style's formatting for some of its cells",
+                );
+            });
+        });
+
+        const bookmark = (name: string): object => ({ "w:bookmarkStart": { _attr: { "w:name": name, "w:id": 1 } } });
+        /** The names of the bookmarks at the start of each block of each cell of a table, or "table" for a table */
+        const markersIn = (table: TableBlock): readonly (readonly (readonly unknown[])[])[] =>
+            table.rows.map(({ cells }) =>
+                cells.map(({ blocks }) =>
+                    blocks.map((block) =>
+                        block.type === "table" ? "table" : block.items.flatMap((item) => (item.type === "marker" ? [item.name] : [])),
+                    ),
+                ),
+            );
+
+        it("should start a bookmark before a row in the row's first cell, and one before a cell in the cell, and leave out those after the last", () => {
+            const content = readBody([
+                {
+                    "w:tbl": [
+                        { "w:tblPr": [] },
+                        bookmark("first"),
+                        { "w:tr": [cell([], p(r(t("a1")))), bookmark("second"), cell([], p(r(t("a2"))))] },
+                        { "w:customXml": [bookmark("row")] },
+                        {
+                            "w:tr": [
+                                { "w:trPr": [] },
+                                bookmark("cell"),
+                                cell(
+                                    [],
+                                    bookmark("text"),
+                                    // A table without rows has no text to start them, so they start with the paragraph after
+                                    { "w:tbl": [] },
+                                    p(r(t("b1"))),
+                                    bookmark("between"),
+                                    p(r(t("b2"))),
+                                    bookmark("cellEnd"),
+                                ),
+                                bookmark("rowEnd"),
+                            ],
+                        },
+                        bookmark("tableEnd"),
+                    ],
+                },
+            ]);
+            expect(markersIn(content.blocks[0].block as TableBlock)).to.deep.equal([
+                [[["first"]], [["second"]]],
+                [["table", ["row", "cell", "text"], ["between"]]],
+            ]);
+        });
+
+        it("should start a bookmark before a row or cell with no text in the next cell with any, and one before a table in its first cell with any", () => {
+            // A cell of only a table without rows has no text, and nor does one with nothing in it
+            const empty = { "w:tc": [{ "w:tbl": [] }] };
+            const rows = readBody([
+                {
+                    "w:tbl": [
+                        bookmark("row"),
+                        { "w:tr": [empty, cell([], p(r(t("a2"))))] },
+                        { "w:tr": [cell([], p(r(t("b1")))), bookmark("cell"), { "w:tc": [] }] },
+                        { "w:tr": [cell([], p(r(t("c1"))))] },
+                    ],
+                },
+            ]);
+            expect(markersIn(rows.blocks[0].block as TableBlock)).to.deep.equal([[["table"], [["row"]]], [[[]], []], [[["cell"]]]]);
+            const table = readBody([
+                bookmark("table"),
+                { "w:tbl": [{ "w:tr": [empty] }, { "w:tr": [empty, { "w:tc": [{ "w:tbl": [] }, p(r(t("text")))] }] }] },
+                p(r(t("after"))),
+            ]);
+            expect(markersIn(table.blocks[0].block as TableBlock)).to.deep.equal([[["table"]], [["table"], ["table", ["table"]]]]);
+            expect(itemsOf(table, 1)).to.have.length(1);
+        });
+
+        describe("contextual spacing at the edges of its cells", () => {
+            const SPACED = { contextualSpacing: true, spacing: { before: 240, after: 240 } };
+            const STYLES = { paragraphStyles: [{ id: "Other", name: "Other", basedOn: "Normal" }] };
+            // Each row's cells, each cell's paragraphs and tables
+            const tableOf = (...rows: readonly (readonly (readonly (Paragraph | Table)[])[])[]): Table =>
+                new Table({
+                    rows: rows.map(
+                        (cells) => new TableRow({ children: cells.map((children) => new TableCell({ children: [...children] })) }),
+                    ),
+                });
+            /** The body's blocks, and of each cell, which of its first's space before and its last's space after Word leaves out */
+            const leftOut = (
+                ...children: readonly (Paragraph | Table)[]
+            ): { readonly unsupported?: string; readonly cells: readonly (readonly string[])[] } => {
+                const content = readWritten({ styles: STYLES, sections: [{ children: [...children] }] });
+                const table = content.blocks.find(({ block }) => block.type === "table")!.block as TableBlock;
+                return {
+                    ...(table.unsupported === undefined ? {} : { unsupported: table.unsupported }),
+                    cells: table.rows.map(({ cells }) =>
+                        cells.map(({ blocks }) => {
+                            const first = blocks[0] as ParagraphBlock;
+                            const last = blocks[blocks.length - 1] as ParagraphBlock;
+                            return `${first.leftOut?.before ? "before" : "-"} ${last.leftOut?.after ? "after" : "-"}`;
+                        }),
+                    ),
+                };
+            };
+            const normal = (text: string): Paragraph => new Paragraph({ text, ...SPACED });
+            const other = (text: string): Paragraph => new Paragraph({ text, style: "Other", ...SPACED });
+
+            it("should leave out the space Word leaves out at a table's first cell and each row's end, as Word compares them in the document's order", () => {
+                // word-stops-text.docx PB6a to PB6d: the first cell's first paragraph is compared with the paragraph before the
+                // table, and each row's last with the end of the row, which is in the default paragraph style
+                const plain = (text: string): Paragraph => new Paragraph(text);
+                expect(leftOut(plain("before"), tableOf([[normal("a"), normal("b"), normal("c")]]), plain("after"))).to.deep.equal({
+                    cells: [["before after"]],
+                });
+                expect(leftOut(new Paragraph({ text: "before", style: "Other" }), tableOf([[normal("a")]]))).to.deep.equal({
+                    cells: [["- after"]],
+                });
+                expect(leftOut(plain("before"), tableOf([[other("a"), other("b")]]), plain("after"))).to.deep.equal({ cells: [["- -"]] });
+                // Without contextual spacing, or space to leave out, nothing is
+                expect(
+                    leftOut(plain("before"), tableOf([[new Paragraph({ text: "a", spacing: { before: 240, after: 240 } })]])),
+                ).to.deep.equal({
+                    cells: [["- -"]],
+                });
+                expect(leftOut(plain("before"), tableOf([[new Paragraph({ text: "a", contextualSpacing: true })]]))).to.deep.equal({
+                    cells: [["- -"]],
+                });
+                // A table at the start of the document has nothing before it
+                expect(leftOut(tableOf([[normal("a")]]))).to.deep.equal({ cells: [["- after"]] });
+                // The end of each row, below its last cell
+                expect(leftOut(plain("before"), tableOf([[other("a")], [normal("b")]], [[other("c")], [normal("d")]]))).to.deep.equal({
+                    cells: [
+                        ["- -", "- after"],
+                        ["- -", "- after"],
+                    ],
+                });
+            });
+
+            it("should leave out the space of Normal paragraphs at the other edges of cells, and after a table, as Word does", () => {
+                const plain = (text: string): Paragraph => new Paragraph(text);
+                // word-stops-edges.docx PB9a, PB9b: beside the cell before, the row before, and the cell after, all Normal
+                expect(leftOut(plain("before"), tableOf([[normal("a")], [normal("b")]]), plain("after"))).to.deep.equal({
+                    cells: [["before after", "before after"]],
+                });
+                expect(leftOut(plain("before"), tableOf([[normal("a")]], [[normal("b")]]))).to.deep.equal({
+                    cells: [["before after"], ["before after"]],
+                });
+                // PB9d: a Normal paragraph after a table is compared with the end of its last row, whatever the style of the
+                // last cell's paragraph, and one of another style isn't
+                const after = (last: Paragraph): Block | undefined =>
+                    readWritten({ styles: STYLES, sections: [{ children: [plain("before"), tableOf([[other("a")]]), last] }] }).blocks[2]
+                        ?.block;
+                expect(after(normal("after"))).to.deep.include({ leftOut: { before: true } });
+                expect(after(other("after"))).to.not.have.property("leftOut");
+                // PB9e: a Normal paragraph at the top of a table at the start of a cell
+                const nested = readWritten({
+                    styles: STYLES,
+                    sections: [{ children: [plain("before"), tableOf([[tableOf([[normal("a")]]), plain("b")]])] }],
+                }).blocks[1].block as TableBlock;
+                const inner = nested.rows[0].cells[0].blocks[0] as TableBlock;
+                expect([nested.unsupported, inner.unsupported]).to.deep.equal([undefined, undefined]);
+                expect((inner.rows[0].cells[0].blocks[0] as ParagraphBlock).leftOut).to.deep.equal({ before: true, after: true });
+                // A Normal paragraph after a table at the end of a cell leaves out its space before, after the table, and its
+                // space after, at the end of the row
+                const afterInner = readWritten({
+                    styles: STYLES,
+                    sections: [{ children: [plain("before"), tableOf([[tableOf([[plain("a")]]), normal("b")]])] }],
+                }).blocks[1].block as TableBlock;
+                expect((afterInner.rows[0].cells[0].blocks[1] as ParagraphBlock).leftOut).to.deep.equal({ before: true, after: true });
+            });
+
+            it("should stop where Word would leave out the space at an edge not yet seen, and guessing, leave it out", () => {
+                const unseen =
+                    "contextual spacing at the edge of a table cell beside another cell or row, not all in the default paragraph style, or before a table";
+                const before = new Paragraph({ text: "before", style: "Other" });
+                // Between the cells of a row, and below the end of a row
+                expect(leftOut(before, tableOf([[normal("a")], [normal("b")]]))).to.deep.equal({
+                    unsupported: unseen,
+                    cells: [["- after", "before after"]],
+                });
+                expect(leftOut(before, tableOf([[normal("a")]], [[normal("b")]]))).to.deep.equal({
+                    unsupported: unseen,
+                    cells: [["- after"], ["before after"]],
+                });
+                // Different styles beside each other agree with not comparing them at all
+                expect(leftOut(new Paragraph("before"), tableOf([[other("a")], [normal("b")]]))).to.deep.equal({
+                    cells: [["- -", "- after"]],
+                });
+                // The paragraph before the table, compared with its first paragraph
+                expect(leftOut(other("before"), tableOf([[other("a")]]))).to.have.property("unsupported", unseen);
+                expect(leftOut(before, tableOf([[other("a")]]), other("after"))).to.not.have.property("unsupported");
+                // After another table, the end of its last row
+                const tables = readWritten({
+                    styles: STYLES,
+                    sections: [{ children: [tableOf([[other("a")]]), tableOf([[normal("b")]])] }],
+                });
+                expect(tables.blocks.map(({ block }) => block.unsupported)).to.deep.equal([undefined, unseen]);
+                // A paragraph of another style at the top of a table at the start of a cell, and a table after a paragraph with
+                // paragraphs that take no room after it, after what isn't known
+                const nested = readWritten({
+                    styles: STYLES,
+                    sections: [{ children: [before, tableOf([[tableOf([[other("a")]]), new Paragraph("b")]])] }],
+                }).blocks[1].block as TableBlock;
+                expect(nested.rows[0].cells[0].blocks[0]).to.have.property("unsupported", unseen);
+                const hidden = new Paragraph({ children: [new TextRun({ text: "hidden", vanish: true })], run: { vanish: true } });
+                expect(leftOut(new Paragraph("before"), hidden, tableOf([[normal("a")]]))).to.have.property("unsupported", unseen);
+            });
+        });
+    });
+
+    describe("the body", () => {
+        it("should stop at an equation outside a paragraph, and at a content control bound to custom XML, which Word fills in from it, wherever it is", () => {
+            const bound = (...content: readonly unknown[]): object => ({
+                "w:sdt": [
+                    { "w:sdtPr": [{ "w:dataBinding": { _attr: { "w:xpath": "/properties/title", "w:storeItemID": "{1}" } } }] },
+                    { "w:sdtContent": content },
+                ],
+            });
+            const unsupportedOf = (element: unknown): string | undefined => readBody([element]).blocks[0].block.unsupported;
+            expect(unsupportedOf({ "m:oMathPara": [] })).to.equal("an equation");
+            expect(unsupportedOf(bound(p(r(t("Title")))))).to.equal(
+                "a content control Word fills in from custom XML with other text than is written in it",
+            );
+            expect(unsupportedOf(p(bound(r(t("Title")))))).to.equal(
+                "a content control Word fills in from custom XML with other text than is written in it",
+            );
+            const cell = { "w:tc": [p()] };
+            expect(unsupportedOf({ "w:tbl": [{ "w:tr": [{ "w:tc": [bound(p())] }] }] })).to.equal(
+                "a content control Word fills in from custom XML with other text than is written in it",
+            );
+            expect(unsupportedOf({ "w:tbl": [bound({ "w:tr": [cell] })] })).to.equal(
+                "a content control Word fills in from custom XML with other text than is written in it",
+            );
+            expect(unsupportedOf({ "w:tbl": [{ "w:tr": [cell, bound(cell)] }] })).to.equal(
+                "a content control Word fills in from custom XML with other text than is written in it",
+            );
+            expect(unsupportedOf({ "w:sdt": [{ "w:sdtPr": [] }, { "w:sdtContent": [p(r(t("Title")))] }] })).to.equal(undefined);
+        });
+
+        it("should read the blocks in content controls and custom XML, and mark imported documents as unsupported", () => {
+            const content = readBody([
+                { "w:sdt": [{ "w:sdtPr": [] }, { "w:sdtContent": [p(r(t("controlled")))] }] },
+                { "w:customXml": [p(r(t("custom")))] },
+                { "w:altChunk": { _attr: { "r:id": "rId9" } } },
+                { "w:unknown": [] },
+            ]);
+            expect(
+                content.blocks.map(({ block }) =>
+                    block.type === "paragraph" ? (block.unsupported ?? textOf({ ...content, blocks: [{ block, section: 0 }] })) : "table",
+                ),
+            ).to.deep.equal(["controlled", "custom", "an imported document"]);
+        });
+
+        it("should start a bookmark between blocks with the next: a paragraph, or the first cell of a table, where its text starts", () => {
+            const content = readBody([
+                { "w:bookmarkStart": { _attr: { "w:name": "table", "w:id": 1 } } },
+                { "w:tbl": [{ "w:tr": [{ "w:tc": [{ "w:tbl": [{ "w:tr": [{ "w:tc": [p(r(t("in")))] }] }] }, p()] }] }] },
+                // A table without rows has no text to start a bookmark, so it starts with the paragraph after
+                { "w:bookmarkStart": { _attr: { "w:name": "paragraph", "w:id": 2 } } },
+                { "w:tbl": [] },
+                { "w:bookmarkStart": { _attr: { "w:id": 3 } } },
+                p(r(t("a"))),
+            ]);
+            const table = content.blocks[0].block as TableBlock;
+            const inner = table.rows[0].cells[0].blocks[0] as TableBlock;
+            expect((inner.rows[0].cells[0].blocks[0] as ParagraphBlock).items[0]).to.deep.equal({ type: "marker", name: "table" });
+            expect(itemsOf(content, 2)[0]).to.deep.equal({ type: "marker", name: "paragraph" });
+            expect(itemsOf(content, 2)).to.have.length(2);
+        });
+
+        it("should mark an empty paragraph that holds its section's properties as a section break", () => {
+            const content = readBody([
+                p(pPr({ "w:sectPr": [] })),
+                p(pPr({ "w:sectPr": [] }), r(t("text"))),
+                { "w:bookmarkStart": { _attr: { "w:name": "before", "w:id": 1 } } },
+                p(pPr({ "w:sectPr": [] })),
+                p(),
+            ]);
+            expect(content.blocks.map(({ block }) => (block as ParagraphBlock).sectionBreak)).to.deep.equal([
+                true,
+                undefined,
+                undefined,
+                undefined,
+            ]);
+        });
+
+        it("should put each block in the section it ends with, and give a body without sections one of Word's defaults", () => {
+            const content = readBody([p(pPr({ "w:sectPr": [] })), p(r(t("last")))]);
+            expect(content.blocks.map(({ section }) => section)).to.deep.equal([0, 1]);
+            expect(content.sections).to.have.length(2);
+            expect(content.sections[1]).to.deep.include({
+                pageWidth: 612,
+                pageHeight: 792,
+                marginTop: 72,
+                start: "nextPage",
+                numberFormat: "decimal",
+            });
+        });
+    });
+
+    describe("sections", () => {
+        const section = (...children: readonly unknown[]): DocumentContent => readBody([{ "w:sectPr": children }]);
+
+        it("should read the page's size and margins, how the section starts, and its page numbering", () => {
+            const [read] = section(
+                { "w:pgSz": { _attr: { "w:w": 12240, "w:h": 15840 } } },
+                {
+                    "w:pgMar": {
+                        _attr: {
+                            "w:top": -1440,
+                            "w:bottom": 720,
+                            "w:start": 1800,
+                            "w:end": 1080,
+                            "w:header": 360,
+                            "w:footer": 540,
+                            "w:gutter": 200,
+                        },
+                    },
+                },
+                value("w:type", "oddPage"),
+                { "w:titlePg": {} },
+                { "w:pgNumType": { _attr: { "w:fmt": "upperRoman", "w:start": 3 } } },
+            ).sections;
+            expect(read).to.deep.equal({
+                pageWidth: 612,
+                pageHeight: 792,
+                marginTop: -72,
+                marginBottom: 36,
+                marginLeft: 90,
+                marginRight: 54,
+                header: 18,
+                footer: 27,
+                gutter: 10,
+                topGutter: 0,
+                start: "oddPage",
+                titlePage: true,
+                // The width of the page's text: 612 less the margins and the gutter
+                columns: [458],
+                numberFormat: "upperRoman",
+                firstNumber: 3,
+                headers: {},
+                footers: {},
+            });
+            expect(section(value("w:type", "sideways")).sections[0].start).to.equal("nextPage");
+        });
+
+        it("should take a gutter at the top from the page's height rather than the width of its text, when the document puts it there", () => {
+            const gutter = (top: number, ...settings: readonly object[]): DocumentContent =>
+                readWithSettings([{ "w:sectPr": [{ "w:pgMar": { _attr: { "w:top": top, "w:gutter": 400 } } }] }], settings);
+            // Letter's 612 less the margins of 72 (`word-watertight-settings.docx` ST3)
+            expect(gutter(1440, { "w:gutterAtTop": {} }).sections[0]).to.deep.include({ gutter: 0, topGutter: 20, columns: [468] });
+            // And less the gutter too where it is beside the text
+            expect(gutter(1440).sections[0]).to.deep.include({ gutter: 20, topGutter: 0, columns: [448] });
+            // At the top of every page with mirrored margins too, and below a negative top margin (`word-stops-pages.docx` GT1a,
+            // GT1b)
+            const mirrored = gutter(1440, { "w:gutterAtTop": {} }, { "w:mirrorMargins": {} }).sections[0];
+            expect(mirrored).to.deep.include({ topGutter: 20, columns: [468] });
+            expect(mirrored.unsupported).to.equal(undefined);
+            const negative = gutter(-1440, { "w:gutterAtTop": {} }).sections[0];
+            expect(negative).to.deep.include({ marginTop: -72, topGutter: 20 });
+            expect(negative.unsupported).to.equal(undefined);
+            expect(gutter(1440, { "w:mirrorMargins": {} }).sections[0].unsupported).to.equal(undefined);
+        });
+
+        it("should read the level of the headings that number chapters, and what goes between their numbers and the page's", () => {
+            const chaptersOf = (attributes: object): object | undefined =>
+                section({ "w:pgNumType": { _attr: attributes } }).sections[0].chapters;
+            // Word puts a hyphen when the section doesn't say
+            expect(chaptersOf({ "w:chapStyle": 1 })).to.deep.equal({ level: 1, separator: "-" });
+            expect(
+                ["hyphen", "period", "colon", "emDash", "enDash"].map((separator) =>
+                    chaptersOf({ "w:chapStyle": 9, "w:chapSep": separator }),
+                ),
+            ).to.deep.equal(["-", ".", ":", "\u2014", "\u2013"].map((separator) => ({ level: 9, separator })));
+            // There are only 9 levels of headings
+            expect(chaptersOf({ "w:chapStyle": 0 })).to.equal(undefined);
+            expect(chaptersOf({ "w:chapStyle": 10 })).to.equal(undefined);
+            expect(chaptersOf({ "w:chapSep": "colon" })).to.equal(undefined);
+        });
+
+        it("should read the width of each column: the same, with the space between them, or each its own", () => {
+            const columnsOf = (columns: object): readonly number[] => section({ "w:cols": columns }).sections[0].columns;
+            // The page's text is 468 points wide, with half an inch between columns unless the section says otherwise
+            expect(columnsOf({ _attr: { "w:num": 2 } })).to.deep.equal([216, 216]);
+            expect(columnsOf({ _attr: { "w:num": 3, "w:space": 360 } })).to.deep.equal([144, 144, 144]);
+            expect(columnsOf({ _attr: { "w:space": 720 } })).to.deep.equal([468]);
+            expect(
+                columnsOf([
+                    { _attr: { "w:equalWidth": 0 } },
+                    { "w:col": { _attr: { "w:w": 4000, "w:space": 720 } } },
+                    { "w:col": { _attr: {} } },
+                ]),
+            ).to.deep.equal([200, 0]);
+            // Columns of their own widths are only read when the section says their widths aren't the same
+            expect(columnsOf([{ _attr: { "w:num": 2 } }, { "w:col": { _attr: { "w:w": 4000 } } }])).to.deep.equal([216, 216]);
+            expect(section().sections[0].columns).to.deep.equal([468]);
+        });
+
+        it("should mark sections with page numbers in a format not yet written or text down the page as unsupported, but not columns of different widths or text across it", () => {
+            const given = (...widths: readonly number[]): object => ({
+                "w:cols": [{ _attr: { "w:equalWidth": 0 } }, ...widths.map((width) => ({ "w:col": { _attr: { "w:w": width } } }))],
+            });
+            expect(section(given(4000, 3000)).sections[0].unsupported).to.equal(undefined);
+            expect(section({ "w:pgNumType": { _attr: { "w:fmt": "none" } } }).sections[0].unsupported).to.equal(
+                "page numbers in a format not yet written",
+            );
+            expect(section({ "w:textDirection": { _attr: { "w:val": "upward" } } }).sections[0].unsupported).to.equal(
+                "text in a direction not yet followed",
+            );
+            // Text across the page from the left, as without a direction, and with East Asian characters on their side, which
+            // Word lays out as across it (scripts/layout-probes/word-vertical.ts V9, V12), as strict documents write them too
+            for (const direction of ["lrTb", "lrTbV", "tb", "tbV"]) {
+                expect(section({ "w:textDirection": { _attr: { "w:val": direction } } }).sections[0].unsupported).to.equal(undefined);
+            }
+        });
+
+        it("should read the columns a section's footnotes are laid out in, of their own, as Word lays them out", () => {
+            const sectionOf = (...children: readonly object[]): Section =>
+                readBody([p(r(t("a"))), { "w:sectPr": [{ "w:pgSz": { _attr: { "w:w": 11906 } } }, ...children] }]).sections[0];
+            // stops2/word-stops-notes2.ts NT16b to NT16e: of the same width, half an inch apart, across the page's text
+            const two = sectionOf({ "w15:footnoteColumns": { _attr: { "w:val": 2 } } });
+            expect(two.unsupported).to.equal(undefined);
+            expect(two.noteColumns!.map((width) => Math.round(width * 100) / 100)).to.deep.equal([207.65, 207.65]);
+            expect(sectionOf({ "w15:footnoteColumns": { _attr: { "w:val": 1 } } })).to.not.have.property("noteColumns");
+            // More than Word's dialog offers, in a section of several columns, of text that runs down the page, or whose columns
+            // are spaced otherwise, which hasn't been seen: more aren't made, as a document can ask for any number
+            const unseen =
+                "footnotes in more than 4 columns of their own, or in columns of their own in a section of several columns, of text that runs down the page, or whose columns are spaced otherwise than half an inch apart";
+            expect(sectionOf({ "w15:footnoteColumns": { _attr: { "w:val": 4 } } }).noteColumns).to.have.length(4);
+            const many = sectionOf({ "w15:footnoteColumns": { _attr: { "w:val": 1e9 } } });
+            expect(many.unsupported).to.equal(unseen);
+            expect(many).to.not.have.property("noteColumns");
+            const footnoteColumns = { "w15:footnoteColumns": { _attr: { "w:val": 2 } } };
+            expect(sectionOf({ "w:cols": { _attr: { "w:num": 2 } } }, footnoteColumns).unsupported).to.equal(unseen);
+            expect(sectionOf({ "w:cols": { _attr: { "w:space": 708 } } }, footnoteColumns).unsupported).to.equal(unseen);
+            expect(sectionOf({ "w:cols": { _attr: { "w:space": 720 } } }, footnoteColumns).unsupported).to.equal(undefined);
+            expect(sectionOf({ "w:textDirection": { _attr: { "w:val": "tbRl" } } }, footnoteColumns).unsupported).to.equal(unseen);
+        });
+
+        it("should read the headers and footers a section refers to, and those of the section before it doesn't give", () => {
+            const header = (text: string): Header => new Header({ children: [new Paragraph(text)] });
+            const content = readWritten({
+                sections: [
+                    {
+                        headers: { default: header("one"), first: header("first") },
+                        footers: { even: new Footer({ children: [new Paragraph("even")] }) },
+                        children: [new Paragraph("a")],
+                    },
+                    { headers: { default: header("two") }, children: [new Paragraph("b")] },
+                ],
+            });
+            const texts = (blocks?: readonly unknown[]): string | undefined =>
+                blocks && textOf({ ...content, blocks: [{ block: blocks[0] as ParagraphBlock, section: 0 }] });
+            const [first, second] = content.sections;
+            expect([texts(first.headers.default), texts(first.headers.first), texts(first.footers.even)]).to.deep.equal([
+                "one",
+                "first",
+                "even",
+            ]);
+            expect([texts(second.headers.default), texts(second.headers.first), texts(second.footers.even)]).to.deep.equal([
+                "two",
+                "first",
+                "even",
+            ]);
+        });
+
+        it("should leave out headers it can't find, and references to kinds of pages that don't exist", () => {
+            const [read] = section(
+                { "w:headerReference": { _attr: { "w:type": "default", "r:id": "rId99" } } },
+                { "w:footerReference": { _attr: { "w:type": "sideways", "r:id": "rId98" } } },
+            ).sections;
+            expect(read.headers).to.deep.equal({});
+            expect(read.footers).to.deep.equal({});
+        });
+
+        /** A header of some elements, and a document whose section refers to it as the default and the even pages' header */
+        const withHeader = (...elements: readonly object[]): DocumentContent => {
+            const file = new File({ sections: [{ headers: { default: new Header({ children: [] }) }, children: [] }] });
+            const [wrapper] = file.Headers;
+            // eslint-disable-next-line functional/immutable-data
+            wrapper.View.prepForXml = (): IXmlableObject => ({ "w:hdr": elements });
+            const id = `rId${wrapper.View.ReferenceId}`;
+            return readDocument(
+                {
+                    "w:body": [
+                        {
+                            "w:sectPr": [
+                                { "w:headerReference": { _attr: { "r:id": id } } },
+                                { "w:headerReference": { _attr: { "w:type": "even", "r:id": id } } },
+                            ],
+                        },
+                    ],
+                } as IXmlableObject,
+                contextOf(file),
+            );
+        };
+
+        it("should leave out drawings in front of or behind the text, VML ones and footnote references in headers, and read a header once", () => {
+            // A watermark, a picture behind the text, and a footnote reference, which has no note there
+            const content = withHeader(
+                p(
+                    r({ "w:pict": [{ "v:shape": [{ _attr: { style: "position:absolute;width:100pt;height:50pt" } }] }] }),
+                    r({ "w:drawing": [{ "wp:anchor": [{ "wp:wrapNone": {} }] }] }),
+                    r({ "w:footnoteReference": { _attr: { "w:id": 1 } } }),
+                    r(t("text")),
+                ),
+            );
+            const { headers } = content.sections[0];
+            expect(headers.default).to.equal(headers.even);
+            expect(headers.default).to.deep.equal([
+                {
+                    type: "paragraph",
+                    items: [{ type: "text", text: "text", font: {} }],
+                    format: {},
+                    tabStops: [],
+                    markFont: {},
+                    style: "Normal",
+                },
+            ]);
+        });
+
+        it("should read a drawing in a header that text flows around, which the body's text goes round, but stop at one placed against where it is along its line, or in a cell", () => {
+            const anchored = (horizontal: string, vertical: string): object =>
+                r({
+                    "w:drawing": [
+                        {
+                            "wp:anchor": [
+                                { "wp:wrapSquare": {} },
+                                { "wp:positionH": [{ _attr: { relativeFrom: horizontal } }, { "wp:posOffset": ["0"] }] },
+                                { "wp:positionV": [{ _attr: { relativeFrom: vertical } }, { "wp:posOffset": ["0"] }] },
+                            ],
+                        },
+                    ],
+                });
+            const read = (...elements: readonly object[]): readonly unknown[] =>
+                withHeader(...elements).sections[0].headers.default!.map((block) =>
+                    block.type === "paragraph" ? (block.unsupported ?? block.items.map(({ type }) => type)) : block.unsupported,
+                );
+            // word-watertight-pages.docx PG4, word-stops-drawings.docx DH1a to DH1d: placed against the page
+            expect(read(p(anchored("page", "page"), r(t("text"))))).to.deep.equal([["drawing", "text"]]);
+            // word-stops-edges.docx DH2a, DH2b: placed against its paragraph or line, which the layout places it against
+            expect(read(p(anchored("column", "paragraph")))).to.deep.equal([["drawing"]]);
+            expect(read(p(anchored("margin", "line")))).to.deep.equal([["drawing"]]);
+            expect(read(p(anchored("character", "page")))).to.deep.equal([
+                "a drawing that text flows around in a header or footer, placed against where it is anchored along its line",
+            ]);
+            // One whose place can't be read stops as in the body
+            expect(read(p(r({ "w:drawing": [{ "wp:anchor": [{ "wp:wrapBogus": {} }] }] })))).to.deep.equal([
+                "a drawing that text flows around in a way not yet followed",
+            ]);
+            const inCell = {
+                "w:tbl": [
+                    { "w:tblPr": [] },
+                    { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 2000 } } }] },
+                    { "w:tr": [{ "w:tc": [{ "w:tcPr": [{ "w:tcW": { _attr: { "w:w": 2000 } } }] }, p(anchored("page", "page"))] }] },
+                ],
+            };
+            expect(read(inCell, p())).to.deep.equal([
+                "a drawing that text flows around in a table cell, footnote, endnote or text box",
+                [],
+            ]);
+        });
+    });
+
+    describe("document grids", () => {
+        const grid = (attributes: object, ...more: readonly object[]): object => ({
+            "w:sectPr": [...more, { "w:docGrid": { _attr: attributes } }],
+        });
+        /** The grid of a paragraph in a section with a grid, and the section's reason it can't be laid out */
+        const onGrid = (attributes: object, ...more: readonly object[]): { readonly grid?: object; readonly unsupported?: string } => {
+            const content = readBody([p(r(t("a"))), grid(attributes, ...more)]);
+            return withoutUndefinedFields({ grid: paragraphOf(content).grid, unsupported: content.sections[0].unsupported });
+        };
+        const withoutUndefinedFields = (object: Record<string, unknown>): Record<string, unknown> =>
+            Object.fromEntries(Object.entries(object).filter(([, entry]) => entry !== undefined));
+        const LINES = { "w:type": "lines", "w:linePitch": 360 };
+        const CHARACTERS = { "w:type": "linesAndChars", "w:linePitch": 360, "w:charSpace": 4096 };
+        const SNAPPING = { "w:type": "snapToChars", "w:linePitch": 360, "w:charSpace": 4096 };
+
+        it("should read a section's grid of lines, whatever its space between characters, and of lines and characters", () => {
+            expect(onGrid(LINES)).to.deep.equal({ grid: { linePitch: 18 } });
+            // A grid of lines has no characters, whatever it says (scripts/layout-probes/word-grid3.ts H1)
+            expect(onGrid({ ...LINES, "w:charSpace": 4096 })).to.deep.equal({ grid: { linePitch: 18 } });
+            expect(onGrid({ ...CHARACTERS, "w:linePitch": 312 })).to.deep.equal({ grid: { linePitch: 15.6, characterSpace: 1 } });
+            expect(onGrid({ "w:type": "linesAndChars", "w:linePitch": 360 })).to.deep.equal({ grid: { linePitch: 18 } });
+            // In columns too (H7a)
+            expect(onGrid(CHARACTERS, { "w:cols": { _attr: { "w:num": 2 } } })).to.deep.equal({
+                grid: { linePitch: 18, characterSpace: 1 },
+            });
+        });
+
+        it("should read the cells of a grid that snaps to characters: as many as fit across a column, spread evenly across it", () => {
+            // Across the page's text, 468 points of Letter with inch margins, at the size of the Normal style's text, 10 points
+            // by Word's default, and the space more: 42 of 11 points, spread across it (scripts/layout-probes/word-grid.ts CC1)
+            const { grid: snapped } = onGrid(SNAPPING) as { readonly grid: TextGrid };
+            expect(snapped.characterPitch).to.be.closeTo(468 / 42, 1e-9);
+            // Of the Normal style's size, over the document's default (word-grid2.docx E1)
+            const normal = readBody([p(r(t("a"))), grid({ "w:type": "snapToChars", "w:linePitch": 360 })], {
+                styles: {
+                    default: { document: { run: { size: 21 } } },
+                    paragraphStyles: [{ id: "Normal", name: "Normal", run: { size: 24 } }],
+                },
+            });
+            expect(paragraphOf(normal).grid!.characterPitch).to.be.closeTo(12, 1e-9);
+            // Less the page's margins and a gutter beside it, or not when the gutter is at the top
+            const page = [
+                { "w:pgSz": { _attr: { "w:w": 11906 } } },
+                { "w:pgMar": { _attr: { "w:start": 1440, "w:end": 1440, "w:gutter": 720 } } },
+            ];
+            const across = (settings: readonly object[]): number =>
+                paragraphOf(readWithSettings([p(r(t("a"))), grid({ "w:type": "snapToChars", "w:linePitch": 360 }, ...page)], settings))
+                    .grid!.characterPitch!;
+            expect(across([])).to.be.closeTo((11906 - 3600) / 20 / 41, 1e-9);
+            expect(across([{ "w:gutterAtTop": {} }])).to.be.closeTo(9026 / 20 / 45, 1e-9);
+            // Across each of columns of the same width: 2 of 216 points, 19 of 11.37 (word-grid3.ts H7b)
+            const { grid: columns } = onGrid(SNAPPING, { "w:cols": { _attr: { "w:num": 2 } } }) as { readonly grid: TextGrid };
+            expect(columns.characterPitch).to.be.closeTo(216 / 19, 1e-9);
+            // Across each of columns of different widths, each of its own: cells of at least 11 points
+            // (stops2/word-stops-east-asian.ts GR12)
+            const widths = {
+                "w:cols": [
+                    { _attr: { "w:equalWidth": 0 } },
+                    { "w:col": { _attr: { "w:w": 4000 } } },
+                    { "w:col": { _attr: { "w:w": 3000 } } },
+                ],
+            };
+            expect(onGrid(SNAPPING, widths)).to.deep.equal({ grid: { linePitch: 18, characterRoom: 11 } });
+            // Not in a table, a note or with an indent in characters, which haven't been seen
+            const STOP = "a table, note or indent in characters on a grid that snaps to characters in columns of different widths";
+            const indented = p(pPr({ "w:ind": { _attr: { "w:leftChars": 200 } } }), r(t("a")));
+            const inColumns = grid(SNAPPING, widths);
+            expect(paragraphOf(readBody([indented, inColumns])).unsupported).to.equal(STOP);
+            const cell = readBody([{ "w:tbl": [{ "w:tr": [{ "w:tc": [p(r(t("a")))] }] }] }, inColumns]);
+            expect(((cell.blocks[0].block as TableBlock).rows[0].cells[0].blocks[0] as ParagraphBlock).unsupported).to.equal(STOP);
+        });
+
+        it("should read no grid for a grid of lines without its pitch, a grid of no type, or none (word-grid.ts G13)", () => {
+            expect(onGrid({ "w:type": "lines" })).to.deep.equal({});
+            expect(onGrid({ "w:type": "default", "w:linePitch": 360 })).to.deep.equal({});
+            expect(onGrid({ "w:linePitch": 360 })).to.deep.equal({});
+            expect(paragraphOf(readBody([p(r(t("a"))), { "w:sectPr": [] }]))).to.not.have.property("grid");
+        });
+
+        it("should mark grids not yet followed as unsupported", () => {
+            expect(onGrid({ "w:type": "linesAndChars" }).unsupported).to.equal(
+                "a document grid of characters without the pitch of its lines",
+            );
+            for (const charSpace of [4096 * 1000, -4096 * 1000]) {
+                expect(onGrid({ ...SNAPPING, "w:charSpace": charSpace }).unsupported).to.equal(
+                    "a document grid of characters with no room for one",
+                );
+            }
+            // Nor in a column narrower than a cell
+            const narrow = {
+                "w:cols": [
+                    { _attr: { "w:equalWidth": 0 } },
+                    { "w:col": { _attr: { "w:w": 4000 } } },
+                    { "w:col": { _attr: { "w:w": 100 } } },
+                ],
+            };
+            expect(onGrid(SNAPPING, narrow).unsupported).to.equal("a document grid of characters with no room for one");
+        });
+
+        it("should put a section's paragraphs and notes on its grid, but not the lines of its tables' cells, its headers or notes' separators", () => {
+            const content = readWritten({
+                footnotes: { 1: { children: [new Paragraph("Note")] } },
+                endnotes: { 1: { children: [new Paragraph("End")] } },
+                sections: [
+                    {
+                        properties: { grid: { type: DocumentGridType.LINES_AND_CHARS, linePitch: 360, charSpace: 4096 } },
+                        headers: { default: new Header({ children: [new Paragraph("Head")] }) },
+                        children: [
+                            new Paragraph({ children: [new TextRun("Text"), new FootnoteReferenceRun(1), new EndnoteReferenceRun(1)] }),
+                            new Table({ rows: [new TableRow({ children: [new TableCell({ children: [new Paragraph("Cell")] })] })] }),
+                        ],
+                    },
+                ],
+            });
+            const ON_GRID = { linePitch: 18, characterSpace: 1 };
+            expect(content.unsupported).to.equal(undefined);
+            expect(paragraphOf(content).grid).to.deep.equal(ON_GRID);
+            expect(([...content.footnotes.values()][0][0] as ParagraphBlock).grid).to.deep.equal(ON_GRID);
+            expect((content.endnotes.at(-1) as ParagraphBlock).grid).to.deep.equal(ON_GRID);
+            // Its cells' characters are on it, but their lines aren't (word-grid.ts G8, word-grid3.ts H6)
+            expect(((content.blocks[1].block as TableBlock).rows[0].cells[0].blocks[0] as ParagraphBlock).grid).to.deep.equal({
+                characterSpace: 1,
+            });
+            // Nor its header's, nor its notes' separators (word-grid.ts G9, word-grid3.ts H2 to H4)
+            expect(content.sections[0].headers.default![0]).to.not.have.property("grid");
+            expect(content.footnoteSeparator[0]).to.not.have.property("grid");
+            expect(content.endnotes[0]).to.not.have.property("grid");
+        });
+
+        it("should leave a paragraph off its grid's lines with snapToGrid off, but on its characters (word-grid.ts G7, CA11)", () => {
+            const content = readBody([
+                p(pPr(value("w:snapToGrid", 0)), r(t("a"))),
+                p(r(rPr(value("w:snapToGrid", 0)), t("b"))),
+                grid(CHARACTERS),
+            ]);
+            expect(paragraphOf(content).grid).to.deep.equal({ characterSpace: 1 });
+            expect(paragraphOf(content, 1).grid).to.deep.equal({ linePitch: 18, characterSpace: 1 });
+            // A run off the grid is laid out as it is (CA5)
+            expect(itemsOf(content, 1)).to.deep.equal([{ type: "text", text: "b", font: { snapToGrid: false } }]);
+            expect(paragraphOf(readBody([p(pPr(value("w:snapToGrid", 0)), r(t("a"))), grid(LINES)]))).to.not.have.property("grid");
+        });
+
+        it("should measure space in lines on the grid's lines, also off them and in cells, and indents in its characters (G6, CA6, CC6, H10, H11)", () => {
+            const spacing = { "w:spacing": { _attr: { "w:beforeLines": 100, "w:afterLines": 50 } } };
+            const spaced = (...more: readonly object[]): object => p(pPr(...more, spacing), r(t("a")));
+            const PITCH_312 = grid({ "w:type": "lines", "w:linePitch": 312 });
+            expect(paragraphOf(readBody([spaced(), PITCH_312])).format).to.include({ spaceBefore: 15.6, spaceAfter: 7.8 });
+            expect(paragraphOf(readBody([spaced(value("w:snapToGrid", 0)), PITCH_312])).format).to.include({ spaceBefore: 15.6 });
+            const inCell = readBody([{ "w:tbl": [{ "w:tr": [{ "w:tc": [spaced()] }] }] }, PITCH_312]);
+            expect(((inCell.blocks[0].block as TableBlock).rows[0].cells[0].blocks[0] as ParagraphBlock).format).to.include({
+                spaceBefore: 15.6,
+            });
+            const indented = p(pPr({ "w:ind": { _attr: { "w:leftChars": 200, "w:firstLineChars": 100 } } }), r(t("a")));
+            // A character is the text's size, 10 points, and the space of a grid of lines and characters more
+            expect(paragraphOf(readBody([indented, grid(CHARACTERS)])).format).to.include({ indentLeft: 22, firstLineIndent: 11 });
+            // Or a cell of a grid that snaps to characters
+            const snapped = paragraphOf(readBody([indented, grid(SNAPPING)]));
+            expect(snapped.format.indentLeft).to.be.closeTo((2 * 468) / 42, 1e-9);
+            expect(snapped.format.firstLineIndent).to.be.closeTo(468 / 42, 1e-9);
+            // In a table cell, as in the text around it
+            const cell = readBody([{ "w:tbl": [{ "w:tr": [{ "w:tc": [indented] }] }] }, grid(CHARACTERS)]);
+            expect(((cell.blocks[0].block as TableBlock).rows[0].cells[0].blocks[0] as ParagraphBlock).format).to.include({
+                indentLeft: 22,
+                firstLineIndent: 11,
+            });
+        });
+
+        it("should read text spaced out by its run, and footnotes, on a grid that snaps to characters (stops2/word-stops-east-asian.ts GR1, GR2)", () => {
+            const spacedOut = readBody([p(r(rPr(value("w:spacing", 20)), t("a"))), grid(SNAPPING)]);
+            expect(paragraphOf(spacedOut).unsupported).to.equal(undefined);
+            expect(itemsOf(spacedOut)).to.deep.equal([{ type: "text", text: "a", font: { characterSpacing: 1 } }]);
+            // A run spaced out on a grid of lines and characters is spaced out by both (word-grid3.ts H9)
+            expect(paragraphOf(readBody([p(r(rPr(value("w:spacing", 20)), t("a"))), grid(CHARACTERS)])).unsupported).to.equal(undefined);
+            const [note] = [
+                ...readWritten({
+                    footnotes: { 1: { children: [new Paragraph("Note")] } },
+                    sections: [
+                        {
+                            properties: { grid: { type: DocumentGridType.SNAP_TO_CHARS, linePitch: 360, charSpace: 4096 } },
+                            children: [new Paragraph({ children: [new TextRun("Text"), new FootnoteReferenceRun(1)] })],
+                        },
+                    ],
+                }).footnotes.values(),
+            ][0] as readonly ParagraphBlock[];
+            expect(note.unsupported).to.equal(undefined);
+            // A4 with inch margins, 41 cells of 11 points
+            expect(note.grid!.characterPitch).to.be.closeTo(451.3 / 41, 1e-9);
+        });
+
+        it("should put endnotes on the last section's grid, after sections on other grids, as Word does (GR15a, GR15c)", () => {
+            const endnoted = (...properties: readonly ISectionOptions["properties"][]): DocumentContent =>
+                readWritten({
+                    endnotes: { 1: { children: [new Paragraph("Note")] } },
+                    sections: [
+                        {
+                            properties: properties[0],
+                            children: [new Paragraph({ children: [new TextRun("Text"), new EndnoteReferenceRun(1)] })],
+                        },
+                        ...properties.slice(1).map((more) => ({ properties: more, children: [new Paragraph("More")] })),
+                    ],
+                });
+            const LINES_360 = { grid: { type: DocumentGridType.LINES, linePitch: 360 } };
+            const gridOfNote = (content: DocumentContent): TextGrid | undefined => (content.endnotes.at(-1) as ParagraphBlock).grid;
+            for (const sections of [
+                [LINES_360, LINES_360],
+                [undefined, LINES_360],
+                [LINES_360, undefined],
+                [undefined, undefined],
+                [undefined, LINES_360, undefined],
+            ]) {
+                const content = endnoted(...sections);
+                expect(content.unsupported).to.equal(undefined);
+                expect(gridOfNote(content)).to.deep.equal(sections.at(-1) === undefined ? undefined : { linePitch: 18 });
+            }
+            // A document whose body doesn't end with its section's properties ends with one of Word's, on no grid
+            const unended = readBody(
+                [
+                    p(
+                        pPr({ "w:sectPr": [{ "w:docGrid": { _attr: { "w:type": "lines", "w:linePitch": 360 } } }] }),
+                        r(t("Text")),
+                        r({ "w:endnoteReference": { _attr: { "w:id": 1 } } }),
+                    ),
+                    p(r(t("Last"))),
+                ],
+                { endnotes: { 1: { children: [new Paragraph("Note")] } } },
+            );
+            expect(gridOfNote(unended)).to.equal(undefined);
+        });
+    });
+
+    describe("text that runs down the page", () => {
+        const direction = (val: string, ...more: readonly object[]): object => ({
+            "w:sectPr": [
+                { "w:pgSz": { _attr: { "w:w": 11906, "w:h": 16838 } } },
+                { "w:pgMar": { _attr: { "w:top": 1440, "w:bottom": 1000, "w:left": 1200, "w:right": 1300, "w:footer": 708 } } },
+                ...more,
+                { "w:textDirection": { _attr: { "w:val": val } } },
+            ],
+        });
+        const sectionOf = (val: string, ...more: readonly object[]): DocumentContent["sections"][number] =>
+            readBody([p(r(t("a"))), direction(val, ...more)]).sections[0];
+        /** A section whose text runs down the page, with these margins */
+        const withMargins = (val: string, margins: object, settings: readonly object[] = []): DocumentContent["sections"][number] =>
+            readWithSettings(
+                [
+                    p(r(t("a"))),
+                    {
+                        "w:sectPr": [
+                            { "w:pgSz": { _attr: { "w:w": 11906, "w:h": 16838 } } },
+                            { "w:pgMar": { _attr: { "w:left": 1200, "w:right": 1300, ...margins } } },
+                            { "w:textDirection": { _attr: { "w:val": val } } },
+                        ],
+                    },
+                ],
+                settings,
+            ).sections[0];
+
+        it("should turn a section's page on its side, so its lines run along it from the top margin, across from the right or the left", () => {
+            // scripts/layout-probes/word-vertical.ts V1 and V8 from the right, V10 and V11 from the left, as transitional and
+            // strict documents write them
+            for (const val of ["tbRl", "btLr", "rl", "lr"]) {
+                expect(sectionOf(val)).to.deep.include({
+                    pageWidth: 841.9,
+                    pageHeight: 595.3,
+                    marginLeft: 72,
+                    marginRight: 50,
+                    marginTop: 65,
+                    marginBottom: 60,
+                    columns: [841.9 - 72 - 50],
+                    textRunsDown: "fromRight",
+                });
+                expect(sectionOf(val).unsupported).to.equal(undefined);
+            }
+            for (const val of ["tbRlV", "tbLrV", "rlV", "lrV"]) {
+                expect(sectionOf(val)).to.deep.include({ marginTop: 60, marginBottom: 65 });
+                expect(sectionOf(val).textRunsDown).to.equal("fromLeft");
+            }
+            expect(sectionOf("lrTb")).to.not.have.property("textRunsDown");
+        });
+
+        it("should start text down the page on a new page after text across one, go on after text down the page the same way, and stop at other continuous breaks after it (V13, VD9)", () => {
+            const continuous = { "w:type": { _attr: { "w:val": "continuous" } } };
+            const read = readBody([p(r(t("a")), pPr({ "w:sectPr": [] })), p(r(t("b"))), direction("tbRl", continuous)]);
+            expect(read.sections[1].start).to.equal("nextPage");
+            const downSection = (direction("tbRl") as { readonly "w:sectPr": readonly object[] })["w:sectPr"];
+            const STOP = "a continuous section break after text that runs down the page, into text that doesn't";
+            const after = (...last: readonly object[]): DocumentContent["sections"][number] =>
+                readBody([p(pPr({ "w:sectPr": downSection }), r(t("a"))), p(r(t("b"))), { "w:sectPr": last }]).sections[1];
+            expect(after(continuous).unsupported).to.equal(STOP);
+            expect(after({ "w:type": { _attr: { "w:val": "nextColumn" } } }).unsupported).to.equal(STOP);
+            // Text down the page the same way goes on on the page, and the other way starts a new one
+            const same = after(...(direction("tbRl", continuous) as { readonly "w:sectPr": readonly object[] })["w:sectPr"]);
+            expect(same.start).to.equal("continuous");
+            expect(same.unsupported).to.equal(undefined);
+            const other = after(...(direction("tbRlV", continuous) as { readonly "w:sectPr": readonly object[] })["w:sectPr"]);
+            expect(other.start).to.equal("nextPage");
+            expect(other.unsupported).to.equal(STOP);
+        });
+
+        it("should put a gutter beside the right margin, and a negative top or bottom margin as far from the edge, down the page (VD8a, VD8c)", () => {
+            const gutter = withMargins("tbRl", { "w:top": 1440, "w:bottom": 1000, "w:gutter": 720 });
+            expect(gutter).to.deep.include({ marginTop: 65 + 36, marginBottom: 60, gutter: 0, topGutter: 0, columns: [841.9 - 72 - 50] });
+            expect(gutter.unsupported).to.equal(undefined);
+            const negative = withMargins("tbRl", { "w:top": -1440, "w:bottom": -1000 });
+            expect(negative).to.deep.include({ marginLeft: 72, marginRight: 50, columns: [841.9 - 72 - 50] });
+            expect(negative.unsupported).to.equal(undefined);
+        });
+
+        it("should put a grid's cells along the lines of text that runs down the page (VD10)", () => {
+            const grid = { "w:docGrid": { _attr: { "w:type": "snapToChars", "w:linePitch": 360, "w:charSpace": 4096 } } };
+            const content = readBody([p(r(t("a"))), direction("tbRl", grid)]);
+            expect(content.sections[0].unsupported).to.equal(undefined);
+            // Along lines of 841.9 - 72 - 50 points, 65 cells of 10 points and a point more
+            expect(paragraphOf(content).grid!.characterPitch).to.be.closeTo((841.9 - 72 - 50) / 65, 1e-9);
+            // On Word's Letter page with inch margins, where the section gives neither: along lines of 792 - 144 points, 58 cells
+            const letter = readBody([p(r(t("a"))), { "w:sectPr": [grid, { "w:textDirection": { _attr: { "w:val": "tbRl" } } }] }]);
+            expect(paragraphOf(letter).grid!.characterPitch).to.be.closeTo((792 - 144) / 58, 1e-9);
+        });
+
+        it("should stop at what Word's PDFs didn't show down the page", () => {
+            const STOP =
+                "text that runs down the page with columns, mirrored margins, or a gutter at the top or beside lines from the left";
+            expect(sectionOf("tbRl", { "w:cols": { _attr: { "w:num": 2 } } }).unsupported).to.equal(STOP);
+            expect(readWithSettings([p(r(t("a"))), direction("tbRl")], [{ "w:mirrorMargins": {} }]).sections[0].unsupported).to.equal(STOP);
+            expect(withMargins("tbRl", { "w:gutter": 720 }, [{ "w:gutterAtTop": {} }]).unsupported).to.equal(STOP);
+            expect(withMargins("tbRlV", { "w:gutter": 720 }).unsupported).to.equal(STOP);
+            // A grid of lines and characters too (V3)
+            expect(
+                sectionOf("tbRl", { "w:docGrid": { _attr: { "w:type": "linesAndChars", "w:linePitch": 360, "w:charSpace": 4096 } } })
+                    .unsupported,
+            ).to.equal(undefined);
+
+            const down = (...paragraphs: readonly object[]): DocumentContent => readBody([...paragraphs, direction("tbRl")]);
+            const mincho = (...more: readonly object[]): object =>
+                rPr({ "w:rFonts": { _attr: { "w:eastAsia": "MS Mincho", "w:ascii": "MS Mincho" } } }, ...more);
+            const reasonOf = (...children: readonly unknown[]): string | undefined => paragraphOf(down(p(...children))).unsupported;
+            expect(reasonOf(r(mincho(), t("永永")))).to.equal(undefined);
+            expect(reasonOf(r(t("Latin")))).to.equal(undefined);
+            // Two lines in one, which Word's PDFs showed only across the page (RF30)
+            expect(reasonOf(r(rPr({ "w:eastAsianLayout": { _attr: { "w:combine": 1 } } }), t("two")))).to.equal("two lines in one");
+            // A tab to a left stop, or a default one, but not another (VD1a)
+            expect(reasonOf(r(t("a")), r({ "w:tab": {} }), r(t("b")))).to.equal(undefined);
+            const rightStop = pPr({ "w:tabs": [{ "w:tab": { _attr: { "w:val": "right", "w:pos": 3000 } } }] });
+            expect(reasonOf(rightStop, r(t("a")), r({ "w:tab": {} }), r(t("b")))).to.equal(
+                "a tab to a stop other than a left one in text that runs down the page",
+            );
+            expect(reasonOf(r(t("a")), r({ "w:softHyphen": {} }), r(t("b")))).to.equal(
+                "a soft hyphen, picture or drawing in text that runs down the page",
+            );
+            const NOT_AN_EM = "East Asian text down the page in a font whose characters aren't all an em";
+            expect(reasonOf(r(rPr({ "w:rFonts": { _attr: { "w:eastAsia": "Yu Mincho" } } }), t("永")))).to.equal(NOT_AN_EM);
+            // Drawn in MS Mincho, in a run without an East Asian font
+            expect(reasonOf(r(t("永")))).to.equal(undefined);
+            // Half-width katakana are half an em on their side (VD2b), but not in a font whose characters aren't all an em
+            expect(reasonOf(r(mincho(), t("\uff71")))).to.equal(undefined);
+            expect(reasonOf(r(rPr({ "w:rFonts": { _attr: { "w:eastAsia": "Yu Mincho" } } }), t("\uff71")))).to.equal(NOT_AN_EM);
+            // Emphasis marks, superscript and borders round text, and round the paragraph (VD3a, VD3b, VD3d, VD4)
+            for (const formatting of [
+                value("w:em", "dot"),
+                value("w:vertAlign", "superscript"),
+                { "w:bdr": { _attr: { "w:val": "single", "w:sz": 4 } } },
+            ]) {
+                expect(reasonOf(r(mincho(formatting), t("永")))).to.equal(undefined);
+            }
+            for (const formatting of [value("w:position", 6), { "w:smallCaps": {} }]) {
+                expect(reasonOf(r(mincho(formatting), t("永")))).to.equal("raised text or small capitals in text that runs down the page");
+            }
+            const box = { "w:pBdr": [{ "w:top": { _attr: { "w:val": "single", "w:sz": 4 } } }] };
+            expect(paragraphOf(down(p(pPr(box), r(t("a"))))).unsupported).to.equal(undefined);
+            // A justified line with spaces (VD5)
+            expect(paragraphOf(down(p(pPr(value("w:jc", "both")), r(t("a b"))))).unsupported).to.equal(undefined);
+            const table = down({ "w:tbl": [{ "w:tr": [{ "w:tc": [p(r(t("a")))] }] }] });
+            expect(table.blocks[0].block.unsupported).to.equal("a table on text that runs down the page");
+        });
+
+        it("should set two characters across in text that runs down the page, and stop at more, or compressed to fit its line (VD13)", () => {
+            const across = (text: string, more: object = {}): DocumentContent =>
+                readBody([p(r(rPr({ "w:eastAsianLayout": { _attr: { "w:id": 3, "w:vert": 1, ...more } } }), t(text))), direction("tbRl")]);
+            expect(itemsOf(across("31"))).to.deep.equal([{ type: "text", text: "31", font: {}, across: true }]);
+            expect(paragraphOf(across("2026")).unsupported).to.equal(
+                "text across in vertical text of more than two characters, or Chinese, Japanese or Korean ones",
+            );
+            expect(paragraphOf(across("一二")).unsupported).to.equal(
+                "text across in vertical text of more than two characters, or Chinese, Japanese or Korean ones",
+            );
+            expect(paragraphOf(across("31", { "w:vertCompress": 1 })).unsupported).to.equal("text across in vertical text");
+        });
+
+        it("should read footnotes and endnotes of text that runs down the page, ending endnotes with their section before text that runs another way (VD6, GR13, GR15b, GR15d, GR15e)", () => {
+            const noted = (kind: "footnotes" | "endnotes"): DocumentContent =>
+                readWritten({
+                    [kind]: { 1: { children: [new Paragraph("Note")] } },
+                    sections: [
+                        {
+                            properties: { page: { textDirection: PageTextDirectionType.TOP_TO_BOTTOM_RIGHT_TO_LEFT } },
+                            children: [
+                                new Paragraph({
+                                    children: [
+                                        new TextRun("Text"),
+                                        kind === "footnotes" ? new FootnoteReferenceRun(1) : new EndnoteReferenceRun(1),
+                                    ],
+                                }),
+                            ],
+                        },
+                    ],
+                });
+            const footnoted = noted("footnotes");
+            expect(footnoted.unsupported).to.equal(undefined);
+            expect([...footnoted.footnotes.values()][0][0].unsupported).to.equal(undefined);
+            // Endnotes after text that runs down the page go at the end of the document, down the page too (GR15d)
+            const endnotedDown = noted("endnotes");
+            expect(endnotedDown.unsupported).to.equal(undefined);
+            expect(endnotedDown.endnotesAfter).to.equal(undefined);
+            // Those from text across the page that text down it follows, or down the page that text across it follows, end
+            // with their own section, whether or not the last section runs as theirs does (GR13, GR15b, GR15e)
+            const DOWN = { page: { textDirection: PageTextDirectionType.TOP_TO_BOTTOM_RIGHT_TO_LEFT } };
+            const endnoted = (...properties: readonly ISectionOptions["properties"][]): DocumentContent =>
+                readWritten({
+                    endnotes: { 1: { children: [new Paragraph("Note")] } },
+                    sections: [
+                        {
+                            properties: properties[0],
+                            children: [new Paragraph({ children: [new TextRun("Text"), new EndnoteReferenceRun(1)] })],
+                        },
+                        ...properties.slice(1).map((more) => ({ properties: more, children: [new Paragraph("More")] })),
+                    ],
+                });
+            /** The sections the endnotes' blocks, their separator's and the note's, go at the end of */
+            const endsOf = (content: DocumentContent): readonly (number | undefined)[] | undefined => {
+                expect(content.unsupported).to.equal(undefined);
+                expect(content.endnotesAfter?.length ?? content.endnotes.length).to.equal(content.endnotes.length);
+                return content.endnotesAfter === undefined ? undefined : [...new Set(content.endnotesAfter)];
+            };
+            expect(endsOf(endnoted(undefined, DOWN, undefined))).to.deep.equal([0]);
+            expect(endsOf(endnoted(DOWN, undefined))).to.deep.equal([0]);
+            expect(endsOf(endnoted(DOWN, undefined, DOWN))).to.deep.equal([0]);
+            expect(endsOf(endnoted(undefined, DOWN, DOWN))).to.deep.equal([0]);
+            // Not after one that runs as it does, which may run on before a change (GR15a, GR15c), or to the end of the document
+            expect(endsOf(endnoted(DOWN, DOWN))).to.equal(undefined);
+            expect(endsOf(endnoted(undefined, undefined))).to.equal(undefined);
+            // Where that section is followed by one that runs another way hasn't been seen
+            expect(endnoted(DOWN, DOWN, undefined).unsupported).to.equal(
+                "endnotes from a section followed by one whose text runs as it does, before one whose text runs another way",
+            );
+            expect(endnoted(undefined, undefined, DOWN, DOWN).unsupported).to.equal(
+                "endnotes from a section followed by one whose text runs as it does, before one whose text runs another way",
+            );
+            // Text down the page before theirs doesn't end them
+            expect(
+                endsOf(
+                    readWritten({
+                        endnotes: { 1: { children: [new Paragraph("Note")] } },
+                        sections: [
+                            { properties: DOWN, children: [new Paragraph("First")] },
+                            { children: [new Paragraph({ children: [new TextRun("Text"), new EndnoteReferenceRun(1)] })] },
+                        ],
+                    }),
+                ),
+            ).to.equal(undefined);
+        });
+    });
+
+    describe("settings", () => {
+        it("should read the default tab stop, whether even pages have their own headers, and how paragraphs are spaced", () => {
+            const content = readBody([], {
+                defaultTabStop: 360,
+                evenAndOddHeaderAndFooters: true,
+                compatibility: { doNotUseHTMLParagraphAutoSpacing: true },
+            });
+            expect(content).to.deep.include({ defaultTabStop: 18, evenAndOddHeaders: true, addsParagraphSpacing: true });
+            expect(content.unsupported).to.equal(undefined);
+            expect(readBody([])).to.deep.include({ defaultTabStop: 36, evenAndOddHeaders: false, addsParagraphSpacing: false });
+        });
+
+        it("should read automatic hyphenation with its settings, rather than stop at it", () => {
+            const hyphenated = readBody([], { hyphenation: { autoHyphenation: true } });
+            expect(hyphenated.hyphenation).to.deep.equal({});
+            expect(hyphenated.unsupported).to.equal(undefined);
+            // The zone, which Word doesn't keep in compatibility mode 15, and the limit to the lines in a row that end with a
+            // hyphen, which only leaves more words whole, change nothing the layout lays out
+            expect(
+                readBody([], {
+                    hyphenation: { autoHyphenation: true, consecutiveHyphenLimit: 2, doNotHyphenateCaps: true, hyphenationZone: 720 },
+                }).hyphenation,
+            ).to.deep.equal({ capitalsWhole: true });
+            // The settings without automatic hyphenation hyphenate nothing
+            expect(readBody([], { hyphenation: { consecutiveHyphenLimit: 2, doNotHyphenateCaps: true } }).hyphenation).to.equal(undefined);
+            expect(readBody([], { hyphenation: { autoHyphenation: false } }).hyphenation).to.equal(undefined);
+        });
+
+        /** Reads a document whose settings are these elements, which docx doesn't write, in Word 2013's compatibility mode */
+        const readSettings = (...settings: readonly object[]): DocumentContent => readWithSettings([], settings);
+
+        it("should read the document's own lists of the characters that can't start or end a line, for their languages", () => {
+            const kinsoku = (name: string, lang: string, val?: string): object => ({
+                [name]: { _attr: { "w:lang": lang, ...(val === undefined ? {} : { "w:val": val }) } },
+            });
+            // cspell:disable
+            const content = readSettings(
+                kinsoku("w:noLineBreaksBefore", "ja-JP", "、。"),
+                kinsoku("w:noLineBreaksAfter", "ja-JP", "「"),
+                kinsoku("w:noLineBreaksAfter", "zh-TW"),
+                kinsoku("w:noLineBreaksBefore", "en-US", "!"),
+            );
+            expect(content.breakRules).to.deep.equal({
+                lists: { japanese: { noLineStart: "、。", noLineEnd: "「" }, traditionalChinese: { noLineEnd: "" } },
+            });
+            // cspell:enable
+            expect(content.unsupported).to.equal(undefined);
+            expect(readBody([]).breakRules).to.equal(undefined);
+        });
+
+        it("should stop at Arabic letters joined across runs, which are measured a run at a time", () => {
+            // cspell:disable
+            const runs = (...texts: readonly string[]): string | undefined =>
+                paragraphOf(
+                    readBody([p(...texts.map((text) => r(rPr({ "w:rtl": {} }, { "w:rFonts": { _attr: { "w:cs": "Arial" } } }), t(text))))]),
+                ).unsupported;
+            expect(runs("كتب", "بلا")).to.equal("Arabic letters joined across runs");
+            expect(runs("كتب ", "بلا")).to.equal(undefined);
+            expect(runs("كتا", "بلا")).to.equal(undefined);
+            expect(runs("كتب", "abc")).to.equal(undefined);
+            // Across a bookmark too
+            expect(
+                paragraphOf(readBody([p(r(t("كتب")), { "w:bookmarkStart": { _attr: { "w:id": 1, "w:name": "b" } } }, r(t("بلا")))]))
+                    .unsupported,
+            ).to.equal("Arabic letters joined across runs");
+            // cspell:enable
+        });
+
+        it("should break Japanese by Word's strict rules, with Word's list in place of the document's, leave its punctuation compressed as it is, aligned left or justified, and stop at the cases Word hasn't been seen with (EA4, EA5, EA6)", () => {
+            const inLanguage = (language: string, text = "「測量」は", alignment?: string): object =>
+                p(
+                    ...(alignment === undefined ? [] : [pPr(value("w:jc", alignment))]),
+                    r(rPr({ "w:lang": { _attr: { "w:eastAsia": language } } }), t(text)),
+                );
+            const japanese = inLanguage("ja-JP");
+            const inNoLanguage = p(r(t("「測量」は")));
+            const strict = { "w:strictFirstAndLastChars": {} };
+            // Word's strict rules, which keep small kana from the start of a line of Japanese (word-stops-east-asian2.ts EA4a),
+            // and change nothing in Chinese or Korean (word-stops-east-asian3.ts EA5)
+            const strictly = readWithSettings([japanese], [strict]);
+            expect(paragraphOf(strictly).unsupported).to.equal(undefined);
+            expect(strictly.breakRules).to.deep.equal({ strict: true });
+            expect(paragraphOf(readWithSettings([inLanguage("zh-CN")], [strict])).unsupported).to.equal(undefined);
+            expect(paragraphOf(readWithSettings([inLanguage("ko-KR")], [strict])).unsupported).to.equal(undefined);
+            // Whether they keep half-width small katakana from the start of a line hasn't been seen
+            // cspell:disable-next-line
+            expect(paragraphOf(readWithSettings([inLanguage("ja-JP", "記録ｧ")], [strict])).unsupported).to.equal(
+                "the strict rules for the characters that can't start a line of Japanese, before half-width small katakana",
+            );
+            // Word takes its strict list in place of the document's own list of the characters that can't start a line (EA5L),
+            // but one with characters its list doesn't have, or the document's own list of those that can't end one, hasn't
+            // been seen with them
+            const ownList = (name: string, val: string): object => ({ [name]: { _attr: { "w:lang": "ja-JP", "w:val": val } } });
+            const listed = readWithSettings([japanese], [strict, ownList("w:noLineBreaksBefore", "、。")]);
+            expect(paragraphOf(listed).unsupported).to.equal(undefined);
+            expect(listed.breakRules).to.deep.equal({ lists: { japanese: { noLineStart: "、。" } }, strict: true });
+            const BEYOND =
+                "the strict rules for the characters that can't start a line of Japanese, with the document's own list of those that can't end one, or of those that can't start one with characters Word's strict list doesn't have";
+            expect(paragraphOf(readWithSettings([japanese], [strict, ownList("w:noLineBreaksBefore", "、。永")])).unsupported).to.equal(
+                BEYOND,
+            );
+            expect(paragraphOf(readWithSettings([japanese], [strict, ownList("w:noLineBreaksAfter", "「")])).unsupported).to.equal(BEYOND);
+            expect(
+                paragraphOf(readWithSettings([inLanguage("zh-CN")], [strict, ownList("w:noLineBreaksAfter", "「")])).unsupported,
+            ).to.equal(undefined);
+            expect(paragraphOf(readWithSettings([japanese], [ownList("w:noLineBreaksAfter", "「")])).unsupported).to.equal(undefined);
+            // Punctuation compressed, and kana, left as it is in Japanese aligned left, centred and justified (EA4b, EA4c, EA6a)
+            // and in Chinese aligned left (EA6e), but not in distributed Japanese, which fits more (EA6b), nor in justified or
+            // distributed Chinese, or in Korean, which haven't been seen
+            const compressed = value("w:characterSpacingControl", "compressPunctuationAndJapaneseKana");
+            expect(paragraphOf(readWithSettings([japanese], [compressed])).unsupported).to.equal(undefined);
+            expect(paragraphOf(readWithSettings([inLanguage("ja-JP", "「測量」は", "center")], [compressed])).unsupported).to.equal(
+                undefined,
+            );
+            expect(paragraphOf(readWithSettings([inLanguage("ja-JP", "「測量」は", "both")], [compressed])).unsupported).to.equal(
+                undefined,
+            );
+            expect(paragraphOf(readWithSettings([inLanguage("ja-JP", "「測量」は", "distribute")], [compressed])).unsupported).to.equal(
+                "punctuation compressed in a distributed paragraph of text in Japanese",
+            );
+            expect(paragraphOf(readWithSettings([inLanguage("zh-CN")], [compressed])).unsupported).to.equal(undefined);
+            expect(paragraphOf(readWithSettings([inLanguage("zh-TW", "「測量」は", "both")], [compressed])).unsupported).to.equal(
+                "punctuation compressed in a justified or distributed paragraph of text in Chinese",
+            );
+            expect(paragraphOf(readWithSettings([inLanguage("ko-KR")], [compressed])).unsupported).to.equal(
+                "punctuation compressed in text in Korean",
+            );
+            expect(paragraphOf(readWithSettings([inLanguage("ko-KR", "「測量」は", "both")], [compressed])).unsupported).to.equal(
+                "punctuation compressed in text in Korean",
+            );
+            // Word lays out Japanese in no language as it does without them (word-stops-east-asian.ts EA1 to EA3)
+            const content = readWithSettings([inNoLanguage], [strict, value("w:characterSpacingControl", "compressPunctuation")]);
+            expect(content.unsupported).to.equal(undefined);
+            expect(paragraphOf(content).unsupported).to.equal(undefined);
+            expect(
+                paragraphOf(
+                    readWithSettings([inLanguage("ja-JP", "「測量」は", "both")], [value("w:characterSpacingControl", "doNotCompress")]),
+                ).unsupported,
+            ).to.equal(undefined);
+        });
+
+        it("should lay out a document printed as a booklet as the section's pages, and mark one whose styles Word updates from its template as unsupported", () => {
+            // A folded booklet's pages Word lays out as the section's (word-stops-booklet2.docx BK2), folded the other way
+            // round too (word-stops-booklet3.docx BK3)
+            expect(readSettings({ "w:bookFoldPrinting": {} }).unsupported).to.equal(undefined);
+            expect(readSettings({ "w:bookFoldRevPrinting": {} }).unsupported).to.equal(undefined);
+            // word-stops-two-on-one.docx TO1: Word lays out the section's pages as without it, two to each sheet it prints
+            expect(readSettings({ "w:printTwoOnOne": {} }).unsupported).to.equal(undefined);
+            expect(readSettings({ "w:linkStyles": {} }).unsupported).to.equal(
+                "styles updated from the document's template when Word opens it",
+            );
+            expect(readSettings(value("w:bookFoldPrinting", "false"), value("w:linkStyles", 0)).unsupported).to.equal(undefined);
+        });
+
+        it("should read a document in the compatibility mode of Word 2010, 2007 or 2003, and stop at another before 2013", () => {
+            // word-stops-compat-15.docx, -14, -12 and -11
+            for (const version of [14, 12, 11]) {
+                const content = readBody([], { compatibility: { version } });
+                expect(content.compatibilityMode).to.equal(version);
+                expect(content.unsupported).to.equal(undefined);
+            }
+            expect(readBody([], { compatibility: { version: 15 } }).compatibilityMode).to.equal(undefined);
+            expect(readBody([], { compatibility: { version: 13 } }).unsupported).to.equal(
+                "a document in a compatibility mode Word hasn't been seen laying out",
+            );
+        });
+
+        const UNFOLLOWED_COMPATIBILITY = "a compatibility setting not yet followed";
+
+        /** Reads a document in Word 2013's compatibility mode whose compatibility settings (`w:compat`) are these too */
+        const readCompatibility = (...settings: readonly object[]): DocumentContent =>
+            readSettings({ "w:compat": [{ "w:compatSetting": { _attr: { "w:name": "compatibilityMode", "w:val": 15 } } }, ...settings] });
+
+        it("should lay out a document with the compatibility settings Word lays out lines alike with in compatibility mode 15", () => {
+            // word-compat-settings.docx and its groups: Word laid out the same probes alike with these on and without them
+            const settings: readonly (keyof ICompatibilityOptions)[] = [
+                "useSingleBorderforContiguousCells",
+                "wordPerfectJustification",
+                "noTabStopForHangingIndent",
+                "noLeading",
+                "spaceForUnderline",
+                "noColumnBalance",
+                "noExtraLineSpacing",
+                "underlineTrailingSpaces",
+                "doNotExpandShiftReturn",
+                "spacingInWholePoints",
+                "printBodyTextBeforeHeader",
+                "printColorsBlack",
+                "spaceWidth",
+                "showBreaksInFrames",
+                "subFontBySize",
+                "swapBordersFacingPages",
+                "convertMailMergeEsc",
+                "truncateFontHeightsLikeWP6",
+                "macWordSmallCaps",
+                "usePrinterMetrics",
+                "doNotSuppressParagraphBorders",
+                "wrapTrailSpaces",
+                "footnoteLayoutLikeWW8",
+                "shapeLayoutLikeWW8",
+                "alignTablesRowByRow",
+                "forgetLastTabAlignment",
+                "adjustLineHeightInTable",
+                "noSpaceRaiseLower",
+                "layoutRawTableWidth",
+                "layoutTableRowsApart",
+                "doNotBreakWrappedTables",
+                "doNotSnapToGridInCell",
+                "selectFieldWithFirstOrLastCharacter",
+                "useWord2002TableStyleRules",
+                "growAutofit",
+                "useNormalStyleForList",
+                "doNotUseIndentAsNumberingTabStop",
+                "allowSpaceOfSameStyleInTable",
+                "doNotSuppressIndentation",
+                "doNotAutofitConstrainedTables",
+                "autofitToFirstFixedWidthCell",
+                "underlineTabInNumberingList",
+                "doNotVerticallyAlignCellWithSp",
+                "doNotBreakConstrainedForcedTable",
+                "ignoreVerticalAlignmentInTextboxes",
+                "useAnsiKerningPairs",
+                "cachedColumnBalance",
+                // Each alone (word-compat-settings2.docx and one document for each)
+                "suppressBottomSpacing",
+                "suppressTopSpacingWP",
+                "suppressSpacingAtTopOfPage",
+                "suppressSpBfAfterPgBrk",
+                "splitPgBreakAndParaMark",
+                "balanceSingleByteDoubleByteWidth",
+                "doNotLeaveBackslashAlone",
+                "displayHangulFixedWidth",
+                "autoSpaceLikeWord95",
+                "lineWrapLikeWord6",
+                "useWord97LineBreakRules",
+                "applyBreakingRules",
+                "doNotWrapTextWithPunctuation",
+                "doNotUseEastAsianBreakRules",
+                "useAlternateEastAsianLineBreakRules",
+            ];
+            for (const setting of settings) {
+                expect(readBody([], { compatibility: { [setting]: true } }).unsupported, setting).to.equal(undefined);
+            }
+            // Automatic spacing as HTML has it is followed (see "automatic spacing")
+            expect(readBody([], { compatibility: { doNotUseHTMLParagraphAutoSpacing: true } }).unsupported).to.equal(undefined);
+        });
+
+        it("should follow docx's other compatibility settings, suppressTopSpacing and useFELayout", () => {
+            // word-stops-top-spacing.docx and word-stops-fe-layout.docx
+            const suppressed = readBody([], { compatibility: { suppressTopSpacing: true } });
+            expect(suppressed.suppressesTopSpacing).to.equal(true);
+            expect(suppressed.unsupported).to.equal(undefined);
+            expect(readBody([], { compatibility: { useFELayout: true } }).unsupported).to.equal(undefined);
+            // Off, as docx writes false, Word lays it out as without it
+            expect(readBody([], { compatibility: { suppressTopSpacing: false } }).suppressesTopSpacing).to.equal(undefined);
+            // Written as Word writes it, with no value, too
+            expect(readCompatibility({ "w:suppressTopSpacing": {} }).suppressesTopSpacing).to.equal(true);
+            // And one the schema doesn't have stops
+            expect(readCompatibility({ "w:someLaterSetting": {} }).unsupported).to.equal(UNFOLLOWED_COMPATIBILITY);
+        });
+
+        /** A compatibility setting of Word's own, as Word writes it, or without its application when `uri` is null */
+        const wordSetting = (name: string, val: string, uri: string | null = "http://schemas.microsoft.com/office/word"): object => ({
+            "w:compatSetting": { _attr: { "w:name": name, ...(uri === null ? {} : { "w:uri": uri }), "w:val": val } },
+        });
+
+        it("should lay out a document with Word's own compatibility settings, on or off", () => {
+            // Those Word writes in the documents it makes, and its two others (word-compat-settings-other.docx)
+            const written = (val: string): readonly object[] =>
+                [
+                    "overrideTableStyleFontSizeAndJustification",
+                    "enableOpenTypeFeatures",
+                    "doNotFlipMirrorIndents",
+                    "differentiateMultirowTableHeaders",
+                    "useWord2013TrackBottomHyphenation",
+                    "allowHyphenationAtTrackBottom",
+                    "allowTextAfterFloatingTableBreak",
+                ].map((name) => wordSetting(name, val));
+            expect(readCompatibility(...written("1")).unsupported).to.equal(undefined);
+            expect(readCompatibility(...written("0")).unsupported).to.equal(undefined);
+        });
+
+        it("should mark a document with settings Word may have that aren't known as unsupported, on or off", () => {
+            expect(readCompatibility(wordSetting("someLaterSetting", "1")).unsupported).to.equal(UNFOLLOWED_COMPATIBILITY);
+            expect(readCompatibility(wordSetting("someLaterSetting", "true", null)).unsupported).to.equal(UNFOLLOWED_COMPATIBILITY);
+            // One whose default isn't known, even off
+            expect(readCompatibility(wordSetting("someLaterSetting", "0")).unsupported).to.equal(UNFOLLOWED_COMPATIBILITY);
+        });
+
+        it("should lay out a document with compatibility settings for other applications, as Word leaves them to them", () => {
+            expect(readCompatibility(wordSetting("noLeading", "1", "http://example.com/other")).unsupported).to.equal(undefined);
+        });
+
+        it("should read the compatibility mode of Word's own setting, not another application's of the same name", () => {
+            const modes = (...settings: readonly object[]): DocumentContent => readSettings({ "w:compat": settings });
+            const other = wordSetting("compatibilityMode", "15", "http://example.com/other");
+            expect(modes(other, wordSetting("compatibilityMode", "14")).compatibilityMode).to.equal(14);
+            // Without Word's own, it is in Word 2007's
+            expect(modes(other).compatibilityMode).to.equal(12);
+            expect(modes(other, wordSetting("compatibilityMode", "15", null)).compatibilityMode).to.equal(undefined);
+        });
+    });
+
+    describe("in compatibility mode (scripts/layout-probes/stops2/word-stops-compat-mode.ts)", () => {
+        const in2010 = { compatibility: { version: 14 } };
+        const in2007 = { compatibility: { version: 12 } };
+        const tableOf = (content: DocumentContent): TableBlock => content.blocks[0].block as TableBlock;
+        const tableCell = (...paragraphs: readonly object[]): object => ({ "w:tc": paragraphs });
+
+        it("should lay out paragraphs as Word 2010 and before do, and stop where they haven't been seen laying them out", () => {
+            const reasonOf = (content: DocumentContent): string | undefined => paragraphOf(content).unsupported;
+            // Distributed, whose lines Word 2010 breaks where it breaks those aligned left, as justified ones
+            // (word-stops-compat2-14.docx CN4a)
+            const distributed = p(pPr(value("w:jc", "distribute")), r(t("a")));
+            expect(reasonOf(readBody([distributed], in2010))).to.equal(undefined);
+            expect(paragraphOf(readBody([distributed], in2010)).format.alignment).to.equal("distributed");
+            // East Asian text, which Word 2007 and 2003 break only at its spaces (word-stops-compat2-12.docx CN10a to CN10c), and
+            // Word 2010 as Word 2013 does (word-stops-compat-14.docx CM18)
+            const japanese = p(r(t("日本語の文章")));
+            expect(reasonOf(readBody([japanese], in2007))).to.equal(undefined);
+            expect(readBody([japanese], in2007).breakRules).to.deep.equal({ ideographs: false });
+            expect(readBody([japanese], in2010).breakRules).to.equal(undefined);
+            // In an East Asian language too, as that of none (word-stops-compat3-12.docx CN17a, CN17b), and beside curly
+            // quotes, in the run's high ANSI font (CN10c)
+            const inJapanese = p(r(rPr({ "w:lang": { _attr: { "w:eastAsia": "ja-JP" } } }), t("日本語の文章")));
+            expect(reasonOf(readBody([inJapanese], in2007))).to.equal(undefined);
+            expect(readBody([inJapanese], in2007).breakRules).to.deep.equal({ ideographs: false });
+            expect(reasonOf(readBody([p(r(t("\u201c日本語\u201d")))], in2007))).to.equal(undefined);
+            expect(reasonOf(readBody([japanese], in2010))).to.equal(undefined);
+            // Word 2003's East Asian layout spaces East Asian text apart from Latin letters and digits beside it, with the
+            // paragraph's automatic spacing of them on (word-stops-fe-layout2.docx FE2b, word-stops-fe-layout3.docx FE3a to
+            // FE3c), which the lines are laid out with (see line-breaking.spec.ts): the document says it does, and each
+            // paragraph which of its spacings are off
+            const feLayout = { compatibility: { useFELayout: true } };
+            expect(readBody([japanese], feLayout).feLayout).to.equal(true);
+            expect(readBody([japanese], in2007).feLayout).to.equal(undefined);
+            expect(reasonOf(readBody([p(r(t("Latin日本語")), r(t("123")))], feLayout))).to.equal(undefined);
+            const off = pPr(value("w:autoSpaceDE", 0), value("w:autoSpaceDN", 0));
+            expect(paragraphOf(readBody([p(off, r(t("Latin日本語123")))], feLayout)).format).to.deep.include({
+                autoSpaceDE: false,
+                autoSpaceDN: false,
+            });
+            const { autoSpaceDE, autoSpaceDN } = paragraphOf(
+                readBody([p(pPr(value("w:autoSpaceDN", 0)), r(t("Latin日本語")))], feLayout),
+            ).format;
+            expect([autoSpaceDE, autoSpaceDN]).to.deep.equal([undefined, false]);
+            // And Latin text as it is (FE1c to FE1f), past ASCII too
+            expect(reasonOf(readBody([p(r(t("Latin \u201cquoted\u201d")))], in2007))).to.equal(undefined);
+            expect(reasonOf(readBody([p(r(t("Latin")))], { compatibility: { useFELayout: true } }))).to.equal(undefined);
+        });
+
+        it("should stop at the schema's compatibility settings, seen only in Word 2013's mode, and draw no ligatures without OpenType features", () => {
+            const word = (name: string, val: string): object => ({
+                "w:compatSetting": { _attr: { "w:name": name, "w:uri": "http://schemas.microsoft.com/office/word", "w:val": val } },
+            });
+            const in2010With = (elements: readonly unknown[], ...compat: readonly object[]): DocumentContent =>
+                readWithSettings(elements, [{ "w:compat": [word("compatibilityMode", "14"), ...compat] }]);
+            // noLeading Word leaves out in its own mode (word-compat-settings-heights.docx), and may follow in an older one
+            expect(in2010With([], { "w:noLeading": {} }).unsupported).to.equal("a compatibility setting not yet followed");
+            expect(in2010With([], { "w:suppressTopSpacing": {} }).unsupported).to.equal("a compatibility setting not yet followed");
+            expect(in2010With([], { "w:doNotUseHTMLParagraphAutoSpacing": {} }).unsupported).to.equal(undefined);
+            // Ligatures, which Word 2010 draws only with OpenType features on, as it writes them, and Word 2007 never
+            // (word-stops-compat2-14.docx, -12 CN2b)
+            const ligatures = p(r(rPr({ "w14:ligatures": { _attr: { "w14:val": "standard" } } }), t("office")));
+            const fontOf = (content: DocumentContent): object => (itemsOf(content)[0] as { readonly font: object }).font;
+            expect(fontOf(in2010With([ligatures]))).to.deep.equal({});
+            expect(paragraphOf(in2010With([ligatures])).unsupported).to.equal(undefined);
+            expect(fontOf(in2010With([ligatures], word("enableOpenTypeFeatures", "1")))).to.deep.equal({ ligatures: "standard" });
+            expect(fontOf(in2010With([ligatures], word("enableOpenTypeFeatures", "0")))).to.deep.equal({});
+            expect(fontOf(readBody([ligatures], in2007))).to.deep.equal({});
+            expect(fontOf(readBody([ligatures]))).to.deep.include({ ligatures: "standard" });
+        });
+
+        it("should lay out VML text boxes and shapes in Word 2007's and 2003's modes, their outlines taking no room, and stop at other VML drawings", () => {
+            // word-stops-compat-12.docx CM14, word-stops-compat2-12.docx CN11a, CN11b: docx's text box 14 twips higher than in Word
+            // 2010's mode and 2013's, as large, and its line as much narrower; word-stops-compat3-12.docx CN18a: a rectangle in
+            // the line with an outline of a point, its line 19 twips shorter and the text after it 19 nearer
+            const shape = (style: string, ...children: readonly object[]): object =>
+                p(r({ "w:pict": [{ "v:rect": [{ _attr: { style, stroked: "f" } }, ...children] }] }));
+            const inLine = shape("width:100pt;height:50pt");
+            const outlined = p(r({ "w:pict": [{ "v:rect": [{ _attr: { style: "width:100pt;height:50pt", strokeweight: "1pt" } }] }] }));
+            const floating = shape("position:absolute;width:100pt;height:50pt", { "w10:wrap": { _attr: { type: "square" } } });
+            const reason =
+                "a VML shape that text flows around, an embedded object, or a VML drawing in a header, footer or text box, in a document in compatibility mode 12 or 11";
+            expect(paragraphOf(readBody([inLine], in2007)).unsupported).to.equal(undefined);
+            expect(itemsOf(readBody([inLine], in2007))).to.deep.equal([{ type: "box", width: 100, height: 50, font: {} }]);
+            expect(itemsOf(readBody([outlined], in2007))).to.deep.equal([{ type: "box", width: 100, height: 50, font: {} }]);
+            expect(itemsOf(readBody([outlined], in2010))).to.deep.equal([{ type: "box", width: 101, height: 51, font: {} }]);
+            expect(paragraphOf(readBody([floating], in2007)).unsupported).to.equal(reason);
+            const object = r({ "w:object": [{ "v:shape": [{ _attr: { style: "width:72pt;height:36pt" } }] }] });
+            expect(paragraphOf(readBody([p(object)], in2007)).unsupported).to.equal(reason);
+            expect(itemsOf(readBody([inLine], in2010))).to.deep.equal([{ type: "box", width: 100, height: 50, font: {} }]);
+            // One in front of the text or behind it takes no room
+            expect(itemsOf(readBody([shape("position:absolute;width:100pt;height:50pt")], in2007))).to.deep.equal([]);
+            const textBox = p(
+                r({
+                    "w:pict": [
+                        {
+                            "v:shape": [
+                                { _attr: { style: "width:100pt;height:auto" } },
+                                { "v:textbox": [{ _attr: { style: "mso-fit-shape-to-text:t" } }, { "w:txbxContent": [p(r(t("in")))] }] },
+                            ],
+                        },
+                    ],
+                }),
+            );
+            const sizeOf = (content: DocumentContent): readonly number[] => {
+                const box = itemsOf(content)[0] as { readonly width: number; readonly room: number };
+                return [box.width, box.room].map((length) => Math.round(length * 100) / 100);
+            };
+            expect(sizeOf(readBody([textBox], in2007))).to.deep.equal([100, 7.92]);
+            expect(sizeOf(readBody([textBox], in2010))).to.deep.equal([100.72, 8.64]);
+            expect(paragraphOf(readBody([textBox], in2007)).unsupported).to.equal(undefined);
+            // One in a text box hasn't been seen in those modes
+            const nested = p(
+                r({
+                    "w:pict": [
+                        {
+                            "v:shape": [
+                                { _attr: { style: "width:200pt;height:auto" } },
+                                { "v:textbox": [{ _attr: { style: "mso-fit-shape-to-text:t" } }, { "w:txbxContent": [textBox] }] },
+                            ],
+                        },
+                    ],
+                }),
+            );
+            expect(paragraphOf(readBody([nested], in2007)).unsupported).to.equal(reason);
+            expect(paragraphOf(readBody([nested], in2010)).unsupported).to.equal("a VML drawing in the line of a text box");
+            // A text box placed on the page that text flows around is sized to its text whatever height it gives, or none
+            // (word-stops-compat3-15.docx CN18b: height:auto), in every mode, its outline taking no room in Word 2007's
+            const placed = p(
+                r({
+                    "w:pict": [
+                        {
+                            "v:shape": [
+                                { _attr: { style: "position:absolute;width:150pt;height:auto", strokeweight: "1pt" } },
+                                { "v:textbox": [{ _attr: { style: "mso-fit-shape-to-text:t" } }, { "w:txbxContent": [p(r(t("in")))] }] },
+                                { "w10:wrap": { _attr: { type: "square" } } },
+                            ],
+                        },
+                    ],
+                }),
+            );
+            const effectsOf = (content: DocumentContent): readonly unknown[] =>
+                itemsOf(content).map((item) => (item as { readonly drawing?: { readonly effects: unknown } }).drawing?.effects);
+            expect(paragraphOf(readBody([placed])).unsupported).to.equal(undefined);
+            expect(effectsOf(readBody([placed]))).to.deep.equal([{ top: 0.5, bottom: 0.5, left: 0, right: 1 }]);
+            expect(paragraphOf(readBody([placed], in2007)).unsupported).to.equal(undefined);
+            expect(effectsOf(readBody([placed], in2007))).to.deep.equal([{ top: 0, bottom: 0, left: 0, right: 0 }]);
+        });
+
+        it("should give a table sized to its text its cells' margins beside the room, and stop where Word hasn't shown its size", () => {
+            const rows = { "w:tr": [tableCell(p(r(t("a"))))] };
+            const tableWith = (...properties: readonly object[]): object => ({ "w:tbl": [{ "w:tblPr": properties }, rows] });
+            // word-stops-compat-14.docx CM4: as wide as the page's text and its first and last cells' margins
+            expect(tableOf(readBody([tableWith()], in2010))).to.deep.include({ fit: {}, marginsBeside: true });
+            expect(tableOf(readBody([tableWith()])).marginsBeside).to.equal(undefined);
+            // One with a width of its own keeps it (CM5), and one laid out fixed keeps its cells'
+            const own = { "w:tblW": { _attr: { "w:w": 4000, "w:type": "dxa" } } };
+            expect(tableOf(readBody([tableWith(own)], in2010)).marginsBeside).to.equal(undefined);
+            const fixed = { "w:tblLayout": { _attr: { "w:type": "fixed" } } };
+            expect(tableOf(readBody([tableWith(fixed)], in2010)).marginsBeside).to.equal(undefined);
+            // Indented, in the room its indent leaves (word-stops-compat2-14.docx CN8a)
+            const indented = { "w:tblInd": { _attr: { "w:w": 200, "w:type": "dxa" } } };
+            expect(tableOf(readBody([tableWith(indented)], in2010))).to.deep.include({ indent: 10, marginsBeside: true });
+            expect(tableOf(readBody([tableWith(indented)], in2010)).unsupported).to.equal(undefined);
+            // As a share of the width it is a share of the room with the margins (CN8b, word-stops-compat3-14.docx CN12a to
+            // CN12c; see column-widths.spec.ts)
+            const share = { "w:tblW": { _attr: { "w:w": 2500, "w:type": "pct" } } };
+            expect(tableOf(readBody([tableWith(share)], in2010))).to.deep.include({ fit: { share: 0.5 }, marginsBeside: true });
+            expect(tableOf(readBody([tableWith(share)], in2010)).unsupported).to.equal(undefined);
+            // In a table cell, as Word 2013 sizes it (CN8d), but indented or as a share of the width
+            const nestedIn = (inner: object): DocumentContent => readBody([{ "w:tbl": [{ "w:tr": [tableCell(inner, p())] }] }], in2010);
+            const innerOf = (content: DocumentContent): TableBlock => tableOf(content).rows[0].cells[0].blocks[0] as TableBlock;
+            expect(innerOf(nestedIn(tableWith())).marginsBeside).to.equal(undefined);
+            expect(tableOf(nestedIn(tableWith())).unsupported).to.equal(undefined);
+            const inCell =
+                "a table sized to its text in a table cell, indented or as a share of the width, in a document in compatibility mode";
+            expect(tableOf(nestedIn(tableWith(indented))).unsupported).to.equal(inCell);
+            expect(tableOf(nestedIn(tableWith(share))).unsupported).to.equal(inCell);
+            // One that text flows around Word places with its first cell's text where it is placed (CM10, CN9), the text
+            // half a point from it with no distance given, as in Word 2013's mode (CN9), one sized to its text too
+            // (word-stops-compat3-14.docx CN15a), and one lined up across the page as Word 2013 does (CN15b)
+            const distant = { "w:leftFromText": 180, "w:rightFromText": 180 };
+            const floating = {
+                "w:tblpPr": { _attr: { "w:horzAnchor": "margin", "w:vertAnchor": "text", "w:tblpX": 2000, ...distant } },
+            };
+            const borders = { "w:tblBorders": [{ "w:left": { _attr: { "w:val": "single", "w:sz": 4 } } }] };
+            const margins = { "w:tblCellMar": [{ "w:left": { _attr: { "w:w": 108, "w:type": "dxa" } } }] };
+            const placed = tableOf(readBody([tableWith(own, floating, borders, margins), p()], in2010));
+            expect(placed.unsupported).to.equal(undefined);
+            expect(placed.float!.horizontal).to.deep.equal({ from: "margin", offset: 100 - 5.4 - 0.25 });
+            expect(tableOf(readBody([tableWith(own, floating, borders, margins), p()])).float!.horizontal).to.deep.equal({
+                from: "margin",
+                offset: 100,
+            });
+            const sizedFloat = tableOf(readBody([tableWith(floating, borders, margins), p()], in2010));
+            expect([sizedFloat.unsupported, sizedFloat.marginsBeside, sizedFloat.float!.horizontal]).to.deep.equal([
+                undefined,
+                true,
+                { from: "margin", offset: 100 - 5.4 - 0.25 },
+            ]);
+            const centredFloat = { "w:tblpPr": { _attr: { "w:horzAnchor": "margin", "w:tblpXSpec": "center", "w:vertAnchor": "text" } } };
+            const linedUp = tableOf(readBody([tableWith(own, centredFloat), p()], in2010));
+            expect([linedUp.unsupported, linedUp.float!.horizontal]).to.deep.equal([undefined, { from: "margin", align: "center" }]);
+            const touching = { "w:tblpPr": { _attr: { "w:horzAnchor": "margin", "w:vertAnchor": "text", "w:tblpX": 2000 } } };
+            const touched = tableOf(readBody([tableWith(own, touching), p()], in2010));
+            expect([touched.unsupported, touched.float!.distances]).to.deep.equal([
+                undefined,
+                { top: 0, bottom: 0, left: 0.5, right: 0.5 },
+            ]);
+            const touchingLeft = { "w:tblpPr": { _attr: { "w:tblpX": 2000, "w:rightFromText": 180 } } };
+            expect(tableOf(readBody([tableWith(own, touchingLeft), p()], in2010)).float!.distances).to.deep.equal({
+                top: 0,
+                bottom: 0,
+                left: 0.5,
+                right: 9,
+            });
+            // Without borders, its first cell's margin to the left; and with no cells in its first row, or no rows, where it is
+            const offsetOf = (...table: readonly object[]): number | undefined =>
+                tableOf(readBody([{ "w:tbl": [{ "w:tblPr": [own, floating, margins] }, ...table] }, p()], in2010)).float!.horizontal.offset;
+            expect(offsetOf(rows)).to.equal(100 - 5.4);
+            expect(offsetOf({ "w:tr": [] }, rows)).to.equal(100);
+            expect(offsetOf()).to.equal(100);
+            const centred = {
+                "w:tblpPr": { _attr: { "w:horzAnchor": "margin", "w:vertAnchor": "text", "w:tblpXSpec": "center", ...distant } },
+            };
+            const lined = tableOf(readBody([tableWith(own, centred), p()], in2010));
+            expect([lined.unsupported, lined.float!.horizontal]).to.deep.equal([undefined, { from: "margin", align: "center" }]);
+        });
+    });
+
+    describe("lengths", () => {
+        type Length = number | `${number}${"in" | "pt" | "pc" | "pi"}`;
+
+        /** A document of every length docx takes a string for that the layout reads, each given by `length` */
+        const writtenWith = (length: (twips: number, measure: `${number}${"in" | "pt" | "pc" | "pi"}`) => Length): DocumentContent =>
+            readWritten({
+                sections: [
+                    {
+                        properties: {
+                            page: {
+                                size: { width: length(12240, "8.5in"), height: length(15840, "11in") },
+                                margin: {
+                                    top: length(1440, "1in"),
+                                    bottom: length(1440, "72pt"),
+                                    left: length(2160, "9pc"),
+                                    right: length(1440, "6pi"),
+                                    header: length(720, "0.5in"),
+                                    footer: length(720, "36pt"),
+                                    gutter: length(360, "0.25in"),
+                                },
+                            },
+                            column: { count: 2, space: length(720, "0.5in") },
+                        },
+                        children: [
+                            new Paragraph({
+                                indent: { left: length(720, "0.5in"), right: length(360, "18pt"), hanging: length(360, "0.25in") },
+                                children: [new TextRun({ text: "Indented", size: length(24, "12pt"), characterSpacing: 20 })],
+                            }),
+                            new Paragraph({ indent: { firstLine: length(360, "18pt") }, children: [new TextRun("First line")] }),
+                            new Table({
+                                width: { size: length(4320, "3in"), type: WidthType.DXA },
+                                // docx's columnWidths takes only numbers
+                                columnWidths: [1440, 2880],
+                                rows: [
+                                    new TableRow({
+                                        height: { value: length(720, "0.5in"), rule: HeightRule.ATLEAST },
+                                        children: [
+                                            new TableCell({
+                                                width: { size: length(1440, "1in"), type: WidthType.DXA },
+                                                children: [new Paragraph("A")],
+                                            }),
+                                            new TableCell({
+                                                width: { size: length(2880, "2in"), type: WidthType.DXA },
+                                                children: [new Paragraph("B")],
+                                            }),
+                                        ],
+                                    }),
+                                ],
+                            }),
+                        ],
+                    },
+                ],
+            });
+
+        it('should read lengths docx writes with units, such as "1in" or "12pt", as the same lengths given in numbers', () => {
+            const inNumbers = writtenWith((twips) => twips);
+            const withUnits = writtenWith((_, measure) => measure);
+            expect(withUnits.sections).to.deep.equal(inNumbers.sections);
+            expect(withUnits.blocks).to.deep.equal(inNumbers.blocks);
+            expect(withUnits.sections[0]).to.deep.include({ pageWidth: 612, marginLeft: 108, gutter: 18, columns: [189, 189] });
+            expect(itemsOf(withUnits)).to.deep.equal([{ type: "text", text: "Indented", font: { size: 12, characterSpacing: 1 } }]);
+            expect(paragraphOf(withUnits).format).to.deep.include({ indentLeft: 36, indentRight: 18, firstLineIndent: -18 });
+        });
+
+        it("should read a size in any unit wherever it is, and a negative fraction, as Word does", () => {
+            const ind = (left: string): object => pPr({ "w:ind": { _attr: { "w:left": left } } });
+            // Word draws a size in centimeters at whole half-points, rounded down, with or without a style that gives a size
+            // (stops2/word-stops-text2.ts RF27f, RF27g)
+            const sized = paragraphOf(readBody([p(r(rPr(value("w:sz", "1cm")), t("Text")))]));
+            expect([sized.unsupported, sized.items]).to.deep.equal([undefined, [{ type: "text", text: "Text", font: { size: 28 } }]]);
+            // The minus sign of a negative length is its whole number's only (word-stops-text.ts RF26, RF28)
+            const negative = paragraphOf(readBody([p(ind("-1.5cm"), r(t("Text")))]));
+            expect([negative.unsupported, negative.format.indentLeft]).to.deep.equal([
+                undefined,
+                Math.round((-1 + 0.5) * (1440 / 2.54)) / 20,
+            ]);
+            const table = (properties: object): DocumentContent =>
+                readBody([{ "w:tbl": [{ "w:tblPr": [properties] }, { "w:tr": [{ "w:tc": [p(r(t("Cell")))] }] }] }]);
+            expect(table({ "w:tblInd": { _attr: { "w:w": "-0.5mm", "w:type": "dxa" } } }).blocks[0].block.unsupported).to.equal(undefined);
+            const section = readBody([{ "w:sectPr": [{ "w:pgMar": { _attr: { "w:top": "-2.5cm" } } }] }]).sections[0];
+            expect(section.unsupported).to.equal(undefined);
+            // In the styles and lists too
+            expect(readBody([], { styles: { default: { document: { run: { size: "0.2in" } } } } }).unsupported).to.equal(undefined);
+            expect(
+                readBody([], {
+                    numbering: { config: [{ reference: "list", levels: [{ level: 0, text: "%1.", style: { run: { size: "1pc" } } }] }] },
+                }).unsupported,
+            ).to.equal(undefined);
+            expect(readBody([], { defaultTabStop: "-1.5cm" as unknown as number }).unsupported).to.equal(undefined);
+        });
+    });
+
+    it("should read headings as they are written, with their bookmarks from the table of contents", () => {
+        const content = readWritten({
+            sections: [{ children: [new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun("Title")] })] }],
+        });
+        expect(textOf(content)).to.equal("Title");
+    });
+
+    it("should read docx's Heading 4 in italics, and a right-to-left run in the italics of complex scripts", () => {
+        const content = readWritten({
+            sections: [
+                {
+                    children: [
+                        new Paragraph({ heading: HeadingLevel.HEADING_4, children: [new TextRun("Heading")] }),
+                        new Paragraph({
+                            children: [
+                                new TextRun({ text: "a", italics: true, rightToLeft: true }),
+                                new TextRun({ text: "b", italics: true, italicsComplexScript: false, rightToLeft: true }),
+                            ],
+                        }),
+                    ],
+                },
+            ],
+        });
+        expect(itemsOf(content)).to.deep.equal([{ type: "text", text: "Heading", font: { italic: true } }]);
+        expect(itemsOf(content, 1)).to.deep.equal([
+            { type: "text", text: "a", font: { italic: true, rightToLeft: true } },
+            { type: "text", text: "b", font: { rightToLeft: true } },
+        ]);
+    });
+
+    describe("tracked changes", () => {
+        const REVISION = { id: 1, author: "Reviewer", date: "2026-10-02T09:00:00Z" };
+        const deletedMark = rPr({ "w:del": { _attr: { "w:id": 1 } } });
+        const bookmark = (name: string): object => ({ "w:bookmarkStart": { _attr: { "w:name": name, "w:id": 9 } } });
+        const sectPr = (...children: readonly object[]): object => ({ "w:sectPr": children });
+        const pageSize = (width: number, height: number): object => ({ "w:pgSz": { _attr: { "w:w": width, "w:h": height } } });
+        const cell = (...paragraphs: readonly object[]): object => ({
+            "w:tc": [{ "w:tcPr": [{ "w:tcW": { _attr: { "w:w": 2000 } } }] }, ...paragraphs],
+        });
+        const fixed = { "w:tblLayout": { _attr: { "w:type": "fixed" } } };
+        const row = (properties: readonly object[], ...cells: readonly object[]): object => ({
+            "w:tr": [{ "w:trPr": properties }, ...cells],
+        });
+        const deletedRow = { "w:del": { _attr: { "w:id": 2 } } };
+        const tableOf = (properties: readonly object[], ...rows: readonly object[]): object => ({
+            "w:tbl": [{ "w:tblPr": properties }, { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 2000 } } }] }, ...rows],
+        });
+        const texts = (blocks: readonly unknown[]): readonly string[] =>
+            (blocks as readonly ParagraphBlock[]).map((block) =>
+                block.items.map((item) => (item.type === "text" ? item.text : "")).join(""),
+            );
+
+        it("should join a paragraph whose mark is deleted to the next, in the next one's formatting, as Word lays it out", () => {
+            // word-watertight-markup.docx MK3, word-tracked-changes.docx MK7a and MK7c: the next paragraph's alignment and
+            // spacing, the bookmarks between them in their place, and a run of deleted marks joined to the first that isn't
+            const content = readBody([
+                p(pPr(value("w:jc", "right"), { "w:spacing": { _attr: { "w:after": 600 } } }, deletedMark), r(t("first"))),
+                bookmark("between"),
+                p(pPr(value("w:jc", "center"), deletedMark), r(t("second"))),
+                p(r(t("third"))),
+                p(r(t("after"))),
+            ]);
+            expect(content.blocks).to.have.length(2);
+            expect(itemsOf(content).map((item) => (item.type === "text" ? item.text : item.type))).to.deep.equal([
+                "first",
+                "marker",
+                "second",
+                "third",
+            ]);
+            expect(paragraphOf(content).format).to.deep.equal({});
+            expect(paragraphOf(content).unsupported).to.equal(undefined);
+            expect(textOf(content, 1)).to.equal("after");
+        });
+
+        it("should lay out the text of a paragraph whose mark is deleted in the next one's style and list, as Word does", () => {
+            // word-tracked-changes.docx MK7e, MK7f and MK9: the first paragraph's text in the next one's style, and one number
+            // for the paragraphs joined, which the list counts once
+            const content = readWritten({
+                styles: { paragraphStyles: [{ id: "Big", name: "Big", run: { size: 32 } }] },
+                numbering: {
+                    config: [
+                        {
+                            reference: "list",
+                            levels: [{ level: 0, format: LevelFormat.DECIMAL, text: "%1.", alignment: AlignmentType.START }],
+                        },
+                    ],
+                },
+                sections: [
+                    {
+                        children: [
+                            new Paragraph({ style: "Big", run: { deletion: REVISION }, children: [new TextRun("first")] }),
+                            new Paragraph({ children: [new TextRun("second")] }),
+                            new Paragraph({ numbering: { reference: "list", level: 0 }, children: [new TextRun("one")] }),
+                            new Paragraph({
+                                numbering: { reference: "list", level: 0 },
+                                run: { deletion: REVISION },
+                                children: [new TextRun("two")],
+                            }),
+                            new Paragraph({ numbering: { reference: "list", level: 0 }, children: [new TextRun("three")] }),
+                            new Paragraph({ numbering: { reference: "list", level: 0 }, children: [new TextRun("four")] }),
+                        ],
+                    },
+                ],
+            });
+            const [first, second] = itemsOf(content);
+            expect(first).to.deep.include({ type: "text", text: "first" });
+            expect((first as { readonly font: object }).font).to.deep.equal((second as { readonly font: object }).font);
+            expect(paragraphOf(content).style).to.not.equal("Big");
+            expect([1, 2, 3].map((index) => textOf(content, index))).to.deep.equal(["1.one", "2.twothree", "3.four"]);
+        });
+
+        it("should keep a paragraph whose mark is deleted as it is when no paragraph follows it, as Word does", () => {
+            // word-tracked-changes.docx MK8a, MK8b and MK8d: before a table, at the end of a cell, and at the end of the document
+            const content = readBody([
+                p(pPr(deletedMark), r(t("before"))),
+                tableOf([fixed], row([], cell(p(pPr(deletedMark), r(t("one"))), p(pPr(deletedMark), r(t("two")))))),
+                p(pPr(deletedMark), r(t("last"))),
+            ]);
+            expect(content.blocks.map(({ block }) => block.unsupported)).to.deep.equal([undefined, undefined, undefined]);
+            expect(textOf(content)).to.equal("before");
+            expect(texts((content.blocks[1].block as TableBlock).rows[0].cells[0].blocks)).to.deep.equal(["onetwo"]);
+            expect(textOf(content, 2)).to.equal("last");
+        });
+
+        it("should leave a section whose break is deleted to the next section, laid out on its pages, as Word does", () => {
+            // word-tracked-changes.docx MK8c: a section on A4 whose break is deleted, before one on landscape pages
+            const content = readBody([
+                p(r(t("first"))),
+                p(pPr(deletedMark, sectPr(pageSize(11906, 16838)))),
+                p(r(t("second"))),
+                sectPr(pageSize(16838, 11906)),
+            ]);
+            expect(content.sections).to.have.length(1);
+            expect(content.sections[0]).to.deep.include({ pageWidth: 841.9, pageHeight: 595.3 });
+            expect(content.blocks.map(({ block, section }) => [texts([block])[0], section])).to.deep.equal([
+                ["first", 0],
+                ["second", 0],
+            ]);
+        });
+
+        it("should leave a section whose break is deleted to the next whatever their properties, its start too, as Word does", () => {
+            // stops2/word-stops-tracked-edges.docx TR10b: the first section takes the next one's properties, its start too
+            const first = readBody([p(pPr(deletedMark, sectPr(value("w:type", "continuous")))), p(r(t("next"))), sectPr()]);
+            expect(first.blocks[0].block.unsupported).to.equal(undefined);
+            expect(first.sections).to.have.length(1);
+            expect(first.sections[0].start).to.equal("nextPage");
+            // stops2/word-stops-tracked2.ts TR13: after the first too, a section on a new page whose break is deleted before a
+            // continuous one goes on on the page before, as the next section's
+            const later = (type: string): DocumentContent =>
+                readBody([
+                    p(r(t("a"))),
+                    p(pPr(sectPr())),
+                    p(pPr(deletedMark, sectPr(value("w:type", "nextPage")))),
+                    p(r(t("next"))),
+                    sectPr(value("w:type", type)),
+                ]);
+            expect(later("continuous").blocks[2].block.unsupported).to.equal(undefined);
+            expect(later("continuous").sections.map(({ start }) => start)).to.deep.equal(["nextPage", "continuous"]);
+            expect(later("nextPage").sections.map(({ start }) => start)).to.deep.equal(["nextPage", "nextPage"]);
+            // The next section's properties are found past paragraphs that don't end one, as the body's own
+            expect(readBody([p(pPr(deletedMark, sectPr())), p(r(t("a"))), p(r(t("b")))]).blocks[0].block.unsupported).to.equal(undefined);
+        });
+
+        it("should leave out a deleted section break with nothing shown before a table, leaving its section to the table's, as Word does", () => {
+            // stops2/word-stops-tracked2.ts TR14: the table right after the paragraph before, in the next section
+            const table = tableOf([fixed], row([], cell(p(r(t("cell"))))));
+            const content = readBody([
+                p(r(t("a"))),
+                bookmark("x"),
+                p(pPr(deletedMark, sectPr())),
+                table,
+                sectPr(value("w:type", "continuous")),
+            ]);
+            expect(content.blocks.map(({ block }) => block.type)).to.deep.equal(["paragraph", "table"]);
+            expect(content.blocks.map(({ block }) => block.unsupported)).to.deep.equal([undefined, undefined]);
+            expect(content.sections).to.have.length(1);
+            // Its bookmarks start with the table
+            expect(((content.blocks[1].block as TableBlock).rows[0].cells[0].blocks[0] as ParagraphBlock).items[0]).to.deep.equal({
+                type: "marker",
+                name: "x",
+            });
+            // With text shown, which can't be joined to the table, Word hasn't been seen
+            expect(readBody([p(pPr(deletedMark, sectPr()), r(t("shown"))), table]).blocks[0].block.unsupported).to.equal(
+                "a deleted section break of a paragraph with text shown before something that isn't a paragraph",
+            );
+        });
+
+        it("should keep the document's last paragraph whose mark, which ends a section, is deleted, with a line, as Word does", () => {
+            // stops2/word-stops-tracked-edges.docx TR10a: the paragraph takes a line, where one that only ends a section takes none
+            const content = readBody([p(r(t("a"))), p(pPr(deletedMark, sectPr())), sectPr(value("w:type", "continuous"))]);
+            expect(content.sections).to.have.length(2);
+            expect(content.blocks).to.have.length(2);
+            expect(content.blocks[1].block).to.not.have.property("sectionBreak");
+            expect(content.blocks[1].block.unsupported).to.equal(undefined);
+            const kept = readBody([p(r(t("a"))), p(pPr(sectPr())), sectPr(value("w:type", "continuous"))]);
+            expect(kept.blocks[1].block).to.deep.include({ sectionBreak: true });
+        });
+
+        it("should join a paragraph whose mark is moved as one whose mark is deleted, and stop at the start of a content control", () => {
+            // stops2/word-stops-moves.docx TR7: the paragraph moved, its text and its mark, takes no room
+            const moved = readBody([
+                p(pPr(rPr({ "w:moveFrom": { _attr: { "w:id": 3 } } })), { "w:moveFrom": [r(t("moved"))] }),
+                p(r(t("next"))),
+            ]);
+            expect(moved.blocks.map(({ block }) => texts([block])[0])).to.deep.equal(["next"]);
+            const control = (...content: readonly object[]): object => ({ "w:sdt": [{ "w:sdtPr": [] }, { "w:sdtContent": content }] });
+            const edge =
+                "a deleted paragraph mark at the end of a content control with nothing after it, or before one bound to custom XML or nested in another";
+            // stops2/word-stops-tracked2.ts TR12: before a content control, joined to its first paragraph, as though the control
+            // weren't there, and into one in another
+            expect(
+                texts(readBody([p(pPr(deletedMark), r(t("a"))), control(p(r(t("b"))), p(r(t("c"))))]).blocks.map(({ block }) => block)),
+            ).to.deep.equal(["ab", "c"]);
+            expect(
+                texts(readBody([p(pPr(deletedMark), r(t("a"))), control(control(p(r(t("b")))))]).blocks.map(({ block }) => block)),
+            ).to.deep.equal(["ab"]);
+            // At the end of one with nothing after it, and before one bound to custom XML, Word hasn't been seen
+            expect(readBody([p(r(t("x"))), control(p(pPr(deletedMark), r(t("a"))))]).blocks[1].block.unsupported).to.equal(edge);
+            const bound = {
+                "w:sdt": [{ "w:sdtPr": [{ "w:dataBinding": { _attr: { "w:xpath": "/a" } } }] }, { "w:sdtContent": [p(r(t("b")))] }],
+            };
+            expect(readBody([p(pPr(deletedMark), r(t("a"))), bound]).blocks[0].block.unsupported).to.equal(edge);
+            // At the end of one, before a paragraph, Word joins them as though it weren't there (word-stops-tracked-edges.docx
+            // TR8), in custom XML too
+            const ended = readBody([
+                control(p(r(t("a"))), p(pPr(deletedMark), r(t("b")))),
+                p(r(t("c"))),
+                { "w:customXml": [p(pPr(deletedMark), r(t("d")))] },
+                p(r(t("e"))),
+            ]);
+            expect(ended.blocks.map(({ block }) => texts([block])[0])).to.deep.equal(["a", "bc", "de"]);
+            // In custom XML, and in a content control, paragraphs are joined as anywhere else
+            const nested = readBody([
+                { "w:customXml": [p(pPr(deletedMark), r(t("a"))), p(r(t("b")))] },
+                control(p(pPr(deletedMark), r(t("c"))), p(r(t("d")))),
+            ]);
+            expect(nested.blocks.map(({ block }) => texts([block])[0])).to.deep.equal(["ab", "cd"]);
+        });
+
+        it("should leave out deleted pictures, tabs, breaks and text moved elsewhere, but keep their bookmarks, as Word does", () => {
+            // word-tracked-changes.docx MK10a to MK10d and MK10f
+            const content = readBody([
+                p(
+                    r(t("a")),
+                    {
+                        "w:del": [
+                            r({ "w:tab": {} }, { "w:br": { _attr: { "w:type": "page" } } }, { "w:delText": ["text"] }),
+                            bookmark("deleted"),
+                            { "w:hyperlink": [r({ "w:delText": ["link"] })] },
+                            { "w:sdt": [{ "w:sdtPr": [] }, { "w:sdtContent": [r({ "w:delText": ["control"] })] }] },
+                            { "w:proofErr": {} },
+                        ],
+                    },
+                    { "w:moveFrom": [r(t("moved"))] },
+                    { "w:moveTo": [r(t("b"))] },
+                ),
+            ]);
+            expect(itemsOf(content)).to.deep.equal([
+                { type: "text", text: "a", font: {} },
+                { type: "marker", name: "deleted" },
+                { type: "text", text: "b", font: {} },
+            ]);
+        });
+
+        it("should number a footnote whose reference is deleted without laying it out, as Word does", () => {
+            // word-tracked-changes.docx MK10e: the footnote after it is numbered 2
+            const content = readBody(
+                [
+                    p(
+                        r(t("a")),
+                        { "w:del": [r({ "w:footnoteReference": { _attr: { "w:id": 1 } } })] },
+                        r({ "w:footnoteReference": { _attr: { "w:id": 2 } } }),
+                    ),
+                ],
+                { footnotes: { 1: { children: [new Paragraph("Deleted")] }, 2: { children: [new Paragraph("Kept")] } } },
+            );
+            expect(itemsOf(content)).to.deep.equal([
+                { type: "text", text: "a", font: {} },
+                { type: "marker", name: "footnote 2" },
+                { type: "text", text: "2", font: {} },
+            ]);
+            expect([...content.footnotes.keys()]).to.deep.equal(["footnote 2"]);
+            // A deleted reference in a header, which has no notes, is nothing
+            const header = readWritten({
+                footnotes: { 1: { children: [new Paragraph("Note")] } },
+                sections: [
+                    {
+                        headers: {
+                            default: new Header({
+                                children: [
+                                    new Paragraph({
+                                        children: [new DeletedTextRun({ ...REVISION, children: [new FootnoteReferenceRun(1)] })],
+                                    }),
+                                ],
+                            }),
+                        },
+                        children: [new Paragraph("Body")],
+                    },
+                ],
+            });
+            expect(header.sections[0].headers.default![0].unsupported).to.equal(undefined);
+            expect((header.sections[0].headers.default![0] as ParagraphBlock).items).to.deep.equal([]);
+        });
+
+        it("should leave out a field deleted whole, as Word does, and mark one only partly deleted as unsupported", () => {
+            const del = (...runs: readonly object[]): object => ({ "w:del": runs });
+            const deletedInstruction = (text: string): object => r({ "w:delInstrText": [text] });
+            // Deleted whole, its runs each in a deletion of its own, as Word writes them, then a field after it, which
+            // is read as before
+            const whole = readBody([
+                p(
+                    r(t("a")),
+                    del(field("begin")),
+                    del(deletedInstruction("PAGEREF here")),
+                    del(field("separate")),
+                    del(r({ "w:delText": ["3"] })),
+                    del(field("end")),
+                    r(t("b")),
+                ),
+                p(field("begin"), instruction("PAGEREF there"), field("separate"), r(t("9")), field("end")),
+            ]);
+            expect(textOf(whole)).to.equal("ab");
+            expect(textOf(whole, 1)).to.equal("[there]");
+            expect(whole.blocks.map(({ block }) => block.unsupported)).to.deep.equal([undefined, undefined]);
+            const partly = (...content: readonly object[]): string | undefined => readBody([p(...content)]).blocks[0].block.unsupported;
+            const reason = "a field partly deleted in a tracked change";
+            // Its end deleted, or its separator, and not its start; its start deleted and not its separator or end; and
+            // its result not deleted, where its start is
+            expect(
+                partly(field("begin"), instruction("PAGEREF here"), field("separate"), r(t("3")), del(field("end")), r(t("after"))),
+            ).to.equal(reason);
+            expect(partly(field("begin"), instruction("PAGE"), del(field("separate")), r(t("3")), field("end"))).to.equal(reason);
+            expect(partly(del(field("begin")), instruction("PAGE"), field("separate"), r(t("3")), field("end"))).to.equal(reason);
+            expect(
+                partly(del(field("begin")), del(deletedInstruction("PAGE")), del(field("separate")), r(t("3")), del(field("end"))),
+            ).to.equal(reason);
+        });
+
+        it("should number a note whose reference is deleted or moved elsewhere without laying it out, as Word does", () => {
+            const reference = (name: string, id: number, more = {}): object => r({ [name]: { _attr: { "w:id": id, ...more } } });
+            // stops2/word-stops-tracked-edges.docx TR3b: a deleted endnote reference is i, and the kept one after it ii
+            const endnotes = readBody([p({ "w:del": [reference("w:endnoteReference", 1)] }, reference("w:endnoteReference", 2))], {
+                endnotes: { 1: { children: [new Paragraph("Deleted")] }, 2: { children: [new Paragraph("Kept")] } },
+            });
+            expect(itemsOf(endnotes)).to.deep.equal([
+                { type: "marker", name: "endnote 2" },
+                { type: "text", text: "ii", font: {} },
+            ]);
+            // Its separator, and the kept one's note alone
+            expect(endnotes.endnotes.map((block) => texts([block])[0])).to.deep.equal(["", "iiKept"]);
+            // stops2/word-stops-moves.docx TR3a: a footnote reference moved is 1 where it was, and 2 where it is, whose note is
+            // laid out
+            const moved = readBody(
+                [
+                    p({ "w:moveFrom": [reference("w:footnoteReference", 1)] }, r(t("middle")), {
+                        "w:moveTo": [reference("w:footnoteReference", 2)],
+                    }),
+                ],
+                { footnotes: { 1: { children: [new Paragraph("From")] }, 2: { children: [new Paragraph("To")] } } },
+            );
+            expect(itemsOf(moved)).to.deep.equal([
+                { type: "text", text: "middle", font: {} },
+                { type: "marker", name: "footnote 2" },
+                { type: "text", text: "2", font: {} },
+            ]);
+            expect([...moved.footnotes.keys()]).to.deep.equal(["footnote 2"]);
+            // A deleted footnote or endnote reference with a mark of its own isn't counted, as one that isn't deleted isn't
+            // (`word-stops-notes.docx` NT15, stops2/word-stops-notes2.ts NE5): the endnote after one is i. Its note Word lays
+            // out after the others' (stops2/word-stops-tracked2.ts TR17), which isn't followed
+            const ownMark = reference("w:footnoteReference", 1, { "w:customMarkFollows": 1 });
+            expect(readBody([p({ "w:del": [ownMark] })]).blocks[0].block.unsupported).to.equal(
+                "a deleted footnote or endnote reference with a mark of its own",
+            );
+            const ownEndnote = readBody(
+                [p({ "w:del": [reference("w:endnoteReference", 1, { "w:customMarkFollows": 1 })] }, reference("w:endnoteReference", 2))],
+                { endnotes: { 1: { children: [new Paragraph("One")] }, 2: { children: [new Paragraph("Two")] } } },
+            );
+            expect(ownEndnote.blocks[0].block.unsupported).to.equal("a deleted footnote or endnote reference with a mark of its own");
+            expect([...ownEndnote.endnoteReferences.keys()]).to.deep.equal(["endnote 1"]);
+        });
+
+        it("should leave out a deleted row, and a table all of whose rows are deleted, with their bookmarks after them, as Word does", () => {
+            // word-watertight-markup.docx MK6, word-tracked-changes.docx MK11a and MK11g: tables without borders
+            const content = readBody([
+                {
+                    "w:tbl": [
+                        { "w:tblPr": [fixed] },
+                        { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 2000 } } }] },
+                        bookmark("row"),
+                        row([deletedRow, { "w:tblHeader": {} }], bookmark("cell"), cell(p(bookmark("inside"), r(t("deleted"))))),
+                        row([], cell(p(r(t("kept"))))),
+                        row([deletedRow], cell(p(r(t("deleted too"))))),
+                    ],
+                },
+                tableOf([fixed], row([deletedRow], cell(p(r(t("gone")))))),
+                p(r(t("after"))),
+            ]);
+            expect(content.blocks).to.have.length(2);
+            const table = content.blocks[0].block as TableBlock;
+            expect(table.rows).to.have.length(1);
+            expect(table.rows[0]).to.deep.include({ header: false, borderTop: 0, borderBottom: 0 });
+            expect(table.rows[0].cells[0].blocks[0]).to.deep.include({
+                items: [
+                    { type: "marker", name: "row" },
+                    { type: "marker", name: "cell" },
+                    { type: "marker", name: "inside" },
+                    { type: "text", text: "kept", font: {} },
+                ],
+            });
+            // A table laid out fixed isn't sized by its deleted rows
+            expect(table.deletedRows).to.equal(undefined);
+            expect(table.unsupported).to.equal(undefined);
+            expect(textOf(content, 1)).to.equal("after");
+        });
+
+        it("should start the bookmarks in a deleted row of a table laid out fixed in the next row, with its deleted tabs and breaks", () => {
+            // Nothing sizes the columns of a table laid out fixed by its deleted row, so its deleted runs are read as the
+            // layout reads them: nothing, but for their bookmarks
+            const content = readBody([
+                tableOf(
+                    [fixed],
+                    row([deletedRow], cell(p(bookmark("deleted"), { "w:del": [r({ "w:tab": {} }, { "w:br": {} })] }))),
+                    row([], cell(p(r(t("kept"))))),
+                ),
+            ]);
+            const table = content.blocks[0].block as TableBlock;
+            expect(table.unsupported).to.equal(undefined);
+            expect((table.rows[0].cells[0].blocks[0] as ParagraphBlock).items[0]).to.deep.equal({ type: "marker", name: "deleted" });
+        });
+
+        describe("borders around a deleted row", () => {
+            const border = (name: string, eighths = 24, style = "single"): object => ({
+                [name]: { _attr: { "w:val": style, "w:sz": eighths } },
+            });
+            const allOf = (top: number, insideH: number, bottom: number): object => ({
+                "w:tblBorders": [border("w:top", top), border("w:insideH", insideH), border("w:bottom", bottom)],
+            });
+            /** A table of five rows, those of `deleted` (from 1) deleted, with borders of their own when given */
+            const tableWith = (
+                properties: readonly object[],
+                deleted: readonly number[],
+                deletedCell: readonly object[] = [],
+            ): TableBlock =>
+                readBody([
+                    tableOf(
+                        [fixed, ...properties],
+                        ...[1, 2, 3, 4, 5].map((at) =>
+                            deleted.includes(at)
+                                ? row([deletedRow], { "w:tc": [{ "w:tcPr": deletedCell }, p(r(t(`row ${at}`)))] })
+                                : row([], cell(p(r(t(`row ${at}`))))),
+                        ),
+                    ),
+                ]).blocks[0].block as TableBlock;
+            const roomsOf = (table: TableBlock): readonly (readonly number[])[] =>
+                table.rows.map(({ borderTop, borderBottom }) => [borderTop, borderBottom]);
+            const ownBorders = (...borders: readonly object[]): readonly object[] => [{ "w:tcBorders": borders }];
+
+            it("should lay out a table whose borders are all alike as though its deleted rows weren't there, as Word does", () => {
+                // word-tracked-tables.docx MK14a to MK14f: borders of 3 points, the third row deleted, the first, the
+                // last, and the second and third
+                const without = [
+                    [3, 0],
+                    [3, 0],
+                    [3, 0],
+                    [3, 3],
+                ];
+                for (const deleted of [[3], [1], [5]]) {
+                    const table = tableWith([allOf(24, 24, 24)], deleted);
+                    expect(table.unsupported).to.equal(undefined);
+                    expect(roomsOf(table)).to.deep.equal(without);
+                }
+                expect(roomsOf(tableWith([allOf(24, 24, 24)], [2, 3]))).to.deep.equal([
+                    [3, 0],
+                    [3, 0],
+                    [3, 3],
+                ]);
+                // Borders left and right of the cells, which a deleted row leaves as they are
+                const sides = tableWith([{ "w:tblBorders": [border("w:left"), border("w:insideV")] }], [3]);
+                expect(sides.unsupported).to.equal(undefined);
+                expect(roomsOf(sides)).to.deep.equal([
+                    [0, 0],
+                    [0, 0],
+                    [0, 0],
+                    [0, 0],
+                ]);
+            });
+
+            it("should keep a deleted row's own borders as one border between the rows around it, as Word does", () => {
+                // word-tracked-tables.docx MK14g: no borders but the deleted third row's, 3 points above and below it,
+                // which leave one border of 3 points between the second and fourth
+                const table = tableWith([], [3], ownBorders(border("w:top"), border("w:bottom")));
+                expect(table.unsupported).to.equal(undefined);
+                expect(roomsOf(table)).to.deep.equal([
+                    [0, 0],
+                    [0, 0],
+                    [3, 0],
+                    [0, 0],
+                ]);
+            });
+
+            it("should mark a deleted row whose borders take other room than those around it as unsupported, as Word's room isn't known", () => {
+                const reason = "a deleted table row with borders other than those around it";
+                // Its own border above it and none below it
+                expect(tableWith([], [3], ownBorders(border("w:top"))).unsupported).to.equal(reason);
+                // At the top and bottom, the table's top or bottom border wider than its borders between rows
+                expect(tableWith([allOf(24, 8, 8)], [1]).unsupported).to.equal(reason);
+                expect(tableWith([allOf(8, 8, 24)], [5]).unsupported).to.equal(reason);
+                // At the top, its own borders, which aren't the table's top border, none
+                expect(tableWith([], [1], ownBorders(border("w:top"), border("w:bottom"))).unsupported).to.equal(reason);
+                // Its own border in a style not yet followed
+                expect(tableWith([], [3], ownBorders(border("w:top", 10, "wave"))).unsupported).to.equal(
+                    "a table border in a style not yet followed",
+                );
+            });
+
+            it("should leave out the space between cells around a deleted row, as Word does, but for a table with borders", () => {
+                // word-tracked-tables.docx MK14h and MK14i: 100 twips between cells, and no borders
+                const spacing = { "w:tblCellSpacing": { _attr: { "w:w": 100, "w:type": "dxa" } } };
+                const table = tableWith([spacing], [3]);
+                expect(table.unsupported).to.equal(undefined);
+                expect(roomsOf(table)).to.deep.equal([
+                    [10, 5],
+                    [5, 5],
+                    [5, 5],
+                    [5, 10],
+                ]);
+                // stops2/word-stops-tracked.docx TR4c: with borders too, the rows around it are as they are without it
+                const bordered = tableWith([spacing, allOf(8, 8, 8)], [3]);
+                expect(bordered.unsupported).to.equal(undefined);
+                expect(roomsOf(bordered)).to.deep.equal([
+                    [12, 6],
+                    [6, 6],
+                    [6, 6],
+                    [6, 12],
+                ]);
+                // stops2/word-stops-tracked2.ts TR16a to TR16c: a deleted first or last row, or one with borders of its own,
+                // leaves the rows as they are without it too
+                for (const laidOut of [
+                    tableWith([spacing, allOf(8, 8, 8)], [3], ownBorders(border("w:top"), border("w:bottom"))),
+                    tableWith([spacing, allOf(8, 8, 8)], [1]),
+                    tableWith([spacing, allOf(8, 8, 8)], [5]),
+                ]) {
+                    expect(laidOut.unsupported).to.equal(undefined);
+                    expect(roomsOf(laidOut)).to.deep.equal([
+                        [12, 6],
+                        [6, 6],
+                        [6, 6],
+                        [6, 12],
+                    ]);
+                }
+            });
+        });
+
+        describe("a table style around a deleted row", () => {
+            // A table style whose parts are each of a size of their own: its first row 16 points, its last 14, and its
+            // bands of one row 12 and 10
+            const part = (type: string, halfPoints: number): string =>
+                `<w:tblStylePr w:type="${type}"><w:rPr><w:sz w:val="${halfPoints}"/></w:rPr></w:tblStylePr>`;
+            const options = {
+                externalStyles: `<w:styles xmlns:w="main"><w:style w:type="table" w:styleId="Parts"><w:name w:val="Parts"/><w:tblPr><w:tblStyleRowBandSize w:val="1"/></w:tblPr>${part("firstRow", 32)}${part("lastRow", 28)}${part("band1Horz", 24)}${part("band2Horz", 20)}</w:style></w:styles>`,
+            };
+            const look = (firstRow: number, lastRow: number, noHBand: number): object => ({
+                "w:tblLook": { _attr: { "w:firstRow": firstRow, "w:lastRow": lastRow, "w:noHBand": noHBand, "w:noVBand": 1 } },
+            });
+            const tableWith = (tableLook: object, ...rows: readonly object[]): TableBlock =>
+                readBody([tableOf([fixed, value("w:tblStyle", "Parts"), tableLook], ...rows)], options).blocks[0].block as TableBlock;
+            /** The size of the text of each row laid out */
+            const sizesOf = (table: TableBlock): readonly (number | undefined)[] =>
+                table.rows.map(({ cells }) => {
+                    const [item] = (cells[0].blocks[0] as ParagraphBlock).items;
+                    return item.type === "text" ? item.font.size : undefined;
+                });
+            const kept = (text: string, ...properties: readonly object[]): object => row(properties, cell(p(r(t(text)))));
+            const deleted = (text: string, ...properties: readonly object[]): object =>
+                row([deletedRow, ...properties], cell(p(r(t(text)))));
+
+            it("should format each row by its place among all the rows, the deleted ones too, as Word does", () => {
+                // word-tracked-tables.docx MK14j: the first row deleted, so the second isn't the first
+                const first = tableWith(look(1, 0, 1), deleted("1"), kept("2"), kept("3"));
+                expect(first.unsupported).to.equal(undefined);
+                expect(sizesOf(first)).to.deep.equal([undefined, undefined]);
+                // MK14k: the last row deleted, so the one before isn't the last
+                const last = tableWith(look(0, 1, 1), kept("1"), kept("2"), deleted("3"));
+                expect(last.unsupported).to.equal(undefined);
+                expect(sizesOf(last)).to.deep.equal([undefined, undefined]);
+                // MK14l: bands of one row, which count the deleted second row
+                const bands = tableWith(look(0, 0, 0), kept("1"), deleted("2"), kept("3"), kept("4"), kept("5"));
+                expect(bands.unsupported).to.equal(undefined);
+                expect(sizesOf(bands)).to.deep.equal([12, 12, 10, 12]);
+            });
+
+            it("should mark a deleted row in a header of several rows as unsupported where it isn't known which parts of the style apply", () => {
+                const header = { "w:tblHeader": {} };
+                // The first of two header rows deleted, with the first row turned off: the second is in the band before
+                // the first with the deleted row counted, and in the first without it
+                expect(tableWith(look(0, 0, 0), deleted("1", header), kept("2", header), kept("3"), kept("4")).unsupported).to.equal(
+                    "a deleted row in a table's header of several rows, whose style formats some of its rows",
+                );
+                // With the first row turned on, the rows are formatted alike either way: the header row left is the first row,
+                // and the bands start below it
+                const alike = tableWith(look(1, 0, 0), deleted("1", header), kept("2", header), kept("3"), kept("4"));
+                expect(alike.unsupported).to.equal(undefined);
+                expect(sizesOf(alike)).to.deep.equal([16, 12, 10]);
+            });
+        });
+
+        it("should start a merge in a cell merged down from a deleted row, as Word lays it out when it is empty", () => {
+            // word-tracked-changes.docx MK11b and MK11c
+            const merged = (merge: string, ...paragraphs: readonly object[]): object => ({
+                "w:tc": [{ "w:tcPr": [{ "w:tcW": { _attr: { "w:w": 2000 } } }, value("w:vMerge", merge)] }, ...paragraphs],
+            });
+            const mergesOf = (...rows: readonly object[]): readonly (string | undefined)[] => {
+                const table = readBody([tableOf([fixed], ...rows)]).blocks[0].block as TableBlock;
+                return [...table.rows.map(({ cells }) => cells[0].verticalMerge), table.unsupported];
+            };
+            // The row a merge starts in deleted: the next starts it
+            expect(
+                mergesOf(
+                    row([deletedRow], merged("restart", p(r(t("a"))))),
+                    row([], merged("continue", p())),
+                    row([], merged("continue", p())),
+                ),
+            ).to.deep.equal(["restart", "continue", undefined]);
+            // A row it goes on through deleted: it goes on
+            expect(
+                mergesOf(
+                    row([], merged("restart", p(r(t("a"))))),
+                    row([deletedRow], merged("continue", p())),
+                    row([], merged("continue", p())),
+                ),
+            ).to.deep.equal(["restart", "continue", undefined]);
+            // A cell that would start it with text in it, which Word hasn't been seen laying out
+            expect(mergesOf(row([deletedRow], merged("restart", p(r(t("a"))))), row([], merged("continue", p(r(t("b"))))))).to.deep.equal([
+                "restart",
+                "a cell merged down from a deleted table row",
+            ]);
+        });
+
+        it("should number the notes of a deleted row without laying them out, and stop at a list in one, as Word may count it", () => {
+            // stops2/word-stops-tracked.docx TR4b: the deleted row's footnote is numbered after one before it, as one whose
+            // reference is deleted is, and the one after it is numbered after it, though neither is laid out
+            const reference = (id: number): object => r({ "w:footnoteReference": { _attr: { "w:id": id } } });
+            const notes = {
+                footnotes: {
+                    1: { children: [new Paragraph("One")] },
+                    2: { children: [new Paragraph("Two")] },
+                    3: { children: [new Paragraph("Three")] },
+                },
+            };
+            const noted = readBody(
+                [
+                    tableOf([fixed], row([deletedRow], cell(p(reference(1), { "w:del": [reference(2)] }))), row([], cell(p(r(t("kept")))))),
+                    p(reference(3)),
+                ],
+                notes,
+            );
+            expect(noted.blocks[0].block.unsupported).to.equal(undefined);
+            expect(itemsOf(noted, 1)).to.deep.equal([
+                { type: "marker", name: "footnote 3" },
+                { type: "text", text: "3", font: {} },
+            ]);
+            expect([...noted.footnotes.keys()]).to.deep.equal(["footnote 3"]);
+            // One with a mark of its own isn't counted
+            const own = readBody(
+                [
+                    tableOf(
+                        [fixed],
+                        row([deletedRow], cell(p(r({ "w:footnoteReference": { _attr: { "w:id": 1, "w:customMarkFollows": 1 } } })))),
+                        row([], cell(p())),
+                    ),
+                    p(reference(2)),
+                ],
+                notes,
+            );
+            expect(itemsOf(own, 1)[1]).to.deep.equal({ type: "text", text: "1", font: {} });
+            // An endnote is numbered so too: the one after it is ii
+            const endnotes = readBody(
+                [
+                    tableOf([fixed], row([deletedRow], cell(p(r({ "w:endnoteReference": { _attr: { "w:id": 1 } } })))), row([], cell(p()))),
+                    p(r({ "w:endnoteReference": { _attr: { "w:id": 2 } } })),
+                ],
+                { endnotes: { 1: { children: [new Paragraph("One")] }, 2: { children: [new Paragraph("Two")] } } },
+            );
+            expect(itemsOf(endnotes, 1)[1]).to.deep.equal({ type: "text", text: "ii", font: {} });
+            // and one with a mark of its own isn't counted, as a footnote isn't: the one after it is i
+            const endnote = readBody(
+                [
+                    tableOf(
+                        [fixed],
+                        row([deletedRow], cell(p(r({ "w:endnoteReference": { _attr: { "w:id": 1, "w:customMarkFollows": 1 } } })))),
+                        row([], cell(p())),
+                    ),
+                    p(r({ "w:endnoteReference": { _attr: { "w:id": 2 } } })),
+                ],
+                { endnotes: { 1: { children: [new Paragraph("One")] }, 2: { children: [new Paragraph("Two")] } } },
+            );
+            // Its note Word has been seen laying out after the others' where the reference is deleted in text (stops2/word-stops-tracked2.ts
+            // TR17), which isn't followed
+            expect(endnote.blocks[0].block.unsupported).to.equal("a deleted footnote or endnote reference with a mark of its own");
+            expect(itemsOf(endnote, 1)[1]).to.deep.equal({ type: "text", text: "i", font: {} });
+            // stops2/word-stops-tracked2.ts TR15: the list of a deleted row counts on, though its paragraph takes no room: the
+            // paragraph after a table whose only row is deleted, which takes no room, is 3
+            const listed = readWritten({
+                numbering: { config: [{ reference: "list", levels: [{ level: 0, format: LevelFormat.DECIMAL, text: "%1." }] }] },
+                sections: [
+                    {
+                        children: [
+                            new Paragraph({ numbering: { reference: "list", level: 0 }, text: "before" }),
+                            new Table({
+                                layout: "fixed",
+                                rows: [
+                                    new TableRow({
+                                        deletion: REVISION,
+                                        children: [
+                                            new TableCell({
+                                                children: [new Paragraph({ numbering: { reference: "list", level: 0 }, text: "item" })],
+                                            }),
+                                        ],
+                                    }),
+                                ],
+                            }),
+                            new Paragraph({ numbering: { reference: "list", level: 0 }, text: "after" }),
+                        ],
+                    },
+                ],
+            });
+            expect(listed.blocks.map(({ block }) => block.type)).to.deep.equal(["paragraph", "paragraph"]);
+            expect([0, 1].map((index) => textOf(listed, index))).to.deep.equal(["1.before", "3.after"]);
+            expect(listed.blocks.map(({ block }) => block.unsupported)).to.deep.equal([undefined, undefined]);
+            // Every row deleted, and one with table properties of its own, which aren't followed: the table is only why it stops
+            const exceptions = { "w:tblPrEx": [{ "w:tblW": { _attr: { "w:w": 5000, "w:type": "dxa" } } }] };
+            expect(
+                readBody([{ "w:tbl": [{ "w:tr": [{ "w:trPr": [deletedRow] }, exceptions, { "w:tc": [p()] }] }] }]).blocks[0].block,
+            ).to.deep.equal({
+                type: "table",
+                rows: [],
+                unsupported: "a table row with table properties of its own",
+            });
+        });
+
+        it("should stop at a deleted footnote or endnote reference with a mark of its own, which Word lays out after the others", () => {
+            // stops2/word-stops-tracked2.ts TR17: the kept endnote's note first, then the deleted one's, each marked i
+            const own = { "w:endnoteReference": { _attr: { "w:id": 1, "w:customMarkFollows": 1 } } };
+            const content = readBody([p(r(t("a")), { "w:del": [{ _attr: { "w:id": 3 } }, r(own), r({ "w:delText": "*" })] }, r(t("b")))], {
+                endnotes: { 1: { children: [new Paragraph("One")] } },
+            });
+            expect(paragraphOf(content).unsupported).to.equal("a deleted footnote or endnote reference with a mark of its own");
+        });
+
+        it("should keep deleted rows and deleted text to size the columns of a table by, as Word sizes them", () => {
+            // word-tracked-changes.docx MK11h to MK11j: a table whose cells have widths, which Word widens for long words
+            const content = readBody(
+                [
+                    tableOf(
+                        [],
+                        row(
+                            [],
+                            cell(
+                                p(
+                                    r(t("a")),
+                                    { "w:del": [r({ "w:delText": [" deleted"] }), r({ "w:delInstrText": ["PAGE"] })] },
+                                    r({ "w:footnoteReference": { _attr: { "w:id": 1 } } }),
+                                ),
+                            ),
+                        ),
+                        row([], cell(p(r(t("plain"))))),
+                        row([deletedRow], cell(p(r(t("deleted row"))))),
+                    ),
+                    p(r({ "w:footnoteReference": { _attr: { "w:id": 2 } } })),
+                ],
+                { footnotes: { 1: { children: [new Paragraph("One")] }, 2: { children: [new Paragraph("Two")] } } },
+            );
+            const table = content.blocks[0].block as TableBlock;
+            expect(table.widen).to.deep.equal({});
+            const [first, second] = table.rows.map(({ cells }) => cells[0]);
+            expect(texts(first.blocks)).to.deep.equal(["a1"]);
+            // The footnote is numbered as it is where it is laid out, and counted once
+            expect(texts(first.sizing!)).to.deep.equal(["a deleted1"]);
+            expect(second.sizing).to.equal(undefined);
+            expect(table.deletedRows!.map(({ cells }) => texts(cells[0].blocks))).to.deep.equal([["deleted row"]]);
+            expect(table.unsupported).to.equal(undefined);
+            expect(textOf(content, 1)).to.equal("2");
+        });
+
+        it("should count each page reference with \\p once, as docx counts them: not again in a cell read to size its table, nor in deleted text, but in a deleted row", () => {
+            const relative = (fieldOf: (type: string) => object, instructionOf: object): readonly object[] => [
+                fieldOf("begin"),
+                instructionOf,
+                fieldOf("separate"),
+                fieldOf("end"),
+            ];
+            const deletedField = (type: string): object => r({ "w:fldChar": { _attr: { "w:fldCharType": type } } });
+            const content = readBody([
+                tableOf(
+                    [],
+                    row(
+                        [],
+                        cell(
+                            p(
+                                ...relative(field, instruction("PAGEREF a \\p")),
+                                { "w:del": relative(deletedField, r({ "w:delInstrText": ["PAGEREF a \\p"] })) },
+                                { "w:del": [{ "w:fldSimple": [{ _attr: { "w:instr": "PAGEREF a \\p" } }] }] },
+                            ),
+                        ),
+                    ),
+                    row([], cell(p(r(t("plain"))))),
+                    row([deletedRow], cell(p(...relative(field, instruction("PAGEREF a \\p"))))),
+                ),
+                p(...relative(field, instruction("PAGEREF a \\p"))),
+            ]);
+            // The cell is read to size the columns with its deleted text, and again to be laid out, with the same markers
+            expect((content.blocks[0].block as TableBlock).rows[0].cells[0].sizing).not.to.equal(undefined);
+            expect(Object.fromEntries(content.relativeReferences)).to.deep.equal({ a: ["field 1", "field 2", "field 3"] });
+        });
+
+        it("should size a table's columns by deleted pictures, tabs, breaks, note references and marks as they are written", () => {
+            const table = (...paragraphs: readonly object[]): TableBlock =>
+                readBody([tableOf([], row([], cell(...paragraphs)))], {
+                    footnotes: { 1: { children: [new Paragraph("Note")] } },
+                }).blocks[0].block as TableBlock;
+            const typesOf = (block: ParagraphBlock | TableBlock): readonly string[] =>
+                block.type === "paragraph" ? block.items.map((item) => (item.type === "text" ? item.text : item.type)) : [];
+            // stops2/word-stops-tracked.docx TR1b to TR1d: a deleted tab, break and footnote reference count in the width, though
+            // the lines are laid out without them
+            const deleted = table(
+                p(r(t("a")), { "w:del": [r({ "w:tab": {} }, { "w:br": {} })] }, r(t("b")), {
+                    "w:del": [r({ "w:footnoteReference": { _attr: { "w:id": 1 } } })],
+                }),
+            );
+            const [own] = deleted.rows[0].cells;
+            expect(typesOf(own.blocks[0])).to.deep.equal(["a", "b"]);
+            expect(own.blocks[0].unsupported).to.equal(undefined);
+            expect(typesOf(own.sizing![0])).to.deep.equal(["a", "tab", "break", "b", "1"]);
+            // TR11: paragraphs joined by a deleted mark are laid out as one, and size the columns as two
+            const joined = table(p(pPr(deletedMark), r(t("one"))), p(r(t("two")))).rows[0].cells[0];
+            expect(joined.blocks.map(typesOf)).to.deep.equal([["one", "two"]]);
+            expect(joined.sizing!.map(typesOf)).to.deep.equal([["one"], ["two"]]);
+            expect(joined.blocks[0].unsupported).to.equal(undefined);
+        });
+
+        it("should read the deleted rows of tables in tables, and of tables in headers, to size their columns by", () => {
+            // A table in a deleted row, whose cell has deleted text: read as Word sizes the columns by it, twice over
+            const inner = tableOf([], row([], cell(p(bookmark("nested"), r(t("a")), { "w:del": [r({ "w:delText": ["b"] })] }))));
+            const content = readBody([tableOf([], row([deletedRow], cell(inner, p())), row([], cell(p(r(t("c"))))))]);
+            const outer = content.blocks[0].block as TableBlock;
+            const nested = outer.deletedRows![0].cells[0].blocks[0] as TableBlock;
+            expect(texts(nested.rows[0].cells[0].blocks)).to.deep.equal(["ab"]);
+            // The bookmark in the deleted row's table starts in the next row laid out
+            expect((outer.rows[0].cells[0].blocks[0] as ParagraphBlock).items[0]).to.deep.equal({ type: "marker", name: "nested" });
+            // A header has no notes to number
+            const header = readWritten({
+                sections: [
+                    {
+                        headers: {
+                            default: new Header({
+                                children: [
+                                    new Table({
+                                        rows: [
+                                            new TableRow({
+                                                deletion: REVISION,
+                                                children: [new TableCell({ children: [new Paragraph("deleted")] })],
+                                            }),
+                                            new TableRow({ children: [new TableCell({ children: [new Paragraph("kept")] })] }),
+                                        ],
+                                    }),
+                                ],
+                            }),
+                        },
+                        children: [new Paragraph("Body")],
+                    },
+                ],
+            });
+            const headerTable = header.sections[0].headers.default![0] as TableBlock;
+            expect(headerTable.rows).to.have.length(1);
+            expect(headerTable.deletedRows).to.have.length(1);
+        });
+
+        it("should lay out a document that asks for a view of tracked changes as Word for Mac opened it, in its own view", () => {
+            // word-tracked-changes.docx MK12 and MK13: with insertions and deletions, or markup, turned off, Word for Mac
+            // opened the document in its own view, with deleted text in balloons and its lines without it
+            const file = new File({ sections: [] });
+            const settings = Object.create(file, {
+                Settings: {
+                    value: {
+                        prepForXml: () => ({
+                            "w:settings": [
+                                { "w:revisionView": { _attr: { "w:insDel": "0", "w:markup": "0" } } },
+                                { "w:compat": [{ "w:compatSetting": { _attr: { "w:name": "compatibilityMode", "w:val": 15 } } }] },
+                            ],
+                        }),
+                    },
+                },
+            }) as File;
+            const content = readDocument(
+                { "w:body": [p(r(t("a")), { "w:del": [r({ "w:delText": ["b"] })] })] } as IXmlableObject,
+                contextOf(settings),
+            );
+            expect(content.unsupported).to.equal(undefined);
+            expect(textOf(content)).to.equal("a");
+        });
+    });
+
+    describe("soft hyphens, hidden paragraph marks and decimal tab stops", () => {
+        const bookmark = (name: string): object => ({ "w:bookmarkStart": { _attr: { "w:name": name, "w:id": 9 } } });
+        const hiddenMark = rPr({ "w:vanish": {} });
+        const cellOf = (...paragraphs: readonly object[]): object => ({
+            "w:tc": [{ "w:tcPr": [{ "w:tcW": { _attr: { "w:w": 2000 } } }] }, ...paragraphs],
+        });
+        /** A table of these cells in a row, whose columns are fixed, so Word doesn't size them to their text */
+        const fixedTableOf = (...cells: readonly object[]): object => ({
+            "w:tbl": [
+                { "w:tblPr": [{ "w:tblLayout": { _attr: { "w:type": "fixed" } } }] },
+                { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 2000 } } }] },
+                { "w:tr": cells },
+            ],
+        });
+        const tableOf = (...cells: readonly object[]): object => ({
+            "w:tbl": [{ "w:tblPr": [] }, { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 2000 } } }] }, { "w:tr": cells }],
+        });
+        const texts = (content: DocumentContent): readonly string[] =>
+            content.blocks.map(({ block }) =>
+                block.type === "paragraph" ? block.items.map((item) => (item.type === "text" ? item.text : "")).join("") : "table",
+            );
+
+        it("should read a soft hyphen as where a word may break, in its run's font, and nothing in hidden text", () => {
+            const content = readBody([
+                p(
+                    r(rPr(value("w:sz", 30)), t("Donau"), { "w:softHyphen": {} }, t("dampf")),
+                    r(rPr({ "w:vanish": {} }), { "w:softHyphen": {} }),
+                ),
+            ]);
+            expect(itemsOf(content).map((item) => (item.type === "text" ? item.text : item))).to.deep.equal([
+                "Donau",
+                { type: "softHyphen", font: { size: 15 } },
+                "dampf",
+            ]);
+        });
+
+        it("should mark a soft hyphen whose breaking Word hasn't been seen with as unsupported", () => {
+            // One in text with a border breaks as any other (word-stops-tabs.ts SH11)
+            const bordered = rPr({ "w:bdr": { _attr: { "w:val": "single", "w:sz": 4, "w:space": 4 } } });
+            const boxed = readBody([p(r(bordered, t("a"), { "w:softHyphen": {} }, t("b")))]);
+            expect([paragraphOf(boxed).unsupported, itemsOf(boxed).map(({ type }) => type)]).to.deep.equal([
+                undefined,
+                ["text", "softHyphen", "text"],
+            ]);
+            // In a table whose columns Word sizes to their text, whose narrowest may be a word's widest part
+            expect(readBody([tableOf(cellOf(p(r(t("a"), { "w:softHyphen": {} }, t("b")))))]).blocks[0].block.unsupported).to.equal(
+                "a soft hyphen in a table whose columns Word sizes to their text",
+            );
+        });
+
+        it("should join a paragraph whose mark is hidden to the next, as Word lays it out, where they are formatted the same", () => {
+            // word-watertight-text.docx TX11a: the two paragraphs on one line. Its hidden text takes no room
+            const content = readBody([
+                p(pPr(value("w:jc", "center"), hiddenMark), r(t("first"))),
+                p(pPr(value("w:jc", "center"), hiddenMark), r(rPr({ "w:vanish": {} }), t("hidden"))),
+                p(pPr(value("w:jc", "center")), r(t("second"))),
+                p(r(t("after"))),
+            ]);
+            expect(texts(content)).to.deep.equal(["firstsecond", "after"]);
+            expect(paragraphOf(content).format.alignment).to.equal("center");
+            // A mark hidden by its style, the same as the next's, and a mark that is shown though its style is hidden
+            const styles = { paragraphStyles: [{ id: "Hidden", name: "Hidden", run: { vanish: true } }] };
+            const byStyle = readBody(
+                [
+                    p(pPr(value("w:pStyle", "Hidden")), r(rPr(value("w:vanish", "false")), t("one"))),
+                    p(pPr(value("w:pStyle", "Hidden"), rPr(value("w:vanish", "false"))), r(rPr(value("w:vanish", "false")), t("two"))),
+                    p(r(t("three"))),
+                ],
+                { styles },
+            );
+            expect(texts(byStyle)).to.deep.equal(["onetwo", "three"]);
+            // With specVanish too, as Word's style separator writes it
+            const separator = readBody([p(pPr(rPr({ "w:vanish": {} }, { "w:specVanish": {} })), r(t("one"))), p(r(t("two")))]);
+            expect(texts(separator)).to.deep.equal(["onetwo"]);
+            // One naming the default style, and one naming none, are formatted the same
+            const named = readBody([p(pPr(value("w:pStyle", "Normal"), hiddenMark), r(t("one"))), p(r(t("two")))]);
+            expect([named.blocks[0].block.unsupported, ...texts(named)]).to.deep.equal([undefined, "onetwo"]);
+        });
+
+        it("should leave a paragraph whose mark is hidden as it is, with no paragraph after it to join, as Word lays it out", () => {
+            // word-breaks-and-tabs.docx HM2a, HM2b: before a table, at the end of a table cell, alone or after another
+            // paragraph, each on its own line. The end of the document is the end of a part too
+            const content = readBody([
+                p(pPr(hiddenMark), r(t("before"))),
+                tableOf(cellOf(p(pPr(hiddenMark), r(t("alone")))), cellOf(p(r(t("first"))), p(pPr(hiddenMark), r(t("last"))))),
+                p(pPr(hiddenMark), r(t("end"))),
+            ]);
+            expect(texts(content)).to.deep.equal(["before", "table", "end"]);
+            const cells = (content.blocks[1].block as TableBlock).rows[0].cells.map(({ blocks }) => blocks.length);
+            expect([content.unsupported, ...content.blocks.map(({ block }) => block.unsupported), cells]).to.deep.equal([
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                [1, 2],
+            ]);
+        });
+
+        it("should join paragraphs that differ in their alignment, left indent and space in the first one's formatting but for the next one's space after, as Word does", () => {
+            // word-breaks-and-tabs.docx HM1a to HM1f: the first one's indent, alignment and space before, and the next one's
+            // space after
+            const spacing = (before: number, after: number): object => ({
+                "w:spacing": { _attr: { "w:before": before, "w:after": after } },
+            });
+            const content = readBody([
+                p(pPr(value("w:jc", "center"), spacing(480, 480), { "w:ind": { _attr: { "w:left": 1440 } } }, hiddenMark), r(t("first"))),
+                p(pPr(value("w:jc", "right"), spacing(100, 200), rPr(value("w:sz", 40))), r(t("second"))),
+            ]);
+            expect(texts(content)).to.deep.equal(["firstsecond"]);
+            expect(paragraphOf(content).format).to.deep.include({ alignment: "center", indentLeft: 72, spaceBefore: 24, spaceAfter: 10 });
+            // with the next one's mark
+            expect(paragraphOf(content).markFont).to.deep.include({ size: 20 });
+            // and the first one's space after left out where the next has none of its own
+            const noneAfter = readBody([p(pPr(spacing(480, 480), hiddenMark), r(t("first"))), p(r(t("second")))]);
+            expect(paragraphOf(noneAfter).format).to.deep.include({ spaceBefore: 24 });
+            expect(paragraphOf(noneAfter).format.spaceAfter ?? 0).to.equal(0);
+        });
+
+        it("should join paragraphs that differ in their right and first line indents, tab stops and borders in the first one's", () => {
+            // stops2/word-stops-hidden.docx HD1c, HD1d, HD1g, HD1h: the second one's right indent of 2000, first line indent of
+            // 720, tab stop at 3000 and borders, none of which Word lays the joined paragraph out with
+            const content = readBody([
+                p(pPr(hiddenMark), r(t("first"))),
+                p(
+                    pPr(
+                        { "w:ind": { _attr: { "w:right": 2000, "w:firstLine": 720 } } },
+                        { "w:tabs": [{ "w:tab": { _attr: { "w:val": "left", "w:pos": 3000 } } }] },
+                        { "w:pBdr": [{ "w:top": { _attr: { "w:val": "single", "w:sz": 4, "w:space": 1 } } }] },
+                    ),
+                    r(t("second")),
+                ),
+            ]);
+            expect(texts(content)).to.deep.equal(["firstsecond"]);
+            expect(paragraphOf(content).unsupported).to.equal(undefined);
+            expect(paragraphOf(content).format).to.not.have.any.keys("indentRight", "firstLineIndent", "borderTop");
+            expect(paragraphOf(content).tabStops).to.deep.equal([]);
+        });
+
+        it("should space the lines of paragraphs of other line spacing joined by a hidden mark line by line, as Word does", () => {
+            // stops2/word-stops-hidden.docx HD1f, word-breaks-and-tabs.docx HM1h, HM1i: from the line the next one's text starts
+            // on, its line spacing
+            const spaced = (line: number): object => ({ "w:spacing": { _attr: { "w:line": line, "w:lineRule": "auto" } } });
+            const content = readBody([p(pPr(hiddenMark), r(t("first"))), p(pPr(spaced(360)), r(t("second")))]);
+            expect(paragraphOf(content).unsupported).to.equal(undefined);
+            expect(itemsOf(content)).to.deep.equal([
+                { type: "text", text: "first", font: {} },
+                { type: "marker", name: "joined spacing" },
+                { type: "text", text: "second", font: {} },
+            ]);
+            expect(paragraphOf(content).format.lineSpacingFrom).to.deep.equal([
+                { marker: "joined spacing", lineSpacing: { rule: "multiple", multiple: 1.5 } },
+            ]);
+            // The other way round, the next one in the style's spacing, which is none
+            const back = readBody([p(pPr(spaced(480), hiddenMark), r(t("first"))), p(r(t("second")))]);
+            expect(paragraphOf(back).format).to.deep.include({
+                lineSpacing: { rule: "multiple", multiple: 2 },
+                lineSpacingFrom: [{ marker: "joined spacing" }],
+            });
+            // The same line spacing is the paragraph's, with no marker
+            const same = readBody([p(pPr(spaced(360), hiddenMark), r(t("first"))), p(pPr(spaced(360)), r(t("second")))]);
+            expect(paragraphOf(same).format).to.not.have.property("lineSpacingFrom");
+            expect(itemsOf(same).map(({ type }) => type)).to.deep.equal(["text", "text"]);
+            // stops2/word-stops-hidden2.ts HD16a to HD16c: exact and at-least spacing too, and three paragraphs, single, 1.5
+            // and double, each with a marker where it starts, but for the one spaced as the one before
+            const exact = { "w:spacing": { _attr: { "w:line": 240, "w:lineRule": "exact" } } };
+            expect(paragraphOf(readBody([p(pPr(hiddenMark), r(t("a"))), p(pPr(exact), r(t("b")))])).format.lineSpacingFrom).to.deep.equal([
+                { marker: "joined spacing", lineSpacing: { rule: "exact", height: 12 } },
+            ]);
+            const three = readBody([
+                p(pPr(hiddenMark), r(t("first"))),
+                p(pPr(spaced(240), hiddenMark), r(t("second"))),
+                p(pPr(spaced(360), hiddenMark), r(t("third"))),
+                p(pPr(spaced(480)), r(t("fourth"))),
+            ]);
+            expect(paragraphOf(three).unsupported).to.equal(undefined);
+            expect(paragraphOf(three).format.lineSpacingFrom).to.deep.equal([
+                { marker: "joined spacing", lineSpacing: { rule: "multiple", multiple: 1 } },
+                { marker: "joined spacing 2", lineSpacing: { rule: "multiple", multiple: 1.5 } },
+                { marker: "joined spacing 3", lineSpacing: { rule: "multiple", multiple: 2 } },
+            ]);
+            expect(
+                itemsOf(three).map((item) => (item.type === "text" ? item.text : item.type === "marker" ? item.name : item.type)),
+            ).to.deep.equal(["first", "joined spacing", "second", "joined spacing 2", "third", "joined spacing 3", "fourth"]);
+        });
+
+        it("should join paragraphs of other styles by a hidden mark, each one's text in its own style, as Word does", () => {
+            // stops2/word-stops-hidden2.ts HD15a, HD15b: the first's text in its style's 16 points, the second's in 11, with the
+            // second's mark, and the first's style's space before
+            const styles = {
+                paragraphStyles: [
+                    { id: "Large", name: "Large", run: { size: 32 }, paragraph: { spacing: { after: 100 } } },
+                    { id: "Spaced", name: "Spaced", paragraph: { spacing: { before: 240, after: 300 } } },
+                    { id: "Kept", name: "Kept", paragraph: { keepNext: true } },
+                ],
+            };
+            const joined = readBody([p(pPr(value("w:pStyle", "Large"), hiddenMark), r(t("first"))), p(r(t("second")))], { styles });
+            expect(paragraphOf(joined).unsupported).to.equal(undefined);
+            expect(itemsOf(joined)).to.deep.equal([
+                { type: "text", text: "first", font: { size: 16 } },
+                { type: "text", text: "second", font: {} },
+            ]);
+            expect(paragraphOf(joined).markFont).to.deep.equal({});
+            expect(paragraphOf(joined).format.spaceAfter ?? 0).to.equal(0);
+            // The other way round, the second's style's text and mark
+            const back = readBody([p(pPr(hiddenMark), r(t("first"))), p(pPr(value("w:pStyle", "Large")), r(t("second")))], { styles });
+            expect(itemsOf(back).map((item) => (item.type === "text" ? item.font : item))).to.deep.equal([{}, { size: 16 }]);
+            expect(paragraphOf(back).markFont).to.deep.equal({ size: 16 });
+            expect(paragraphOf(back).format.spaceAfter).to.equal(5);
+            // The first's style's space before, and the second's space after; a style's keepNext, which Word hasn't been seen
+            // with, stops it
+            const spaced = readBody([p(pPr(value("w:pStyle", "Spaced"), hiddenMark), r(t("first"))), p(r(t("second")))], { styles });
+            expect(paragraphOf(spaced).unsupported).to.equal(undefined);
+            expect(paragraphOf(spaced).format).to.deep.include({ spaceBefore: 12 });
+            expect(paragraphOf(spaced).format.spaceAfter ?? 0).to.equal(0);
+            expect(
+                paragraphOf(readBody([p(pPr(hiddenMark), r(t("first"))), p(pPr(value("w:pStyle", "Kept")), r(t("second")))], { styles }))
+                    .unsupported,
+            ).to.equal(
+                "a hidden paragraph mark between paragraphs formatted differently otherwise than in their alignment, indents, space, line spacing, tab stops, borders and styles",
+            );
+        });
+
+        it("should join the last paragraph of a content control by its hidden mark to the paragraph after it, as Word does", () => {
+            // stops2/word-stops-hidden-edges.docx HD3, in custom XML too
+            const control = (...inside: readonly object[]): object => ({ "w:sdt": [{ "w:sdtPr": [] }, { "w:sdtContent": inside }] });
+            const content = readBody([
+                control(p(r(t("a"))), p(pPr(hiddenMark), r(t("b")))),
+                p(r(t("c"))),
+                { "w:customXml": [p(pPr(hiddenMark), r(t("d")))] },
+                p(r(t("e"))),
+            ]);
+            expect(texts(content)).to.deep.equal(["a", "bc", "de"]);
+            expect(content.blocks.map(({ block }) => block.unsupported)).to.deep.equal([undefined, undefined, undefined]);
+            // Not one bound to custom XML, nor one whose last block isn't a paragraph, nor before what isn't a paragraph
+            const bound = {
+                "w:sdt": [
+                    { "w:sdtPr": [{ "w:dataBinding": { _attr: { "w:xpath": "/a" } } }] },
+                    { "w:sdtContent": [p(pPr(hiddenMark), r(t("a")))] },
+                ],
+            };
+            expect(readBody([bound, p(r(t("b")))]).unsupported).to.equal(undefined);
+            const table = tableOf(cellOf(p(r(t("x")))));
+            expect(texts(readBody([control(p(pPr(hiddenMark), r(t("a"))), table), p(r(t("b")))]))).to.deep.equal(["a", "table", "b"]);
+            expect(readBody([control(p(pPr(hiddenMark), r(t("a")))), table]).blocks[0].block.unsupported).to.equal(
+                "a hidden paragraph mark at the end of a content control with nothing after it, or before one bound to custom XML or nested in another",
+            );
+            // stops2/word-stops-hidden2.ts HD11: before a content control, joined to its first paragraph, as though the control
+            // weren't there
+            const before = readBody([p(pPr(hiddenMark), r(t("a"))), control(p(r(t("b"))), p(r(t("c")))), p(r(t("d")))]);
+            expect(texts(before)).to.deep.equal(["ab", "c", "d"]);
+            expect(before.blocks.map(({ block }) => block.unsupported)).to.deep.equal([undefined, undefined, undefined]);
+            // From the end of one control into the next
+            expect(texts(readBody([control(p(r(t("a"))), p(pPr(hiddenMark), r(t("b")))), control(p(r(t("c"))))]))).to.deep.equal([
+                "a",
+                "bc",
+            ]);
+            // Not before one that starts with a table
+            expect(texts(readBody([p(pPr(hiddenMark), r(t("a"))), control(table, p(r(t("b"))))]))).to.deep.equal(["a", "table", "b"]);
+        });
+
+        it("should join a hidden section break with text shown to the next section's first paragraph, and leave one with nothing shown out, as Word does", () => {
+            // stops2/word-stops-hidden2.ts HD14a: before a continuous section otherwise alike, joined, in the next section
+            const joined = readBody([
+                p(r(t("first"))),
+                p(pPr({ "w:sectPr": [value("w:pgSz", 1)] }, hiddenMark), r(t("shown"))),
+                p(r(t("second"))),
+                { "w:sectPr": [value("w:type", "continuous"), value("w:pgSz", 1)] },
+            ]);
+            expect(texts(joined)).to.deep.equal(["first", "shownsecond"]);
+            expect(joined.blocks.map(({ block }) => block.unsupported)).to.deep.equal([undefined, undefined]);
+            expect(joined.sections).to.have.length(1);
+            // HD14b: with nothing shown, before a section on a new page, no room, and the section starts its page
+            const newPage = readBody([
+                p(r(t("first"))),
+                p(pPr({ "w:sectPr": [value("w:pgSz", 1)] }, hiddenMark)),
+                p(r(t("second"))),
+                { "w:sectPr": [value("w:type", "nextPage"), value("w:pgSz", 2)] },
+            ]);
+            expect(texts(newPage)).to.deep.equal(["first", "second"]);
+            expect(newPage.blocks.map(({ block }) => block.unsupported)).to.deep.equal([undefined, undefined]);
+            expect(newPage.sections.map(({ start }) => start)).to.deep.equal(["nextPage", "nextPage"]);
+            // A paragraph with a hidden mark joined to the empty paragraph that ends its section, as docx writes one, ends the
+            // section with it
+            const ended = readBody([
+                p(pPr(hiddenMark), r(t("first"))),
+                p(pPr({ "w:sectPr": [value("w:pgSz", 1)] })),
+                p(r(t("second"))),
+                { "w:sectPr": [value("w:pgSz", 2)] },
+            ]);
+            expect(texts(ended)).to.deep.equal(["first", "second"]);
+            expect(ended.blocks.map(({ block, section }) => [block.unsupported, section])).to.deep.equal([
+                [undefined, 0],
+                [undefined, 1],
+            ]);
+            expect(ended.sections).to.have.length(2);
+        });
+
+        it("should give a paragraph with nothing shown whose hidden mark ends a section no room before a section alike on its page", () => {
+            // stops2/word-stops-hidden-edges.docx HD10: the second section continuous, and otherwise as the first
+            const content = readBody([
+                p(r(t("first"))),
+                p(pPr({ "w:sectPr": [value("w:pgSz", 1)] }, hiddenMark)),
+                p(r(t("second"))),
+                { "w:sectPr": [value("w:type", "continuous"), value("w:pgSz", 1)] },
+            ]);
+            expect(texts(content)).to.deep.equal(["first", "second"]);
+            expect(content.sections).to.have.length(2);
+            expect(content.blocks.map(({ block }) => block.unsupported)).to.deep.equal([undefined, undefined]);
+        });
+
+        it("should count the number of a paragraph of a list joined to the one before by its hidden mark, as Word does", () => {
+            // word-breaks-and-tabs.docx HM4: three numbered paragraphs, the first's mark hidden, numbered 1 and 3
+            const numbering = { config: [{ reference: "list", levels: [{ level: 0, format: LevelFormat.DECIMAL, text: "%1." }] }] };
+            const item = (text: string, run = {}): Paragraph =>
+                new Paragraph({ numbering: { reference: "list", level: 0 }, run, children: [new TextRun(text)] });
+            const content = readWritten({
+                numbering,
+                sections: [{ children: [item("one", { vanish: true }), item("two"), item("three")] }],
+            });
+            expect(
+                [0, 1].map((index) => itemsOf(content, index).map((part) => (part.type === "text" ? part.text : part.type))),
+            ).to.deep.equal([
+                ["1.", "tab", "one", "two"],
+                ["3.", "tab", "three"],
+            ]);
+        });
+
+        it("should lay out a paragraph with nothing shown and its mark hidden as nothing, in the next one's formatting, as Word does", () => {
+            // word-breaks-and-tabs.docx HM3a, HM3b, HM3c, HM3e: its text, its mark and its space take no room. Its bookmarks
+            // start with the next one
+            const styles = {
+                paragraphStyles: [{ id: "Hidden", name: "Hidden", run: { vanish: true } }],
+                characterStyles: [{ id: "Secret", name: "Secret", run: { vanish: true } }],
+            };
+            const content = readBody(
+                [
+                    p(pPr(value("w:pStyle", "Hidden"), { "w:spacing": { _attr: { "w:before": 480 } } }), bookmark("a"), r(t("hidden")), {
+                        "w:hyperlink": [r(rPr(value("w:rStyle", "Secret")), t("secret"))],
+                    }),
+                    p(pPr(value("w:jc", "center")), r(t("shown"))),
+                    p(pPr(hiddenMark, value("w:jc", "right"))),
+                    p(r(t("after"))),
+                ],
+                { styles },
+            );
+            expect(texts(content)).to.deep.equal(["shown", "after"]);
+            expect(itemsOf(content)[0]).to.deep.equal({ type: "marker", name: "a" });
+            expect(paragraphOf(content).format).to.deep.include({ alignment: "center" });
+            expect(paragraphOf(content).format.spaceBefore ?? 0).to.equal(0);
+            expect(paragraphOf(content, 1).format.alignment ?? "left").to.equal("left");
+        });
+
+        it("should leave a paragraph whose mark has specVanish but isn't hidden as it is, as Word does", () => {
+            // word-breaks-and-tabs.docx HM5a
+            const content = readBody([p(pPr(rPr({ "w:specVanish": {} })), r(t("one"))), p(r(t("two")))]);
+            expect(texts(content)).to.deep.equal(["one", "two"]);
+        });
+
+        it("should mark a hidden paragraph mark Word hasn't been seen with as unsupported", () => {
+            const unsupportedOf = (...elements: readonly object[]): string | undefined => {
+                const content = readBody(elements, {
+                    numbering: {
+                        config: [{ reference: "list", levels: [{ level: 0, format: LevelFormat.DECIMAL, text: "%1." }] }],
+                    },
+                    styles: { paragraphStyles: [{ id: "Big", name: "Big", run: { size: 32 } }] },
+                });
+                return content.unsupported ?? content.blocks.find(({ block }) => block.unsupported)?.block.unsupported;
+            };
+            // Paragraphs kept with the next, or indented in characters, which Word hasn't shown
+            const different =
+                "a hidden paragraph mark between paragraphs formatted differently otherwise than in their alignment, indents, space, line spacing, tab stops, borders and styles";
+            for (const properties of [[{ "w:keepNext": {} }], [{ "w:ind": { _attr: { "w:leftChars": 100 } } }]]) {
+                expect(unsupportedOf(p(pPr(...properties, hiddenMark), r(t("a"))), p(r(t("b"))))).to.equal(different);
+            }
+            expect(unsupportedOf(p(pPr(value("w:pStyle", "Big"), hiddenMark), r(t("a"))), p(r(t("b"))))).to.equal(undefined);
+            // A section break whose paragraph shows something, before a section on a new page, or before a table, and one
+            // whose paragraph shows nothing before a continuous section formatted otherwise, or an even page section
+            const shown = (next: object): string | undefined => unsupportedOf(p(pPr({ "w:sectPr": [] }, hiddenMark), r(t("a"))), next);
+            const shownStop =
+                "a hidden section break of a paragraph with text shown, before something that isn't a paragraph, or a section that doesn't start on its page or is formatted otherwise";
+            expect(shown(p(r(t("b"))))).to.equal(shownStop);
+            expect(
+                unsupportedOf(
+                    p(pPr({ "w:sectPr": [] }, hiddenMark), r(t("a"))),
+                    { "w:tbl": [{ "w:tr": [{ "w:tc": [p()] }] }] },
+                    {
+                        "w:sectPr": [value("w:type", "continuous")],
+                    },
+                ),
+            ).to.equal(shownStop);
+            const continuous = { "w:sectPr": [value("w:type", "continuous")] };
+            const hiddenStop =
+                "a hidden section break of a paragraph with nothing shown, before a continuous section formatted otherwise, or an even or odd page section";
+            expect(
+                unsupportedOf(p(pPr({ "w:sectPr": [] }, hiddenMark)), p(r(t("b"))), { "w:sectPr": [value("w:type", "evenPage")] }),
+            ).to.equal(hiddenStop);
+            expect(unsupportedOf(p(pPr({ "w:sectPr": [value("w:pgSz", 1)] }, hiddenMark)), p(r(t("b"))), continuous)).to.equal(hiddenStop);
+            expect(
+                unsupportedOf(p(pPr({ "w:sectPr": [{ "w:cols": { _attr: { "w:num": 2 } } }] }, hiddenMark)), p(r(t("b"))), {
+                    "w:sectPr": [value("w:type", "continuous"), { "w:cols": { _attr: { "w:num": 2 } } }],
+                }),
+            ).to.equal(hiddenStop);
+            // Joined past a paragraph with nothing shown that is in a list, or has a field in it, which would be read out of
+            // order, by a hidden or deleted mark
+            const numbered = pPr(hiddenMark, { "w:numPr": [value("w:ilvl", 0), value("w:numId", 1)] });
+            expect(unsupportedOf(p(pPr(hiddenMark), r(t("a"))), p(numbered), p(r(t("b"))))).to.equal(
+                "a hidden paragraph mark before a paragraph with nothing shown and its mark hidden",
+            );
+            const hiddenRun = (child: object): object => r(rPr({ "w:vanish": {} }), child);
+            const pageField = [
+                hiddenRun({ "w:fldChar": { _attr: { "w:fldCharType": "begin" } } }),
+                hiddenRun({ "w:instrText": ["PAGE"] }),
+                hiddenRun({ "w:fldChar": { _attr: { "w:fldCharType": "end" } } }),
+            ];
+            const deletedMark = pPr(rPr({ "w:del": { _attr: { "w:id": 1, "w:author": "a", "w:date": "2026-01-01T00:00:00Z" } } }));
+            expect(unsupportedOf(p(deletedMark, r(t("a"))), p(pPr(hiddenMark), ...pageField), p(r(t("b"))))).to.equal(
+                "a deleted paragraph mark before a paragraph with nothing shown and its mark hidden",
+            );
+            // In a table whose columns Word sizes to their text, as anywhere else
+            expect(unsupportedOf(tableOf(cellOf(p(pPr(hiddenMark), r(t("a"))), p(r(t("b"))))))).to.equal(undefined);
+            expect(unsupportedOf(tableOf(cellOf(p(pPr(hiddenMark)), p(r(t("b"))))))).to.equal(undefined);
+        });
+
+        it("should give a paragraph whose text and mark are all hidden no room, whatever its formatting, as Word lays it out", () => {
+            // word-breaks-and-tabs.docx HM3: text and mark hidden (HM3a), an empty paragraph whose mark is hidden (HM3b), a
+            // paragraph of a hidden style (HM3c, word-seq.docx Q8), and an empty one with space before and after (HM3e)
+            // take no room, but one whose text is hidden and mark isn't takes a line (HM3d)
+            const hiddenText = rPr({ "w:vanish": {} });
+            const content = readBody(
+                [
+                    p(r(t("above"))),
+                    p(pPr(hiddenMark), r(hiddenText, t("text and mark"))),
+                    // word-seq.docx Q8: with a SEQ field in it, which is counted where it is
+                    p(
+                        pPr(value("w:pStyle", "Hidden")),
+                        r(t("hidden style ")),
+                        field("begin"),
+                        instruction("SEQ Figure"),
+                        field("separate"),
+                        field("end"),
+                    ),
+                    p(pPr({ "w:spacing": { _attr: { "w:before": 480, "w:after": 480 } } }, hiddenMark)),
+                    p(pPr(hiddenMark), r(rPr(value("w:rStyle", "HiddenRun")), t("hidden character style"))),
+                    p(pPr(hiddenMark)),
+                    p(r(hiddenText, t("text only"))),
+                    p(pPr(value("w:jc", "center")), r(t("below"))),
+                ],
+                {
+                    styles: {
+                        // Hidden by the style the paragraph's is based on
+                        paragraphStyles: [
+                            { id: "HiddenBase", name: "Hidden Base", run: { vanish: true } },
+                            { id: "Hidden", name: "Hidden", basedOn: "HiddenBase", paragraph: { indent: { left: 720 } } },
+                        ],
+                        characterStyles: [{ id: "HiddenRun", name: "Hidden Run", run: { vanish: true } }],
+                    },
+                },
+            );
+            expect(texts(content)).to.deep.equal(["above", "", "below"]);
+            expect([content.unsupported, ...content.blocks.map(({ block }) => block.unsupported)]).to.deep.equal([
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+            ]);
+            // The paragraph after it in its own formatting
+            expect(paragraphOf(content, 2).format.alignment).to.equal("center");
+        });
+
+        it("should start the bookmarks in a paragraph whose text and mark are all hidden with the block after it", () => {
+            const hiddenParagraph = (name: string): object =>
+                p(pPr(hiddenMark, value("w:jc", "right")), bookmark(name), r(hiddenMark, t("x")));
+            const content = readBody([
+                p(r(t("above"))),
+                hiddenParagraph("body"),
+                p(r(t("next"))),
+                // In a table cell
+                fixedTableOf(cellOf(p(r(t("a"))), hiddenParagraph("cell"), p(r(t("b"))))),
+            ]);
+            expect(texts(content)).to.deep.equal(["above", "next", "table"]);
+            expect(itemsOf(content, 1)[0]).to.deep.equal({ type: "marker", name: "body" });
+            const [cell] = (content.blocks[2].block as TableBlock).rows[0].cells;
+            expect(cell.blocks.map((block) => (block.type === "paragraph" ? block.items[0] : undefined))).to.deep.equal([
+                { type: "text", text: "a", font: {} },
+                { type: "marker", name: "cell" },
+            ]);
+            // The paragraphs next to it know it is there, for their contextual spacing
+            const [first, second] = cell.blocks as readonly ParagraphBlock[];
+            expect([first.hiddenAfter?.style, second.hiddenBefore?.style]).to.deep.equal(["Normal", "Normal"]);
+            expect(content.blocks.map(({ block }) => block.unsupported)).to.deep.equal([undefined, undefined, undefined]);
+        });
+
+        it("should start the bookmarks in paragraphs whose text and marks are all hidden at the end of the document where its text ends", () => {
+            const hiddenParagraph = (name: string): object => p(pPr(hiddenMark), bookmark(name), r(hiddenMark, t("x")));
+            const lastItems = (...elements: readonly object[]): readonly LayoutItem[] => {
+                const { block } = readBody(elements).blocks.at(-1)!;
+                const paragraph = block.type === "paragraph" ? block : (block.rows.at(-1)!.cells.at(-1)!.blocks.at(-1) as ParagraphBlock);
+                return paragraph.items;
+            };
+            // After the last line of a paragraph, or of a table's last cell
+            expect(lastItems(p(r(t("a"))), hiddenParagraph("one"), hiddenParagraph("two")).slice(-2)).to.deep.equal([
+                { type: "marker", name: "one" },
+                { type: "marker", name: "two" },
+            ]);
+            expect(lastItems(fixedTableOf(cellOf(p(r(t("a"))))), hiddenParagraph("cell")).at(-1)).to.deep.equal({
+                type: "marker",
+                name: "cell",
+            });
+            // A table with no paragraph in its last cell has nowhere for them to start, and a bookmark after the last block
+            // isn't in a paragraph left out
+            const empty = readBody([fixedTableOf(cellOf()), hiddenParagraph("none")]).blocks.at(-1)!.block as TableBlock;
+            expect(empty.rows[0].cells[0].blocks).to.deep.equal([]);
+            expect(lastItems(p(r(t("a"))), bookmark("after")).map(({ type }) => type)).to.deep.equal(["text"]);
+        });
+
+        it("should give a paragraph whose text and mark are all hidden no room before a table and at the end of the document, and a line at the end of a table cell", () => {
+            const hiddenParagraph = (...children: readonly object[]): object => p(pPr(hiddenMark), r(hiddenMark, ...children));
+            const content = readBody([
+                // word-hidden-paragraphs.docx HP2a: before a table
+                hiddenParagraph(t("before")),
+                // First in a cell, one after the other (HP2d)
+                fixedTableOf(cellOf(hiddenParagraph(t("one")), hiddenParagraph(t("two")), p(r(t("first"))), hiddenParagraph(t("last")))),
+                // HP4a, HP4b, HP4c: a page break and a picture in hidden text take no room
+                // Formatted otherwise than the next, so it isn't joined to it, after a table
+                p(
+                    pPr(value("w:jc", "center"), hiddenMark),
+                    r(hiddenMark, { "w:br": { _attr: { "w:type": "page" } } }, { "w:drawing": [] }),
+                ),
+                p(r(t("a")), r(hiddenMark, { "w:br": { _attr: { "w:type": "column" } } }), r(t("b"))),
+                {
+                    "w:p": [pPr(hiddenMark), r(hiddenMark, { "mc:AlternateContent": [{ "mc:Choice": [{ "w:drawing": [] }] }] })],
+                },
+                // HP8: at the end of the document
+                p(pPr(hiddenMark)),
+            ]);
+            expect(texts(content)).to.deep.equal(["table", "ab"]);
+            // HP2b, HP2c: at the end of a table cell, it is a line of its own
+            const [cell] = (content.blocks[0].block as TableBlock).rows[0].cells;
+            expect(cell.blocks.map((block) => block.type === "paragraph" && block.hidden === true)).to.deep.equal([false, false]);
+            expect([content.unsupported, ...content.blocks.map(({ block }) => block.unsupported)]).to.deep.equal([
+                undefined,
+                undefined,
+                undefined,
+            ]);
+        });
+
+        it("should give a paragraph whose text and mark are all hidden in a list no room, but a number", () => {
+            // word-hidden-paragraphs.docx HP5: 1. and 3.
+            const item = (text: string, vanish = false): Paragraph =>
+                new Paragraph({ numbering: { reference: "list", level: 0 }, run: { vanish }, children: [new TextRun({ text, vanish })] });
+            const content = readWritten({
+                numbering: { config: [{ reference: "list", levels: [{ level: 0, format: LevelFormat.DECIMAL, text: "%1." }] }] },
+                sections: [{ children: [item("one"), item("two", true), item("three")] }],
+            });
+            expect(texts(content)).to.deep.equal(["1.one", "3.three"]);
+        });
+
+        it("should keep a paragraph kept with the next with the one after a hidden one, in one box with the same borders, as Word does", () => {
+            const unsupportedOf = (...elements: readonly object[]): string | undefined => {
+                const content = readBody(elements);
+                return content.unsupported ?? content.blocks.find(({ block }) => block.unsupported)?.block.unsupported;
+            };
+            const hiddenParagraph = (...children: readonly object[]): object => p(pPr(hiddenMark), r(hiddenMark, ...children));
+            // stops2/word-stops-hidden.docx HD7: kept with the paragraph after the hidden one, which takes no room
+            const centred = p(pPr(value("w:jc", "center"), hiddenMark), r(hiddenMark, t("b")));
+            const kept = readBody([p(pPr({ "w:keepNext": {} }), r(t("a"))), centred, p(r(t("c")))]);
+            expect(texts(kept)).to.deep.equal(["a", "c"]);
+            expect(kept.blocks.map(({ block }) => block.unsupported)).to.deep.equal([undefined, undefined]);
+            expect(
+                unsupportedOf(
+                    p(pPr({ "w:keepNext": {} }, { "w:framePr": { _attr: { "w:hAnchor": "cell" } } }), r(t("a"))),
+                    centred,
+                    p(r(t("c"))),
+                ),
+            ).to.equal("a text frame placed against what isn't followed yet");
+            // HD8: two paragraphs of the same borders around a hidden one without them
+            const bordered = { "w:pBdr": [{ "w:top": { _attr: { "w:val": "single", "w:sz": 4, "w:space": 1 } } }] };
+            expect(unsupportedOf(p(pPr(bordered), r(t("a"))), hiddenParagraph(t("b")), p(pPr(bordered), r(t("c"))))).to.equal(undefined);
+            // Before something that isn't a paragraph or table
+            expect(unsupportedOf(hiddenParagraph(t("a")), { "w:altChunk": {} })).to.equal(
+                "a paragraph with nothing shown and its mark hidden before something that isn't a paragraph or table",
+            );
+        });
+
+        it("should number the note of a reference in a hidden paragraph and lay it out, as Word does", () => {
+            // stops2/word-stops-hidden-edges.docx HD9a, word-hidden-paragraphs.docx HP4e: the note is laid out, and the next one
+            // numbered after it
+            const hiddenParagraph = (...children: readonly object[]): object => p(pPr(hiddenMark), r(hiddenMark, ...children));
+            const content = readBody(
+                [
+                    hiddenParagraph({ "w:footnoteReference": { _attr: { "w:id": 1 } } }),
+                    p(r(t("b")), r({ "w:footnoteReference": { _attr: { "w:id": 2 } } })),
+                ],
+                { footnotes: { 1: { children: [new Paragraph("One")] }, 2: { children: [new Paragraph("Two")] } } },
+            );
+            expect(content.blocks[0].block.unsupported).to.equal(undefined);
+            expect(itemsOf(content)).to.deep.equal([
+                { type: "marker", name: "footnote 1" },
+                { type: "text", text: "b", font: {} },
+                { type: "marker", name: "footnote 2" },
+                { type: "text", text: "2", font: {} },
+            ]);
+            expect([...content.footnotes.keys()]).to.deep.equal(["footnote 1", "footnote 2"]);
+        });
+
+        it("should give a paragraph with nothing shown and its mark hidden no room at the end of a header or the last footnote, as Word does", () => {
+            // stops2/word-stops-hidden2.ts HD12: a header of three lines and the paragraph, which pushes the body down three
+            const hidden = new Paragraph({ run: { vanish: true }, children: [new TextRun({ text: "b", vanish: true })] });
+            const content = readWritten({
+                sections: [
+                    {
+                        headers: { default: new Header({ children: [new Paragraph("a"), hidden] }) },
+                        footers: { default: new Footer({ children: [new Paragraph("a"), hidden] }) },
+                        children: [],
+                    },
+                ],
+            });
+            expect(content.sections[0].headers.default?.map(({ unsupported }) => unsupported)).to.deep.equal([undefined]);
+            // At the end of a footer, Word hasn't been seen
+            const unseen =
+                "a paragraph with nothing shown and its mark hidden at the end of a footer, an endnote, a text box, or a footnote with a note after it";
+            expect(content.sections[0].footers.default?.map(({ unsupported }) => unsupported)).to.deep.equal([undefined, unseen]);
+            // HD13: at the end of the document's last footnote, no room, where one with a footnote after it Word joins to the
+            // next note's first paragraph (word-stops-hidden-edges.docx HD4b), which isn't followed, nor is one at the end of an
+            // endnote
+            const note = (): { readonly children: readonly Paragraph[] } => ({
+                children: [
+                    new Paragraph("note"),
+                    new Paragraph({ run: { vanish: true }, children: [new TextRun({ text: "b", vanish: true })] }),
+                ],
+            });
+            const notes = readWritten({
+                footnotes: { 1: note(), 2: note() },
+                endnotes: { 1: note() },
+                sections: [
+                    {
+                        children: [
+                            new Paragraph({
+                                children: [new FootnoteReferenceRun(1), new FootnoteReferenceRun(2), new EndnoteReferenceRun(1)],
+                            }),
+                        ],
+                    },
+                ],
+            });
+            const lastOf = (blocks: readonly Block[] | undefined): readonly unknown[] | undefined =>
+                blocks === undefined ? undefined : [blocks.length, blocks[blocks.length - 1].unsupported];
+            expect(lastOf(notes.footnotes.get("footnote 1"))).to.deep.equal([2, unseen]);
+            expect(lastOf(notes.footnotes.get("footnote 2"))).to.deep.equal([1, undefined]);
+            // The endnotes, after their separator's paragraph
+            expect(lastOf(notes.endnotes)).to.deep.equal([3, unseen]);
+            // A footnote referred to in a text box, which Word leaves out, isn't the document's last
+            const inTextBox = {
+                "w:pict": [
+                    { "v:shape": [{ "v:textbox": [{ "w:txbxContent": [p(r({ "w:footnoteReference": { _attr: { "w:id": 2 } } }))] }] }] },
+                ],
+            };
+            const boxed = readBody([p(r({ "w:footnoteReference": { _attr: { "w:id": 1 } } })), p(r(inTextBox))], {
+                footnotes: { 1: note(), 2: note() },
+            });
+            expect(lastOf(boxed.footnotes.get("footnote 1"))).to.deep.equal([1, undefined]);
+        });
+
+        it("should mark a decimal tab stop in a document whose decimal symbol isn't a full stop as unsupported", () => {
+            const decimal = p(pPr({ "w:tabs": [{ "w:tab": { _attr: { "w:val": "decimal", "w:pos": 4000 } } }] }), r(t("a")));
+            const plain = p(r(t("a")));
+            const comma = value("w:decimalSymbol", ",");
+            expect(paragraphOf(readWithSettings([decimal], [comma])).unsupported).to.equal(
+                "a decimal tab stop in a document whose decimal symbol isn't a full stop",
+            );
+            expect(paragraphOf(readWithSettings([plain], [comma])).unsupported).to.equal(undefined);
+            expect(paragraphOf(readWithSettings([decimal], [value("w:decimalSymbol", ".")])).unsupported).to.equal(undefined);
+        });
+    });
+
+    describe("read to be laid out with a guess", () => {
+        /** Reads a body of formatted elements as `readBody` does, to be laid out with a guess past what can't be */
+        const guessed = (elements: readonly unknown[], options: Partial<IPropertiesOptions> = {}): DocumentContent =>
+            readDocument({ "w:body": elements } as IXmlableObject, contextOf(new File({ sections: [], ...options })), { guess: true });
+        const border = rPr({ "w:bdr": { _attr: { "w:val": "single", "w:sz": 4, "w:space": 0 } } });
+        const bound = (...content: readonly unknown[]): object => ({
+            "w:sdt": [
+                { "w:sdtPr": [{ "w:dataBinding": { _attr: { "w:xpath": "/properties/title", "w:storeItemID": "{1}" } } }] },
+                { "w:sdtContent": content },
+            ],
+        });
+        /** Why each paragraph or table can't be laid out as Word does, and its text, or "table" */
+        const read = (content: DocumentContent): readonly (readonly [string | undefined, string])[] =>
+            content.blocks.map(({ block }, index) => [block.unsupported, block.type === "paragraph" ? textOf(content, index) : "table"]);
+
+        it("should leave out what it can't read, and read the rest of its paragraph, which says why", () => {
+            const elements = [
+                p(r(t("a")), { "m:oMath": [{ "m:f": [] }] }, r(t("b"))),
+                p(r(t("c"), { "w:contentPart": { _attr: { "r:id": "rId9" } } }), r(t("d"))),
+                p(r(t("e")), { "w:subDoc": { _attr: { "r:id": "rId9" } } }, r(t("f"), { "w:pict": [] })),
+            ];
+            expect(read(readBody(elements))).to.deep.equal([
+                ["a part of an equation with nothing in it", ""],
+                ["a content part, such as ink", ""],
+                ["a subdocument", ""],
+            ]);
+            // The first thing guessed at in a paragraph is why
+            expect(read(guessed(elements))).to.deep.equal([
+                ["a part of an equation with nothing in it", "ab"],
+                ["a content part, such as ink", "cd"],
+                ["a subdocument", "ef"],
+            ]);
+            expect(itemsOf(guessed(elements)).every((item) => item.type === "text")).to.equal(true);
+        });
+
+        it("should read a run past formatting it can't follow, as if it weren't so", () => {
+            const across = p(r(rPr({ "w:eastAsianLayout": { _attr: { "w:vert": "true" } } }), t("text"), { "w:tab": {} }, t("more")));
+            const content = guessed([across]);
+            expect(read(content)).to.deep.equal([["text across in vertical text", "textmore"]]);
+            expect(itemsOf(content).map(({ type }) => type)).to.deep.equal(["text", "tab", "text"]);
+            // And text fitted to a width with a tab in it, as if it weren't fitted
+            const fitted = guessed([p(r(rPr({ "w:fitText": { _attr: { "w:val": 2000 } } }), t("fitted"), { "w:tab": {} }, t("more")))]);
+            expect(read(fitted)).to.deep.equal([["text fitted to a width with other than text in it, or to none", "fittedmore"]]);
+        });
+
+        it("should read text fitted to a width as a box of that width, and runs of the same region in one, as Word does", () => {
+            const fit = (width: number, id?: number, ...more: readonly object[]): object =>
+                rPr({ "w:fitText": { _attr: { "w:val": width, ...(id === undefined ? {} : { "w:id": id }) } } }, ...more);
+            // word-stops-text2.ts RF29b: "fitted text" fitted to 500 twips
+            expect(itemsOf(readBody([p(r(fit(500, 3), t("fitted text")))]))).to.deep.equal([
+                { type: "box", width: 25, height: 0, font: {}, text: "fitted text" },
+            ]);
+            // RF29c: "fitted " and a bold "text" with one id, across a bookmark, fitted to 2000 together
+            const together = readBody([
+                p(
+                    r(fit(2000, 4), t("fitted ")),
+                    { "w:bookmarkStart": { _attr: { "w:name": "m", "w:id": 1 } } },
+                    r(fit(2000, 4, { "w:b": {} }), t("text")),
+                ),
+            ]);
+            expect(itemsOf(together)).to.deep.equal([
+                { type: "box", width: 100, height: 0, font: {}, text: "fitted text", otherText: [{ text: "text", font: { bold: true } }] },
+                { type: "marker", name: "m" },
+            ]);
+            // Runs without an id, or with others, or with text between them, each fitted on its own
+            const apart = (...runs: readonly object[]): readonly unknown[] => itemsOf(readBody([p(...runs)])).map(({ type }) => type);
+            expect(apart(r(fit(500), t("a")), r(fit(500), t("b")))).to.deep.equal(["box", "box"]);
+            expect(apart(r(fit(500, 1), t("a")), r(fit(500, 2), t("b")))).to.deep.equal(["box", "box"]);
+            expect(apart(r(fit(500, 1), t("a")), r(t("x")), r(fit(500, 1), t("b")))).to.deep.equal(["box", "text", "box"]);
+            expect(apart(r(t("x")), r(fit(500, 1), t("a")))).to.deep.equal(["text", "box"]);
+            // Runs in one font are one box as they are
+            expect(itemsOf(readBody([p(r(fit(500, 1), t("a")), r(fit(500, 1), t("b")))]))).to.deep.equal([
+                { type: "box", width: 25, height: 0, font: {}, text: "ab" },
+            ]);
+            // A run with nothing in it, or hidden, has nothing to fit
+            expect(apart(r(fit(500, 1)), r(fit(500, 1), t("a")))).to.deep.equal(["box"]);
+            expect(apart(r(fit(500, 1, { "w:vanish": {} }), t("a")))).to.deep.equal([]);
+            // Runs of other sizes in one region are one box too, as tall as the tallest of them (word-stops-text3.ts RF29f)
+            const sized = readBody([
+                p(r(fit(500, 1), t("a")), r(fit(500, 1, value("w:sz", 30)), t("b")), r(fit(500, 1, value("w:sz", 40)), t("c"))),
+            ]);
+            expect([paragraphOf(sized).unsupported, itemsOf(sized)]).to.deep.equal([
+                undefined,
+                [
+                    {
+                        type: "box",
+                        width: 25,
+                        height: 0,
+                        font: {},
+                        text: "abc",
+                        otherText: [
+                            { text: "b", font: { size: 15 } },
+                            { text: "c", font: { size: 20 } },
+                        ],
+                    },
+                ],
+            ]);
+        });
+
+        it("should read text with a phonetic guide as a box as wide as the wider of the two, as tall as the guide raised, as Word does", () => {
+            // word-stops-text3.ts RF31e to RF31l: the guide's size and raise, and its base's size, are in half-points
+            const properties = [value("w:hps", 11), value("w:hpsRaise", 20), value("w:hpsBaseText", 22)];
+            const ruby = (rt: readonly object[], rubyBase: readonly object[], own: readonly object[] = properties): object => ({
+                "w:ruby": [{ "w:rubyPr": own }, { "w:rt": rt }, { "w:rubyBase": rubyBase }],
+            });
+            const sized = (size: number, text: string, ...more: readonly object[]): object => r(rPr(value("w:sz", size), ...more), t(text));
+            const guide = [sized(11, "かんじ")];
+            const base = [sized(22, "漢字")];
+            expect(itemsOf(readBody([p(r(ruby(guide, base)))]))).to.deep.equal([
+                {
+                    type: "box",
+                    width: 0,
+                    height: 0,
+                    font: { font: "MS Mincho", size: 11 },
+                    text: "漢字",
+                    otherText: [{ text: "かんじ", font: { font: "MS Mincho", size: 5.5, raise: 10 } }],
+                    asWideAsText: true,
+                },
+            ]);
+            // Runs without a size of their own are the document's default, 10 points, which the properties give in half-points
+            const unsized = itemsOf(
+                readBody([
+                    p(r(ruby([r(t("か"))], [r(t("漢"))], [value("w:hps", 20), value("w:hpsRaise", 20), value("w:hpsBaseText", 20)]))),
+                ]),
+            )[0];
+            expect(unsized).to.deep.include({
+                font: { font: "MS Mincho" },
+                otherText: [{ text: "か", font: { font: "MS Mincho", raise: 10 } }],
+            });
+            // A guide raised already is raised further
+            const raised = itemsOf(readBody([p(r(ruby([sized(11, "か", value("w:position", 4))], base)))]))[0];
+            expect(raised.type === "box" ? raised.otherText : raised).to.deep.equal([
+                { text: "か", font: { font: "MS Mincho", size: 5.5, raise: 12 } },
+            ]);
+            // Or why it can't be laid out, with its base alone guessing: other than text in the guide or the base, more than
+            // one font, a size other than the properties give, and no raise
+            const reasons = (...rubies: readonly object[]): readonly (string | undefined)[] =>
+                rubies.map((one) => paragraphOf(readBody([p(r(one))])).unsupported);
+            expect(
+                reasons(
+                    ruby([r({ "w:tab": {} })], base),
+                    ruby([r({ "w:contentPart": { _attr: { "r:id": "rId9" } } })], base),
+                    ruby(guide, [r({ "w:contentPart": { _attr: { "r:id": "rId9" } } })]),
+                    ruby(guide, [sized(22, "漢"), sized(24, "字")]),
+                    ruby([sized(16, "かんじ")], base),
+                    ruby(guide, [sized(20, "漢字")]),
+                    ruby(guide, base, [value("w:hps", 11)]),
+                ),
+            ).to.deep.equal([
+                "a phonetic guide, or its base, with other than text in it",
+                "a content part, such as ink",
+                "a content part, such as ink",
+                "a phonetic guide, or its base, in more than one font",
+
+                "a phonetic guide, or its base, of another size than the guide's properties give",
+                "a phonetic guide, or its base, of another size than the guide's properties give",
+                "a phonetic guide without a raise",
+            ]);
+            // A bookmark in the base comes before the box
+            const marked = [{ "w:bookmarkStart": { _attr: { "w:name": "m", "w:id": 1 } } }, ...base];
+            expect(itemsOf(readBody([p(r(ruby(guide, marked)))])).map(({ type }) => type)).to.deep.equal(["marker", "box"]);
+            const guessedAt = guessed([p(r(ruby(guide, base, [value("w:hps", 11)])))]);
+            expect([read(guessedAt), itemsOf(guessedAt).map(({ type }) => type)]).to.deep.equal([
+                [["a phonetic guide without a raise", "漢字"]],
+                ["text"],
+            ]);
+        });
+
+        it("should read an equation that can't be laid out in the line, but can displayed, as displayed", () => {
+            const run = (characters: string): object => ({ "m:r": [{ "m:t": [characters] }] });
+            const eleven = { styles: { default: { document: { run: { size: 22 } } } } };
+            // A root over 𝜍, whose sign's size Word's PDFs leave between two in a line of text, where the gap above the
+            // radicand is smaller, but not displayed
+            const root = {
+                "m:rad": [{ "m:radPr": [{ "m:degHide": { _attr: { "m:val": "1" } } }] }, { "m:deg": [] }, { "m:e": [run("\u03c2")] }],
+            };
+            const either = guessed([p(r(t("a ")), { "m:oMath": [root] })], eleven);
+            expect(read(either)[0][0]).to.equal("a root whose sign's size Word's PDFs leave between two");
+            expect(itemsOf(either).map(({ type }) => type)).to.deep.equal(["text", "box"]);
+        });
+
+        it("should read an equation alone in its paragraph that can't be laid out there as displayed, as Word displays it", () => {
+            const run = (characters: string): object => ({ "m:r": [{ "m:t": [characters] }] });
+            const sum = { "m:nary": [{ "m:naryPr": [] }, { "m:sub": [run("i")] }, { "m:sup": [run("n")] }, { "m:e": [run("a")] }] };
+            const alone = p({ "m:oMathPara": [{ "m:oMath": [sum] }] });
+            const eleven = { styles: { default: { document: { run: { size: 22 } } } } };
+            const [displayed] = itemsOf(readWithSettings([alone], [], eleven));
+            // Margins in the maths settings stop it, but Word displays it all the same: its sum larger, with the limits under
+            // and over it, rather than in a line of text's style
+            const margins = [{ "m:mathPr": [{ "m:lMargin": { _attr: { "m:val": "720" } } }] }];
+            const content = readWithSettings([alone], margins, eleven, { guess: true });
+            expect(paragraphOf(content).unsupported).to.equal(
+                "an equation displayed in a document whose maths settings give displayed equations margins",
+            );
+            expect(itemsOf(content)).to.deep.equal([displayed]);
+            const [, inline] = itemsOf(readWithSettings([p(r(t("a ")), { "m:oMath": [sum] })], [], eleven));
+            expect(inline).to.not.deep.equal(displayed);
+        });
+
+        it("should read tabs, soft hyphens and pictures in text with a border, and a phonetic guide's base", () => {
+            const content = guessed([
+                p(r(border, { "w:tab": {} })),
+                p(r(border, t("a\tb"))),
+                p(r(border, t("a"), { "w:softHyphen": {} }, t("b"))),
+                p(r(border, { "w:drawing": [{ "wp:inline": [{ "wp:extent": { _attr: { cx: 127000, cy: 127000 } } }] }] })),
+                p(r({ "w:ruby": [{ "w:rubyPr": [] }, { "w:rt": [r(t("guide"))] }, { "w:rubyBase": [r(t("base"))] }] })),
+                p(r(border, { "w:drawing": [{ "wp:anchor": [{ "wp:wrapNone": {} }] }] }), r(t("behind"))),
+            ]);
+            expect(content.blocks.map(({ block }) => block.unsupported)).to.deep.equal([
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                "a phonetic guide without a raise",
+                "a drawing placed on the page in text with a border",
+            ]);
+            // Guessing, a drawing behind the text in text with a border takes no room, as elsewhere
+            expect(textOf(content, 5)).to.equal("behind");
+            expect([0, 1, 2, 3].map((index) => itemsOf(content, index).map(({ type }) => type))).to.deep.equal([
+                ["tab"],
+                ["text", "tab", "text"],
+                ["text", "softHyphen", "text"],
+                ["box"],
+            ]);
+            // A picture of 10 points in a border of half a point, with its room above and below it, and its border for the room
+            // each side (word-stops-text2.ts RF32b, word-stops-text3.ts RF32d)
+            expect(itemsOf(content, 3)[0]).to.deep.include({ width: 10, height: 10.5, below: 0.5 });
+            expect((itemsOf(content, 3)[0] as { readonly font: TextFont }).font.border?.room).to.equal(0.5);
+
+            expect(textOf(content, 4)).to.equal("base");
+            // A note with a mark of its own in hidden text is laid out, as a hidden reference's note is
+            // (stops2/word-stops-hidden-edges.docx HD9b), an endnote's as a footnote's
+            const hidden = guessed(
+                [p(r(rPr({ "w:vanish": {} }), { "w:endnoteReference": { _attr: { "w:id": 1, "w:customMarkFollows": 1 } } }))],
+                {
+                    endnotes: { 1: { children: [new Paragraph("One")] } },
+                },
+            );
+            expect(paragraphOf(hidden)).to.deep.include({
+                items: [{ type: "marker", name: "endnote 1" }],
+                unsupported: "a footnote or endnote reference with a mark of its own in hidden text",
+            });
+            const hiddenFootnote = guessed(
+                [p(r(rPr({ "w:vanish": {} }), { "w:footnoteReference": { _attr: { "w:id": 1, "w:customMarkFollows": 1 } } }))],
+                {
+                    footnotes: { 1: { children: [new Paragraph("One")] } },
+                },
+            );
+            expect(paragraphOf(hiddenFootnote)).to.deep.include({
+                items: [{ type: "marker", name: "footnote 1" }],
+                unsupported: "a footnote or endnote reference with a mark of its own in hidden text",
+            });
+            // And a soft hyphen in a table whose columns Word sizes to their text
+            const table = guessed([{ "w:tbl": [{ "w:tr": [{ "w:tc": [p(r(t("a"), { "w:softHyphen": {} }, t("b")))] }] }] }]);
+            expect(table.blocks[0].block.unsupported).to.equal("a soft hyphen in a table whose columns Word sizes to their text");
+            const [cellParagraph] = (table.blocks[0].block as TableBlock).rows[0].cells[0].blocks as readonly ParagraphBlock[];
+            expect(cellParagraph.items.map(({ type }) => type)).to.deep.equal(["text", "softHyphen", "text"]);
+        });
+
+        it("should read a date or time as it is written, and a number in a field format not yet written as its number", () => {
+            const fieldOf = (text: string, written = "?"): object =>
+                p(field("begin"), instruction(text), field("separate"), r(t(written)), field("end"));
+            const hidden = rPr({ "w:vanish": {} });
+            const content = guessed(
+                [
+                    fieldOf('DATE \\@ "d MMMM yyyy"', "1 January 2000"),
+                    p({ "w:fldSimple": [{ _attr: { "w:instr": "TIME" } }, r(t("12:00"))] }),
+                    p(r({ "w:dayLong": {} })),
+                    fieldOf("PAGEREF a \\* BahtText"),
+                    fieldOf("NUMPAGES \\* DBNUM1"),
+                    fieldOf("PAGE \\* Hebrew1"),
+                    // In hidden text, as nothing still
+                    p(
+                        field("begin"),
+                        instruction("DATE"),
+                        r(hidden, { "w:fldChar": { _attr: { "w:fldCharType": "separate" } } }),
+                        field("end"),
+                    ),
+                    p(pPr(value("w:pStyle", "Hidden"), rPr(value("w:vanish", "false"))), {
+                        "w:fldSimple": [{ _attr: { "w:instr": "DATE" } }, r(t("written"))],
+                    }),
+                ],
+                { styles: { paragraphStyles: [{ id: "Hidden", name: "Hidden", run: { vanish: true } }] } },
+            );
+            const date = "a date or time, which Word writes when it opens the document";
+            const format = "a number in a field format not yet written";
+            expect(read(content).slice(0, 3)).to.deep.equal([
+                [date, "1 January 2000"],
+                [date, "12:00"],
+                [date, ""],
+            ]);
+            expect([3, 4, 5].map((index) => [paragraphOf(content, index).unsupported, itemsOf(content, index)])).to.deep.equal([
+                [format, [{ type: "pageReference", bookmark: "a", font: {} }]],
+                [format, [{ type: "pageCount", scope: "document", font: {} }]],
+                [
+                    format,
+                    [
+                        { type: "marker", name: "field 1" },
+                        { type: "pageNumber", field: "field 1", font: {} },
+                    ],
+                ],
+            ]);
+            expect([6, 7].map((index) => [paragraphOf(content, index).unsupported, itemsOf(content, index)])).to.deep.equal([
+                [undefined, []],
+                [undefined, []],
+            ]);
+        });
+
+        it("should read a page reference with \\p in a footnote as worked out, guessing or not", () => {
+            const content = readContent(
+                { "w:body": [p(r({ "w:footnoteReference": { _attr: { "w:id": 1 } } }))] },
+                {
+                    styles: WORD_DEFAULT_STYLES,
+                    headersAndFooters: new Map(),
+                    footnotes: {
+                        "w:footnotes": [
+                            {
+                                "w:footnote": [
+                                    { _attr: { "w:id": 1 } },
+                                    p(field("begin"), instruction("PAGEREF a \\p"), field("separate"), r(t("below")), field("end")),
+                                    p({ "w:fldSimple": [{ _attr: { "w:instr": "PAGEREF a \\p" } }, r(t("above"))] }),
+                                ],
+                            },
+                        ],
+                    },
+                },
+                { guess: true },
+            );
+            const note = content.footnotes.get("footnote 1")! as readonly ParagraphBlock[];
+            expect(note.map(({ unsupported, items }) => [unsupported, items.map(({ type }) => type)])).to.deep.equal([
+                [undefined, ["pageReference"]],
+                [undefined, ["pageReference"]],
+            ]);
+        });
+
+        it("should read what is written in a content control bound to custom XML, unless it starts with a table", () => {
+            const control = "a content control Word fills in from custom XML with other text than is written in it";
+            const content = guessed([bound(p(r(t("Title"))), p(r(t("Subtitle")))), p(bound(r(t("Inline")))), bound({ "w:tbl": [] })]);
+            expect(read(content)).to.deep.equal([
+                [control, "Title"],
+                [undefined, "Subtitle"],
+                [control, "Inline"],
+                [control, ""],
+            ]);
+            expect(content.blocks.map(({ block }) => block.noGuess)).to.deep.equal([undefined, undefined, undefined, true]);
+            // Read without a guess, the control stops the layout, with a guess or not
+            expect(readBody([bound({ "w:tbl": [] })]).blocks[0].block.noGuess).to.equal(undefined);
+        });
+
+        it("should have no guess for an imported document, nor for a table with one in a cell", () => {
+            const imported = { "w:altChunk": { _attr: { "r:id": "rId9" } } };
+            const content = guessed([imported, { "w:tbl": [{ "w:tr": [{ "w:tc": [p(r(t("a")), { "m:oMath": [] }), imported, p()] }] }] }]);
+            expect(content.blocks.map(({ block }) => [block.unsupported, block.noGuess])).to.deep.equal([
+                ["an imported document", true],
+                ["an imported document", true],
+            ]);
+        });
+
+        it("should have no guess for a table all of whose rows are deleted, when what Word does with one of them isn't known", () => {
+            const deleted = { "w:del": { _attr: { "w:id": 2 } } };
+            // A width of its own, which isn't followed, as its borders are
+            const own = { "w:tblPrEx": [{ "w:tblW": { _attr: { "w:w": 5000, "w:type": "dxa" } } }] };
+            const content = guessed([{ "w:tbl": [{ "w:tr": [{ "w:trPr": [deleted] }, own, { "w:tc": [p()] }] }] }]);
+            expect(content.blocks[0].block).to.deep.include({
+                rows: [],
+                unsupported: "a table row with table properties of its own",
+                noGuess: true,
+            });
+        });
+
+        it("should read a paragraph whose hidden mark Word hasn't been seen with as it is, apart from the next", () => {
+            const hiddenMark = rPr({ "w:vanish": {} });
+            const content = guessed([p(pPr({ "w:keepNext": {} }, hiddenMark), r(t("a"))), p(r(t("b")))]);
+            expect(read(content)).to.deep.equal([
+                [
+                    "a hidden paragraph mark between paragraphs formatted differently otherwise than in their alignment, indents, space, line spacing, tab stops, borders and styles",
+                    "a",
+                ],
+                [undefined, "b"],
+            ]);
+        });
+
+        it("should read a VML shape in the line Word's way with isn't known as a box of its size", () => {
+            const shape = (children: readonly object[] = [], attributes: object = {}): object => ({
+                "w:pict": [{ "v:shape": [{ _attr: { style: "width:72pt;height:36pt", ...attributes } }, ...children] }],
+            });
+            const guessedItems = (...children: readonly object[]): readonly LayoutItem[] => itemsOf(guessed([p(r(...children))]));
+            const box = { type: "box", width: 72, height: 36, font: {} };
+            expect(guessedItems(shape([{ "v:imagedata": {} }], { stroked: "f" }))).to.deep.equal([box]);
+            // One with an outline is a box of its size and the outline's weight, as in any document (VM23a, VM23b)
+            expect(guessedItems(shape())).to.deep.equal([{ type: "box", width: 72.72, height: 36.72, font: {} }]);
+            expect(paragraphOf(guessed([p(r(shape()))])).unsupported).to.equal(undefined);
+            // In text with a border, it is read as it would be without it
+            expect(guessedItems(border, shape([], { stroked: "f" }))[0]).to.deep.include({ type: "box", width: 72, height: 36 });
+            // One whose size isn't known has no guess, and is left out
+            expect(itemsOf(guessed([p(r({ "w:pict": [{ "v:shape": [{ _attr: { style: "width:72pt" } }] }] }), r(t("a")))]))).to.deep.equal([
+                { type: "text", text: "a", font: {} },
+            ]);
+        });
+
+        it("should read a text frame Word's way with isn't known as its paragraph's text, or leave it out, with its bookmarks", () => {
+            const framed = (...children: readonly object[]): object =>
+                p(pPr({ "w:framePr": { _attr: { "w:hAnchor": "page", "w:vAnchor": "page" } } }), ...children);
+            const bookmark = { "w:bookmarkStart": { _attr: { "w:id": 1, "w:name": "inside" } } };
+            // One with no paragraph after it in its section is laid out where it is in the text
+            const table = {
+                "w:tbl": [
+                    { "w:tblPr": [] },
+                    { "w:tblGrid": [{ "w:gridCol": { _attr: { "w:w": 2000 } } }] },
+                    { "w:tr": [{ "w:tc": [p(r(t("b")))] }] },
+                ],
+            };
+            expect(read(guessed([p(r(t("x"))), framed(r(t("a"))), framed(r(t("b")))]))).to.deep.equal([
+                [undefined, "x"],
+                ["a text frame with no paragraph after it in its section", "a"],
+                [undefined, "b"],
+            ]);
+            // One before a table is anchored at it
+            expect(read(guessed([framed(r(t("a"))), table]))).to.deep.equal([[undefined, "table"]]);
+            // One of paragraphs with other borders at their sides is left out of the paragraph after it, which keeps its bookmarks
+            const framePr = { "w:framePr": { _attr: { "w:hAnchor": "page", "w:vAnchor": "page" } } };
+            const side = (name: string): object => ({ "w:pBdr": [{ [name]: { _attr: { "w:val": "single", "w:sz": 4, "w:space": 1 } } }] });
+            const content = guessed([
+                p(pPr(side("w:left"), framePr), bookmark, r(t("a"))),
+                p(pPr(side("w:right"), framePr), r(t("a"))),
+                p(r(t("b"))),
+            ]);
+            expect(read(content)).to.deep.equal([["a text frame of paragraphs with other borders at their sides", "b"]]);
+            expect(itemsOf(content).map(({ type }) => type)).to.deep.equal(["marker", "text"]);
+        });
+    });
+});

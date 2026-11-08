@@ -1,0 +1,103 @@
+import { BuilderElement, type XmlComponent } from "@file/xml-components";
+
+/**
+ * Supported relationship type URIs.
+ *
+ * These URIs define the type of relationship between parts in an OPC package.
+ * Each type corresponds to a specific kind of document component or resource.
+ */
+export type RelationshipType =
+    | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+    | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme"
+    | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"
+    | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"
+    | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable"
+    | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/webSettings"
+    | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering"
+    | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header"
+    | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer"
+    | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+    | "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties"
+    | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties"
+    | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties"
+    | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
+    | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes"
+    | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes"
+    | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"
+    | "http://schemas.microsoft.com/office/2011/relationships/commentsExtended"
+    | "http://schemas.microsoft.com/office/2016/09/relationships/commentsIds"
+    | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/font"
+    | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart"
+    | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/package";
+
+/**
+ * The types of the relationships to a document's macros: to its VBA project, and from that to the events it handles.
+ * Only the document adds these, so a package part's relationship can't be one of them.
+ */
+export type MacroRelationshipType =
+    | "http://schemas.microsoft.com/office/2006/relationships/vbaProject"
+    | "http://schemas.microsoft.com/office/2006/relationships/wordVbaData";
+
+/**
+ * The types of the relationships to a document's sources, which are in a custom XML part, and from that part to its
+ * properties.
+ */
+export type CustomXmlRelationshipType =
+    | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml"
+    | "http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXmlProps";
+
+/**
+ * The type of the relationship to an OLE object that isn't a package, such as a file docx/embedded-files embeds in an
+ * OLE package. It isn't one of the {@link RelationshipType}s, as a {@link PackagePart} gives its relationship type in its
+ * options, which a part made with a relationship type of that union can be read for.
+ */
+export type OleObjectRelationshipType = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject";
+
+/**
+ * Target mode types for relationships.
+ *
+ * Indicates whether a relationship target is external to the package.
+ */
+export const TargetModeType = {
+    /** Target is external to the package (e.g., hyperlink to a URL) */
+    EXTERNAL: "External",
+} as const;
+
+type IRelationshipAttributes = {
+    readonly id: string;
+    readonly type: RelationshipType | MacroRelationshipType | OleObjectRelationshipType | CustomXmlRelationshipType;
+    readonly target: string;
+    readonly targetMode?: (typeof TargetModeType)[keyof typeof TargetModeType];
+};
+
+/**
+ * Creates a single relationship between parts in an OPC package.
+ *
+ * A relationship defines a typed connection from a source part to a target part,
+ * identified by a unique ID within the relationships collection.
+ *
+ * @example
+ * ```typescript
+ * // Internal relationship to an image
+ * createRelationship("rId1", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image", "media/image1.png");
+ *
+ * // External relationship to a hyperlink
+ * createRelationship("rId2", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", "https://example.com", TargetModeType.EXTERNAL);
+ * ```
+ */
+
+export const createRelationship = (
+    id: string,
+    type: RelationshipType | MacroRelationshipType | OleObjectRelationshipType | CustomXmlRelationshipType,
+    target: string,
+    targetMode?: (typeof TargetModeType)[keyof typeof TargetModeType],
+): XmlComponent =>
+    new BuilderElement<IRelationshipAttributes>({
+        name: "Relationship",
+        attributes: {
+            id: { key: "Id", value: id },
+            type: { key: "Type", value: type },
+            target: { key: "Target", value: target },
+            targetMode: { key: "TargetMode", value: targetMode },
+        },
+    });
