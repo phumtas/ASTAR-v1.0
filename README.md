@@ -1,4 +1,5 @@
-# A* - ⚠ [vibe code app with antigravity]
+# A* - ⚠ [vibe code /agentic engineered
+app with antigravity]
 
 A high-performance homework solving web application for .docx [i don't recommend .pdf file]
 
