@@ -1,5 +1,4 @@
-# A* - ⚠ [vibe code /agentic engineered
-app with antigravity]
+# A* - ⚠ [vibe code /agentic engineered] made with antigravity
 
 A high-performance homework solving web application for .docx [i don't recommend .pdf file]
 
@@ -14,6 +13,7 @@ You can launch the app in any of the following ways:
 - **`ASTAR v1.0.exe`**: Double-click to instantly open `Index.html` in your default browser without showing any console window.
 - **`open.bat`**: Double-click to launch `Index.html` directly in your browser.
 - **`start.bat`**: Double-click to start the local preview server (`http://localhost:3000`) with the built-in Gemini API proxy and automatically open your browser.
+-or you can open the 'Index.html' manually 
 
 ### 2. Command Line
 ```bash
